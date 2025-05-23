@@ -3,45 +3,35 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-try:
-    from finvizfinance.screener.overview import Overview
-    finviz_available = True
-except ImportError:
-    finviz_available = False
-
 # Page Setup
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
-# Session Setup
+# Session State for Tickers
 if "tickers" not in st.session_state:
-    st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR".split(",")
+    st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
 
-# Pasteable Ticker Input (Finviz style)
-user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=",".join(st.session_state["tickers"]))
+# Pasteable Input
+user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=st.session_state["tickers"])
 if user_input:
-    st.session_state["tickers"] = [t.strip().upper() for t in user_input.split(",") if t.strip()]
+    st.session_state["tickers"] = user_input
 
-# Finviz Top Gainers Button
-if finviz_available:
-    if st.button("🔄 Add Top Gainers from Finviz"):
-        try:
-            overview = Overview()
-            overview.set_filter(
-                filters=["sh_avgvol_o500", "sh_price_o1", "ta_change_o5"],
-                order="change"
-            )
-            top_df = overview.screener_view()
-            top_tickers = top_df["Ticker"].tolist()
-            current = set(st.session_state["tickers"])
-            updated = list(current.union(top_tickers))
-            st.session_state["tickers"] = updated
-        except Exception as e:
-            st.error(f"❌ Failed to fetch Finviz data: {e}")
+tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
 
-tickers = st.session_state["tickers"]
+# Add Top Gainers Button (Mock Placeholder)
+if st.button("🔄 Add Top Gainers from Finviz"):
+    try:
+        from finvizfinance.screener.overview import Overview
+        overview = Overview()
+        overview.set_filter("Top Gainers")
+        top_df = overview.screener_view()
+        new_tickers = top_df["Ticker"].tolist()
+        tickers = list(set(tickers + new_tickers))
+        st.session_state["tickers"] = ",".join(tickers)
+    except Exception as e:
+        st.error(f"❌ Failed to fetch Finviz data: {e}")
 
-# How This Screener Works
+# Screener Explanation
 with st.expander("📘 How This Screener Works"):
     st.markdown("""
 This tool scans the market for **momentum setups** using the logic below:
@@ -74,10 +64,10 @@ Use the **signal dropdown below** to focus on actionable opportunities.
 | London 🇬🇧     | 8:00 AM GMT | 3:00 – 4:00 PM GMT |
     """)
 
-# Filter dropdown
+# Signal Filter
 selected_signal = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
 
-# Fetch and compute
+# Process Tickers
 data = []
 for ticker in tickers:
     try:
@@ -91,17 +81,15 @@ for ticker in tickers:
 
         ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
-        # Tags
-        tag_list = []
+        tags = []
 
-        # Top Pick (placeholder, assigned after full sort)
-        tag_list.append("")
-
+        # Momentum
         if change >= 2 and rvol >= 1.5:
-            tag_list.append("🔁 Momentum")
+            tags.append("🔁 Momentum")
 
+        # Breakout
         if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
-            tag_list.append("📈 Breakout")
+            tags.append("📈 Breakout")
 
         data.append({
             "Ticker": ticker,
@@ -110,14 +98,12 @@ for ticker in tickers:
             "RVOL": round(rvol, 3),
             "Short %": f"{short_pct:.1f}%",
             "AI Score": ai_score,
-            "Signal": "",  # Assigned later
-            "Tags": ", ".join(tag_list[1:])  # Skip placeholder
+            "Signal": "",  # to be filled
+            "Tags": ", ".join(tags)
         })
-
     except Exception as e:
-        print(f"Error fetching data for {ticker}: {e}")
+        print(f"Error fetching {ticker}: {e}")
 
-# Create DataFrame
 df = pd.DataFrame(data)
 
 if not df.empty:
@@ -125,22 +111,21 @@ if not df.empty:
     top_idx = df["AI Score"].idxmax()
     if pd.notna(top_idx):
         current_tags = df.at[top_idx, "Tags"]
-        df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + current_tags if current_tags else "")
+        df.at[top_idx, "Tags"] = ("🏆 Top Pick" + (", " + current_tags if current_tags else ""))
 
     if selected_signal != "All":
         df = df[df["Signal"] == selected_signal]
 
-    def highlight_signal(val):
-        color = ""
+    def highlight(val):
         if val == "BUY":
-            color = "background-color: #16a34a; color: white;"
+            return "background-color: #16a34a; color: white"
         elif val == "WATCH":
-            color = "background-color: #facc15; color: black;"
+            return "background-color: #facc15; color: black"
         elif val == "AVOID":
-            color = "background-color: #dc2626; color: white;"
-        return color
+            return "background-color: #dc2626; color: white"
+        return ""
 
-    styled_df = df.style.applymap(highlight_signal, subset=["Signal"])
-    st.dataframe(styled_df, use_container_width=True)
+    styled = df.style.applymap(highlight, subset=["Signal"])
+    st.dataframe(styled, use_container_width=True)
 else:
     st.warning("No data available. Please check the tickers.")
