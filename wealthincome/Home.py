@@ -1,5 +1,12 @@
 import streamlit as st
 
+# This triggers the sidebar to render
+with st.sidebar:
+    st.header("📊 Navigation")
+    st.page_link("Home.py", label="🏠 Dashboard Hub")
+    st.page_link("Watchlist.py", label="📋 Watchlist")
+    st.page_link("AISignals.py", label="🧠 AI Screener")
+
 st.set_page_config(page_title="Trading Hub", layout="wide")
 
 st.title("📊 Trading Dashboard Hub")
