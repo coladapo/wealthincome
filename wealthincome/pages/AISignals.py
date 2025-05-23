@@ -1,18 +1,24 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 
 try:
-  from finvizfinance.screener.overview import Overview
+    from finvizfinance.screener.overview import Overview
+    finviz_available = True
+except ImportError:
+    finviz_available = False
 
-overview = Overview()
-filters = {
-    'Average Volume': 'Over 500K',
-    'Relative Volume': 'Over 1.5'
-}
-overview.set_filter(filters_dict=filters)
-df = overview.screener_view()
+# Finviz Top Gainers Scrape Function
+def get_top_gainers():
+    try:
+        overview = Overview()
+        overview.set_filter(filters=['sh_avgvol_0500', 'sh_relvol_o1.5'])
+        overview.set_order('change')
+        df = overview.screener_view()
+        return df['Ticker'].tolist()
+    except Exception as e:
+        st.error(f"⚠️ Failed to fetch Finviz data: {e}")
+        return []
 
 # Page Setup
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
@@ -26,22 +32,14 @@ if "tickers" not in st.session_state:
 user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=st.session_state["tickers"])
 if user_input:
     st.session_state["tickers"] = user_input
-tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
 
-# Finviz Top Gainers Button
+# Add Top Gainers Button
 if finviz_available:
     if st.button("🔄 Add Top Gainers from Finviz"):
-        try:
-            overview = Overview()
-            overview.set_filter(filters=["sh_avgvol_o50", "ta_perf_1wup"])
-            overview.set_order("change")
-            top_df = overview.screener_view()
-            top_tickers = top_df["Ticker"].tolist()
-            new_tickers = [t.strip().upper() for t in top_tickers]
-            updated_tickers = list(set(tickers + new_tickers))
-            st.session_state["tickers"] = ",".join(updated_tickers)
-        except Exception as e:
-            st.error(f"❌ Failed to fetch Finviz data: {e}")
+        top_gainers = get_top_gainers()
+        if top_gainers:
+            combined = list(set(st.session_state["tickers"].split(",") + top_gainers))
+            st.session_state["tickers"] = ",".join(sorted(set(t.strip().upper() for t in combined)))
 
 tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
 
@@ -65,17 +63,6 @@ This composite score ranks stocks by **momentum + volume + sentiment**.
 - 🟢 **BUY** if Score ≥ 60
 - 🟡 **WATCH** if Score ≥ 45
 - 🔴 **AVOID** if Score < 45
-
-Use the **signal dropdown below** to focus on actionable opportunities.
-
-🕐 **Tip:** Use this screener before market open or during **power hour** (last hour of trading).
-
-⏰ **Market Hours Reference:**
-
-| Location      | Market Open | Power Hour      |
-|---------------|-------------|-----------------|
-| Los Angeles 🇺🇸 | 6:30 AM PST | 12:00 – 1:00 PM PST |
-| London 🇬🇧     | 8:00 AM GMT | 3:00 – 4:00 PM GMT |
     """)
 
 # Filter dropdown
@@ -95,7 +82,9 @@ for ticker in tickers:
 
         ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
+        # Tags
         tag_list = []
+        tag_list.append("")  # placeholder
 
         if change >= 2 and rvol >= 1.5:
             tag_list.append("🔁 Momentum")
@@ -111,7 +100,7 @@ for ticker in tickers:
             "Short %": f"{short_pct:.1f}%",
             "AI Score": ai_score,
             "Signal": "",
-            "Tags": ", ".join(tag_list)
+            "Tags": ", ".join(tag_list[1:])
         })
 
     except Exception as e:
@@ -130,14 +119,13 @@ if not df.empty:
         df = df[df["Signal"] == selected_signal]
 
     def highlight_signal(val):
-        color = ""
         if val == "BUY":
-            color = "background-color: #16a34a; color: white;"
+            return "background-color: #16a34a; color: white;"
         elif val == "WATCH":
-            color = "background-color: #facc15; color: black;"
+            return "background-color: #facc15; color: black;"
         elif val == "AVOID":
-            color = "background-color: #dc2626; color: white;"
-        return color
+            return "background-color: #dc2626; color: white;"
+        return ""
 
     styled_df = df.style.applymap(highlight_signal, subset=["Signal"])
     st.dataframe(styled_df, use_container_width=True)
