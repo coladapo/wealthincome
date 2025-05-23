@@ -111,16 +111,20 @@ tab1, tab2, tab3 = st.tabs(["🔍 Finviz Scanner", "📋 My Watchlist", "📘 Ho
 with tab1:
     st.markdown("### 🔍 Stock Scanner")
     
-    col1, col2 = st.columns([3, 1])
+    # Single row layout for better alignment
+    col1, col2 = st.columns([4, 1])
     
     with col1:
         preset = st.selectbox(
             "Choose a screener:",
             options=list(SCREENER_PRESETS.keys()),
-            help="Select from Yahoo Finance screeners or manual entry"
+            help="Select from Yahoo Finance screeners or manual entry",
+            label_visibility="visible"
         )
     
     with col2:
+        # Add spacing to align button with selectbox
+        st.markdown("<div style='height: 25px'></div>", unsafe_allow_html=True)
         scan_button = st.button("🔄 Get Stocks", type="primary", use_container_width=True)
     
     # Handle different preset types
@@ -137,33 +141,74 @@ with tab1:
             st.session_state.finviz_tickers = ticker_list
             st.success(f"✅ Added {len(ticker_list)} stocks!")
             
-    elif preset == "🎯 Custom URL (Finviz)":
-        st.warning("⚠️ Finviz has strong anti-scraping protection. Consider using Manual Entry instead.")
-        custom_url = st.text_input(
-            "Paste your Finviz URL (may not work due to their protection):",
-            placeholder="https://finviz.com/screener.ashx?v=111&f=..."
+    elif preset == "📋 Import from URL/List":
+        import_option = st.radio(
+            "Import method:",
+            ["Paste from any screener", "Upload CSV file", "Connect to TradingView"]
         )
         
-        if scan_button and custom_url:
-            with st.spinner("Attempting to fetch from Finviz..."):
-                tickers = scrape_finviz_tickers(custom_url)
-                if tickers:
+        if import_option == "Paste from any screener":
+            st.info("💡 Go to any screener (Finviz, TradingView, etc.), copy the tickers, and paste below")
+            import_text = st.text_area(
+                "Paste tickers (comma or space separated):",
+                placeholder="Can be formatted as: AAPL MSFT GOOGL or AAPL,MSFT,GOOGL",
+                help="Works with any format - commas, spaces, or line breaks"
+            )
+            
+            if scan_button and import_text:
+                # Clean and extract tickers from any format
+                import re
+                tickers = re.findall(r'\b[A-Z]{1,5}\b', import_text.upper())
+                st.session_state.finviz_tickers = list(set(tickers))  # Remove duplicates
+                st.success(f"✅ Imported {len(st.session_state.finviz_tickers)} unique tickers!")
+                
+        elif import_option == "Upload CSV file":
+            uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+            if uploaded_file and scan_button:
+                df = pd.read_csv(uploaded_file)
+                # Try to find ticker column
+                ticker_columns = [col for col in df.columns if 'ticker' in col.lower() or 'symbol' in col.lower()]
+                if ticker_columns:
+                    tickers = df[ticker_columns[0]].dropna().str.upper().tolist()
                     st.session_state.finviz_tickers = tickers
-                    st.success(f"✅ Found {len(tickers)} stocks!")
-                else:
-                    st.error("Could not fetch from Finviz. Please use Manual Entry instead.")
+                    st.success(f"✅ Imported {len(tickers)} tickers from CSV!")
                     
     else:
-        # Yahoo Finance presets
+        # Live scanning options
         if scan_button:
-            preset_key = SCREENER_PRESETS[preset]
-            with st.spinner(f"Getting {preset} stocks..."):
-                tickers = get_yahoo_screener_stocks(preset_key)
-                if tickers:
-                    st.session_state.finviz_tickers = tickers
-                    st.success(f"✅ Found {len(tickers)} stocks!")
+            scan_key = SCREENER_OPTIONS[preset]
+            
+            if scan_key in ["volume_gainers", "price_gainers", "momentum", "breakouts", "unusual"]:
+                st.info(f"🔍 Running live scan: {preset}")
+                st.warning("This scans real-time data and may take 1-2 minutes...")
+                
+                # Option to use custom universe
+                use_custom = st.checkbox("Use custom stock universe (faster)")
+                if use_custom:
+                    custom_universe = st.text_input(
+                        "Enter stocks to scan (comma-separated):",
+                        value="AAPL,MSFT,GOOGL,TSLA,NVDA,AMD,SOFI,PLTR,GME,AMC",
+                        help="Limit the scan to specific stocks for faster results"
+                    )
+                    universe = [s.strip().upper() for s in custom_universe.split(",")]
                 else:
-                    st.error("No stocks found for this preset.")
+                    universe = None
+                
+                # Run the live scan
+                results = scan_live_stocks(scan_key, universe)
+                
+                if results:
+                    # Convert to ticker list
+                    tickers = [r['ticker'] for r in results]
+                    st.session_state.finviz_tickers = tickers
+                    st.success(f"✅ Found {len(tickers)} stocks matching criteria!")
+                    
+                    # Show quick preview of results
+                    preview_df = pd.DataFrame(results).head(10)
+                    st.markdown("**Preview of top 10 results:**")
+                    st.dataframe(preview_df)
+                else:
+                    st.warning("No stocks found matching the criteria. Try different settings.")
     
     # Display and analyze results (moved outside the conditionals)
     if st.session_state.finviz_tickers:
