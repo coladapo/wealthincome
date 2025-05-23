@@ -99,42 +99,15 @@ def get_yahoo_screener_stocks(preset):
         st.error(f"Error getting stocks: {str(e)}")
         return []
 
-# Alternative: Get stocks by criteria using yfinance
-def screen_stocks_by_criteria(min_volume=1000000, min_price=5, max_price=50, limit=50):
-    """Screen stocks based on criteria using Yahoo Finance data"""
-    try:
-        # Get a list of liquid stocks (you can expand this)
-        # Using S&P 500 + popular stocks as universe
-        universe = ['AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'TSLA', 'BRK.B', 'JPM', 'JNJ',
-                   'V', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'NFLX', 'CRM', 'PFE',
-                   'AMD', 'INTC', 'CSCO', 'PEP', 'TMO', 'ABT', 'VZ', 'WMT', 'CVX', 'KO', 'NKE', 'MRK',
-                   'SOFI', 'PLTR', 'PLUG', 'RIOT', 'MARA', 'BB', 'NOK', 'F', 'GE', 'BAC', 'T', 'CCL',
-                   'AAL', 'NCLH', 'MGM', 'WYNN', 'DKNG', 'PENN', 'COIN', 'HOOD', 'RBLX', 'SNAP', 'PINS']
-        
-        screened = []
-        
-        for ticker in universe[:limit]:  # Limit to prevent too many API calls
-            try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                
-                price = info.get('regularMarketPrice', 0)
-                volume = info.get('regularMarketVolume', 0)
-                
-                if (price >= min_price and price <= max_price and volume >= min_volume):
-                    screened.append(ticker)
-                    
-            except:
-                continue
-                
-        return screened
-        
-    except Exception as e:
-        return []
+# ─── Finviz Scraper Function (kept for legacy/custom URL support) ─────────────
+def scrape_finviz_tickers(url):
+    """Legacy function for Finviz scraping - usually blocked"""
+    return []  # Return empty list since Finviz blocks scraping
 
 # ─── Main Interface Tabs ──────────────────────────────────────────────────────
 tab1, tab2, tab3 = st.tabs(["🔍 Finviz Scanner", "📋 My Watchlist", "📘 How It Works"])
 
+# ─── Tab 1: Stock Scanner ──────────────────────────────────────────────────
 with tab1:
     st.markdown("### 🔍 Stock Scanner")
     
@@ -192,42 +165,93 @@ with tab1:
                 else:
                     st.error("No stocks found for this preset.")
     
-    # Scan button action
-    if scan_button and finviz_url and finviz_url != "custom":
-        with st.spinner("🔍 Scanning Finviz... (this may take a moment)"):
-            tickers = scrape_finviz_tickers(finviz_url)
-            if tickers:
-                st.session_state.finviz_tickers = tickers
-                st.success(f"✅ Found {len(tickers)} stocks from Finviz!")
-            else:
-                st.error("No tickers found. This could be due to:")
-                st.info("""
-                **Possible solutions:**
-                1. **Manual entry**: Copy tickers from Finviz and paste them below
-                2. **Try a different screener preset**
-                3. **Check if the URL is correct**
-                
-                **Alternative: Manual Ticker Entry** 👇
-                """)
-                
-                # Fallback: Manual ticker entry
-                manual_tickers = st.text_area(
-                    "Paste tickers here (comma-separated):",
-                    placeholder="AAPL, MSFT, GOOGL, TSLA",
-                    help="Go to Finviz, copy the tickers, and paste them here"
-                )
-                
-                if manual_tickers:
-                    ticker_list = [t.strip().upper() for t in manual_tickers.split(",") if t.strip()]
-                    if st.button("➕ Add Manual Tickers"):
-                        st.session_state.finviz_tickers = ticker_list
-                        st.success(f"Added {len(ticker_list)} tickers!")
-                        st.rerun()
+    # Display and analyze results (moved outside the conditionals)
+    if st.session_state.finviz_tickers:
+        st.markdown("---")
+        st.markdown(f"### 📊 Analyzing {len(st.session_state.finviz_tickers)} Stocks")
     
     # Display Finviz results and analyze
     if st.session_state.finviz_tickers:
         st.markdown("---")
-        st.markdown(f"### 📊 Analyzing {len(st.session_state.finviz_tickers)} Stocks from Finviz")
+        st.markdown(f"### 📊 Analyzing {len(st.session_state.finviz_tickers)} Stocks")
+        
+        # Fetch and analyze data
+        with st.spinner(f"Analyzing {len(st.session_state.finviz_tickers)} stocks..."):
+            data = []
+            progress_bar = st.progress(0)
+            
+            for i, ticker in enumerate(st.session_state.finviz_tickers):
+                try:
+                    tkr = yf.Ticker(ticker)
+                    info = tkr.info
+                    
+                    if not info:
+                        continue
+                    
+                    hist = tkr.history(period="1mo")
+                    
+                    # Get price data
+                    price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose", 0)
+                    prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose", price)
+                    
+                    # Calculate % change
+                    if prev_close and prev_close != 0:
+                        change = ((price - prev_close) / prev_close) * 100
+                    else:
+                        change = info.get("regularMarketChangePercent", 0) or 0
+                    
+                    # Volume calculations
+                    volume = info.get("volume") or info.get("regularMarketVolume", 0)
+                    avg_volume = info.get("averageVolume") or info.get("averageDailyVolume10Day", 1)
+                    rvol = volume / avg_volume if avg_volume > 0 else 0
+                    
+                    # Short interest
+                    short_pct = info.get("shortPercentOfFloat", 0) or 0
+                    if short_pct > 0:
+                        short_pct = short_pct * 100
+                    
+                    # Market cap
+                    market_cap = info.get("marketCap", 0)
+                    if market_cap > 1e9:
+                        cap_str = f"${market_cap/1e9:.1f}B"
+                    elif market_cap > 1e6:
+                        cap_str = f"${market_cap/1e6:.0f}M"
+                    else:
+                        cap_str = "N/A"
+                    
+                    ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
+                    
+                    # Build tags
+                    tags = []
+                    if change >= 2 and rvol >= 1.5:
+                        tags.append("🔁 Momentum")
+                    if not hist.empty and len(hist) >= 20:
+                        try:
+                            high_20d = hist["High"].rolling(20).max().iloc[-1]
+                            if price > high_20d:
+                                tags.append("📈 Breakout")
+                        except:
+                            pass
+                    
+                    data.append({
+                        "Select": ticker in st.session_state.selected_tickers,
+                        "Ticker": ticker,
+                        "Price": f"${price:.2f}",
+                        "% Change": f"{change:.2f}%",
+                        "RVOL": round(rvol, 2),
+                        "Short %": f"{short_pct:.1f}%",
+                        "Market Cap": cap_str,
+                        "AI Score": ai_score,
+                        "Signal": "",
+                        "Tags": ", ".join(tags)
+                    })
+                    
+                except:
+                    continue
+                
+                progress_bar.progress((i + 1) / len(st.session_state.finviz_tickers))
+            
+            progress_bar.empty()
         
         # Fetch and analyze data
         with st.spinner(f"Analyzing {len(st.session_state.finviz_tickers)} stocks..."):
