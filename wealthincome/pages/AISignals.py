@@ -2,122 +2,111 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-# Page Setup
+# ─── Page Setup ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
-# Pasteable Ticker Input (Finviz style)
-default = "AVGO,MRVL,CRWD,BJ,FL,S,Z,PANW,NET,DG,LMT,FDX,CVX,XOM,EQT,HOOD,COIN,DDOG,VIX,MARA,MDB,XLV,BA,CMG,VRT,TXN,LRCX,GOOGL,SNOW,CRM,DELL,X,XLK,XLY,WM,BBY,R,M,KSS,TGT,TJX,WMT,AMZN,GFI,MSTR,TSM,NFLX,PLTR,CVS,UBER,HUBS,HIMS,AMD,SMCI,ANET,VST,BABA,BL,JNJ,MS,ASML,IBM,ALLY,AXP,PG,META,LLY,ENPH,TMQ,MCO,MSFT,V,BTC,ETH,IBIT,QQQ,NVDA,LOW,COST,VOO,CRVW,QSI,QBTS,SPY,TSLA,ULTA,EQIX,INTC,BSX,SMH"
-user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=default)
+# ─── Pasteable Tickers Input ───────────────────────────────────────────────────
+default = (
+    "AVGO,MRVL,CRWD,BJ,FL,S,Z,PANW,NET,DG,LMT,FDX,CVX,XOM,EQT,"
+    "HOOD,COIN,DDOG,VIX,MARA,MDB,XLV,BA,CMG,VRT,TXN,LRCX,GOOGL,SNOW,CRM,DELL,"
+    "X,XLK,XLY,WM,BBY,R,M,KSS,TGT,TJX,WMT,AMZN,GFI,MSTR,TSM,NFLX,PLTR,CVS,"
+    "UBER,HUBS,HIMS,AMD,SMCI,ANET,VST,BABA,BL,JNJ,MS,ASML,IBM,ALLY,AXP,PG,"
+    "META,LLY,ENPH,TMQ,MCO,MSFT,V,BTC,ETH,IBIT,QQQ,NVDA,LOW,COST,VOO,CRVW,"
+    "QSI,QBTS,SPY,TSLA,ULTA,EQIX,INTC,BSX,SMH"
+)
+user_input = st.text_input(
+    "📋 Paste Tickers from Finviz (comma-separated):",
+    value=default,
+)
 tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
 
-# How This Screener Works
+# ─── Screener Logic Explainer ──────────────────────────────────────────────────
 with st.expander("📘 How This Screener Works"):
     st.markdown("""
-This tool scans the market for **momentum setups** using the logic below:
+This tool scans the market for **momentum setups** using:
 
-### 📊 Key Metrics:
-- **% Change** – today's movement
-- **RVOL** – relative volume
-- **Short %** – short interest float
+- **% Change** ×2  
+- **RVOL** (rel. vol) ×10  
+- **Short %** ×2  
 
-### 🧠 AI Score Formula:
-```text
-AI Score = (% Change × 2) + (RVOL × 10) + (Short % × 2)
-```
-This composite score ranks stocks by **momentum + volume + sentiment**.
+**BUY** ≥ 60, **WATCH** ≥ 45, **AVOID** < 45  
+""")
 
-### 🏁 Signals:
-- 🟢 **BUY** if Score ≥ 60
-- 🟡 **WATCH** if Score ≥ 45
-- 🔴 **AVOID** if Score < 45
+# ─── Signal Filter ─────────────────────────────────────────────────────────────
+selected_signal = st.selectbox(
+    "📍 Filter by Signal",
+    options=["All", "BUY", "WATCH", "AVOID"],
+)
 
-Use the **signal dropdown below** to focus on actionable opportunities.
-
-🕐 **Tip:** Use this screener before market open or during **power hour** (last hour of trading).
-
-⏰ **Market Hours Reference:**
-
-| Location      | Market Open | Power Hour      |
-|---------------|-------------|-----------------|
-| Los Angeles 🇺🇸 | 6:30 AM PST | 12:00 – 1:00 PM PST |
-| London 🇬🇧     | 8:00 AM GMT | 3:00 – 4:00 PM GMT |
-    """)
-
-# Filter dropdown
-selected_signal = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
-
-# Fetch and compute
-data = []
-for ticker in tickers:
+# ─── Fetch Data & Compute Scores ───────────────────────────────────────────────
+records = []
+for sym in tickers:
     try:
-        info = yf.Ticker(ticker).info
-        hist = yf.Ticker(ticker).history(period="1mo")
+        tk = yf.Ticker(sym)
+        info = tk.info
+        hist = tk.history(period="1mo")
 
-        price = info.get("regularMarketPrice", 0)
-        change = info.get("regularMarketChangePercent", 0)
-        rvol = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
-        short_pct = info.get("shortPercentOfFloat", 0) * 100
+        price = info.get("regularMarketPrice", 0) or 0
+        change = info.get("regularMarketChangePercent", 0) or 0
+        rvol = (info.get("regularMarketVolume", 1) or 1) / (info.get("averageVolume", 1) or 1)
+        short_pct = (info.get("shortPercentOfFloat", 0) or 0) * 100
 
         ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
-        # Tags
-        tag_list = []
-
-        # Top Pick
-        tag_list.append("")  # Will assign Top Pick later
-
-        # Momentum: high % change + high rvol
+        # build tags
+        tags = []
         if change >= 2 and rvol >= 1.5:
-            tag_list.append("🔁 Momentum")
-
-        # Breakout Alert: today’s price > 20-day high
+            tags.append("🔁 Momentum")
         if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
-            tag_list.append("📈 Breakout")
+            tags.append("📈 Breakout")
 
-        data.append({
-            "Ticker": ticker,
+        records.append({
+            "Ticker": sym,
             "Price": f"${price:.2f}",
             "% Change": f"{change:.2f}%",
             "RVOL": round(rvol, 3),
             "Short %": f"{short_pct:.1f}%",
             "AI Score": ai_score,
-            "Signal": "",  # Set later
-            "Tags": ", ".join(tag_list[1:])  # omit placeholder
+            "Signal": "",  # filled next
+            "Tags": ", ".join(tags),
         })
 
-    except Exception as e:
-        print(f"Error fetching data for {ticker}: {e}")
+    except Exception:
+        # skip missing or invalid tickers
+        pass
 
-# Create DataFrame
-df = pd.DataFrame(data)
+df = pd.DataFrame(records)
 
+# ─── Post‑process & Display ────────────────────────────────────────────────────
 if not df.empty:
-    # Set Signal
-    df["Signal"] = df["AI Score"].apply(lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID")
+    # 1) assign signals
+    df["Signal"] = df["AI Score"].apply(
+        lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
+    )
 
-    # Set Top Pick tag
-    top_idx = df["AI Score"].idxmax()
-    if pd.notna(top_idx):
-        current_tags = df.at[top_idx, "Tags"]
-        df.at[top_idx, "Tags"] = ("🏆 Top Pick" + (", " + current_tags if current_tags else ""))
+    # 2) tag top pick
+    top = df["AI Score"].idxmax()
+    if pd.notna(top):
+        df.at[top, "Tags"] = "🏆 Top Pick" + (", " + df.at[top, "Tags"] if df.at[top, "Tags"] else "")
 
-    # Apply signal filter
+    # 3) filter by signal dropdown
     if selected_signal != "All":
         df = df[df["Signal"] == selected_signal]
 
-    # Custom color formatting
-    def highlight_signal(val):
-        color = ""
-        if val == "BUY":
-            color = "background-color: #16a34a; color: white;"
-        elif val == "WATCH":
-            color = "background-color: #facc15; color: black;"
-        elif val == "AVOID":
-            color = "background-color: #dc2626; color: white;"
-        return color
+    # 4) sort: all BUY first, then by AI Score descending
+    df["__sort_key"] = df["Signal"].map({"BUY": 0, "WATCH": 1, "AVOID": 2})
+    df = df.sort_values(["__sort_key", "AI Score"], ascending=[True, False]).drop(columns="__sort_key")
 
-    styled_df = df.style.applymap(highlight_signal, subset=["Signal"])
-    st.dataframe(styled_df, use_container_width=True)
+    # 5) style colors
+    def _color_sig(val):
+        if val == "BUY":   return "background-color: #16a34a; color: white;"
+        if val == "WATCH": return "background-color: #facc15; color: black;"
+        if val == "AVOID": return "background-color: #dc2626; color: white;"
+        return ""
+
+    styled = df.style.applymap(_color_sig, subset=["Signal"])
+    st.dataframe(styled, use_container_width=True)
+
 else:
-    st.warning("No data available. Please check the tickers.")
+    st.warning("No data available. Check your tickers and try again.")
