@@ -4,274 +4,462 @@ import yfinance as yf
 import json
 from pathlib import Path
 import time
+import requests
+from bs4 import BeautifulSoup
+import re
 
 # ─── Page Setup ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
-st.title("🧠 AI Stock Screener")
+st.title("🧠 AI Stock Screener with Finviz Integration")
 
 # ─── State Management ─────────────────────────────────────────────────────────
-# Initialize session state
-if 'tickers' not in st.session_state:
-    st.session_state.tickers = "KSS,QBTS,QSI,MARA,SNOW,HIMS,SMCI,FL,ENPH,BL"
+if 'watchlist' not in st.session_state:
+    st.session_state.watchlist = []
+if 'finviz_tickers' not in st.session_state:
+    st.session_state.finviz_tickers = []
+if 'selected_tickers' not in st.session_state:
+    st.session_state.selected_tickers = set()
 
 # Local file storage for persistence
-STORAGE_FILE = Path("ticker_storage.json")
+WATCHLIST_FILE = Path("watchlist_storage.json")
 
-def load_tickers():
-    """Load tickers from storage file or return default"""
-    if STORAGE_FILE.exists():
+def load_watchlist():
+    """Load watchlist from storage file"""
+    if WATCHLIST_FILE.exists():
         try:
-            with open(STORAGE_FILE, 'r') as f:
+            with open(WATCHLIST_FILE, 'r') as f:
                 data = json.load(f)
-                return data.get('tickers', st.session_state.tickers)
-        except Exception as e:
-            st.error(f"Error loading saved tickers: {str(e)}")
-            return st.session_state.tickers
-    return st.session_state.tickers
+                return data.get('watchlist', [])
+        except:
+            return []
+    return []
 
-def save_tickers(tickers):
-    """Save tickers to storage file"""
+def save_watchlist(watchlist):
+    """Save watchlist to storage file"""
     try:
-        with open(STORAGE_FILE, 'w') as f:
-            json.dump({'tickers': tickers}, f)
+        with open(WATCHLIST_FILE, 'w') as f:
+            json.dump({'watchlist': watchlist}, f)
+    except:
+        pass
+
+# Load saved watchlist
+st.session_state.watchlist = load_watchlist()
+
+# ─── Finviz Screener Presets ──────────────────────────────────────────────────
+FINVIZ_PRESETS = {
+    "🚀 High Volume Movers": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,ta_change_u5,ta_volatility_o3&ft=4",
+    "📈 Momentum Stocks": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o10,ta_perf_d5o,ta_rsi_os50&ft=4",
+    "🔥 Short Squeeze Candidates": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,sh_short_o20&ft=4",
+    "💎 Breakout Patterns": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,ta_pattern_channelup,ta_perf_dup&ft=4",
+    "📊 High Relative Volume": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,sh_relvol_o2&ft=4",
+    "🎯 Custom URL": "custom"
+}
+
+# ─── Finviz Scraper Function ──────────────────────────────────────────────────
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def scrape_finviz_tickers(url):
+    """Scrape tickers from Finviz screener URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Find ticker links
+        tickers = []
+        ticker_links = soup.find_all('a', class_='screener-link-primary')
+        
+        for link in ticker_links:
+            ticker = link.text.strip()
+            if ticker and len(ticker) <= 5:  # Valid ticker length
+                tickers.append(ticker)
+        
+        return list(set(tickers))  # Remove duplicates
     except Exception as e:
-        st.error(f"Error saving tickers: {str(e)}")
+        st.error(f"Error fetching from Finviz: {str(e)}")
+        return []
 
-# Load saved tickers
-saved_tickers = load_tickers()
+# ─── Main Interface Tabs ──────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs(["🔍 Finviz Scanner", "📋 My Watchlist", "📘 How It Works"])
 
-# ─── Pasteable Ticker Input ────────────────────────────────────────────────────
-user_input = st.text_input(
-    "📋 Paste Tickers from Finviz (comma-separated):", 
-    value=saved_tickers,
-    key="ticker_input"
-)
-
-# Update session state and save to file when input changes
-if user_input != st.session_state.tickers:
-    st.session_state.tickers = user_input
-    save_tickers(user_input)
-
-tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
-
-# Add/Remove ticker functionality
-col1, col2, col3 = st.columns([2, 2, 8])
-with col1:
-    new_ticker = st.text_input("Add ticker:", key="add_ticker")
-    if st.button("➕ Add") and new_ticker:
-        new_ticker = new_ticker.strip().upper()
-        if new_ticker and new_ticker not in tickers:
-            tickers.append(new_ticker)
-            updated_input = ",".join(tickers)
-            st.session_state.tickers = updated_input
-            save_tickers(updated_input)
-            st.rerun()
-
-with col2:
-    if tickers:
-        remove_ticker = st.selectbox("Remove ticker:", [""] + tickers, key="remove_ticker")
-        if st.button("➖ Remove") and remove_ticker:
-            tickers.remove(remove_ticker)
-            updated_input = ",".join(tickers)
-            st.session_state.tickers = updated_input
-            save_tickers(updated_input)
-            st.rerun()
-
-# ─── How This Screener Works ──────────────────────────────────────────────────
-with st.expander("📘 How This Screener Works"):
-    st.markdown("""
-This tool scans the market for **momentum setups** using three metrics:
-
-1. **% Change** – today's price move  
-2. **RVOL** – relative volume (= today's volume / avg. volume)  
-3. **Short %** – short interest as % of float  
-
-🧠 **AI Score** = (% Change × 2) + (RVOL × 10) + (Short % × 2)
-
-🏁 **Signals**  
-- 🟢 **BUY** if Score ≥ 60  
-- 🟡 **WATCH** if Score ≥ 45  
-- 🔴 **AVOID** if Score < 45  
-
-🔖 **Tags Logic**  
-- 🏆 **Top Pick** – highest AI Score in the list  
-- 🔁 **Momentum** – % Change ≥ 2% **and** RVOL ≥ 1.5  
-- 📈 **Breakout** – price > 20‑day high  
-
-Use the **signal dropdown** below to filter to BUY, WATCH, or AVOID.
-    """)
-
-# ─── Filter Dropdown ───────────────────────────────────────────────────────────
-selected_signal = st.selectbox("📍 Filter by Signal", ["All", "BUY", "WATCH", "AVOID"])
-
-# ─── Fetch Data Function ───────────────────────────────────────────────────────
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def fetch_all_stock_data(ticker_list):
-    """Fetch data for all tickers with caching"""
-    data = []
-    for ticker in ticker_list:
-        try:
-            tkr = yf.Ticker(ticker)
-            info = tkr.info
-            
-            # Sometimes yfinance returns None for info
-            if not info:
-                continue
-                
-            hist = tkr.history(period="1mo")
-
-            # Get values with better error handling
-            price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose", 0)
-            prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose", price)
-            
-            # Calculate % change manually if not provided
-            if prev_close and prev_close != 0:
-                change = ((price - prev_close) / prev_close) * 100
+with tab1:
+    st.markdown("### 🔍 Scan Finviz for Stocks")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        preset = st.selectbox(
+            "Choose a preset screener or paste custom URL:",
+            options=list(FINVIZ_PRESETS.keys()),
+            help="Select a pre-configured screener or choose 'Custom URL' to paste your own"
+        )
+    
+    with col2:
+        scan_button = st.button("🔄 Scan Finviz", type="primary", use_container_width=True)
+    
+    # Custom URL input
+    if preset == "🎯 Custom URL":
+        custom_url = st.text_input(
+            "Paste your Finviz screener URL:",
+            placeholder="https://finviz.com/screener.ashx?v=111&f=..."
+        )
+        finviz_url = custom_url
+    else:
+        finviz_url = FINVIZ_PRESETS[preset]
+    
+    # Scan button action
+    if scan_button and finviz_url and finviz_url != "custom":
+        with st.spinner("🔍 Scanning Finviz..."):
+            tickers = scrape_finviz_tickers(finviz_url)
+            if tickers:
+                st.session_state.finviz_tickers = tickers
+                st.success(f"✅ Found {len(tickers)} stocks from Finviz!")
             else:
-                change = info.get("regularMarketChangePercent", 0) or 0
-            
-            # Volume calculations
-            volume = info.get("volume") or info.get("regularMarketVolume", 0)
-            avg_volume = info.get("averageVolume") or info.get("averageDailyVolume10Day", 1)
-            rvol = volume / avg_volume if avg_volume > 0 else 0
-            
-            # Short interest
-            short_pct = info.get("shortPercentOfFloat", 0) or 0
-            if short_pct > 0:
-                short_pct = short_pct * 100
-
-            ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
-
-            # Build tags
-            tags = []
-            if change >= 2 and rvol >= 1.5:
-                tags.append("🔁 Momentum")
-            if not hist.empty and len(hist) >= 20:
-                try:
-                    high_20d = hist["High"].rolling(20).max().iloc[-1]
-                    if price > high_20d:
-                        tags.append("📈 Breakout")
-                except:
-                    pass
-
-            data.append({
-                "Ticker": ticker,
-                "Price": f"${price:.2f}",
-                "% Change": f"{change:.2f}%",
-                "RVOL": round(rvol, 3),
-                "Short %": f"{short_pct:.1f}%",
-                "AI Score": ai_score,
-                "Signal": "",  # placeholder
-                "Tags": ", ".join(tags),
-                "_change_raw": change,  # for sorting
-                "_price_raw": price  # for export
-            })
-
-        except Exception as e:
-            st.warning(f"Failed to fetch data for {ticker}: {str(e)}")
-            continue
+                st.error("No tickers found. Check the URL or try a different screener.")
     
-    return data
-
-# ─── Fetch and Display Data ────────────────────────────────────────────────────
-if tickers:
-    # Show progress
-    with st.spinner(f"Fetching data for {len(tickers)} tickers..."):
-        data = fetch_all_stock_data(tickers)
-    
-    if data:
-        df = pd.DataFrame(data)
-        
-        # Assign Signal
-        df["Signal"] = df["AI Score"].apply(
-            lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
-        )
-
-        # Tag the top AI Score
-        if len(df) > 0:
-            top_idx = df["AI Score"].idxmax()
-            current_tags = df.at[top_idx, "Tags"]
-            df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + current_tags if current_tags else "")
-
-        # Filter by signal
-        if selected_signal != "All":
-            df = df[df["Signal"] == selected_signal]
-
-        # Sort: BUY first, then by AI Score
-        df["_signal_sort"] = df["Signal"].map({"BUY": 0, "WATCH": 1, "AVOID": 2})
-        df = df.sort_values(
-            by=["_signal_sort", "AI Score"], 
-            ascending=[True, False]
-        ).reset_index(drop=True)
-
-        # Select columns to display
-        display_cols = ["Ticker", "Signal", "Tags", "Price", "% Change", "RVOL", "Short %", "AI Score"]
-        display_df = df[display_cols]
-
-        # Style the dataframe
-        def highlight_signal(val):
-            if val == "BUY":
-                return "background-color: #16a34a; color: white; font-weight: bold;"
-            elif val == "WATCH":
-                return "background-color: #facc15; color: black; font-weight: bold;"
-            elif val == "AVOID":
-                return "background-color: #dc2626; color: white; font-weight: bold;"
-            return ""
-
-        styled = display_df.style.applymap(highlight_signal, subset=["Signal"])
-        
-        # Display the dataframe
-        st.dataframe(
-            styled, 
-            use_container_width=True, 
-            height=400,
-            hide_index=True
-        )
-
-        # ─── Export and Stats Row ─────────────────────────────────────────────
+    # Display Finviz results and analyze
+    if st.session_state.finviz_tickers:
         st.markdown("---")
+        st.markdown(f"### 📊 Analyzing {len(st.session_state.finviz_tickers)} Stocks from Finviz")
         
-        col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
-        
-        with col1:
-            buy_count = len(df[df["Signal"] == "BUY"])
-            st.metric("🟢 BUY", buy_count)
-        
-        with col2:
-            watch_count = len(df[df["Signal"] == "WATCH"])
-            st.metric("🟡 WATCH", watch_count)
-        
-        with col3:
-            avoid_count = len(df[df["Signal"] == "AVOID"])
-            st.metric("🔴 AVOID", avoid_count)
-        
-        with col4:
-            avg_score = df["AI Score"].mean()
-            st.metric("📈 Avg Score", f"{avg_score:.1f}")
-        
-        with col5:
-            # Prepare CSV for download
-            export_df = df[display_cols].copy()
-            csv = export_df.to_csv(index=False)
+        # Fetch and analyze data
+        with st.spinner(f"Analyzing {len(st.session_state.finviz_tickers)} stocks..."):
+            data = []
+            progress_bar = st.progress(0)
             
-            st.download_button(
-                label="📥 Export to CSV",
-                data=csv,
-                file_name=f"ai_screener_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                help="Download the screener results as CSV"
+            for i, ticker in enumerate(st.session_state.finviz_tickers):
+                try:
+                    tkr = yf.Ticker(ticker)
+                    info = tkr.info
+                    
+                    if not info:
+                        continue
+                    
+                    hist = tkr.history(period="1mo")
+                    
+                    # Get price data
+                    price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose", 0)
+                    prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose", price)
+                    
+                    # Calculate % change
+                    if prev_close and prev_close != 0:
+                        change = ((price - prev_close) / prev_close) * 100
+                    else:
+                        change = info.get("regularMarketChangePercent", 0) or 0
+                    
+                    # Volume calculations
+                    volume = info.get("volume") or info.get("regularMarketVolume", 0)
+                    avg_volume = info.get("averageVolume") or info.get("averageDailyVolume10Day", 1)
+                    rvol = volume / avg_volume if avg_volume > 0 else 0
+                    
+                    # Short interest
+                    short_pct = info.get("shortPercentOfFloat", 0) or 0
+                    if short_pct > 0:
+                        short_pct = short_pct * 100
+                    
+                    # Market cap
+                    market_cap = info.get("marketCap", 0)
+                    if market_cap > 1e9:
+                        cap_str = f"${market_cap/1e9:.1f}B"
+                    elif market_cap > 1e6:
+                        cap_str = f"${market_cap/1e6:.0f}M"
+                    else:
+                        cap_str = "N/A"
+                    
+                    ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
+                    
+                    # Build tags
+                    tags = []
+                    if change >= 2 and rvol >= 1.5:
+                        tags.append("🔁 Momentum")
+                    if not hist.empty and len(hist) >= 20:
+                        try:
+                            high_20d = hist["High"].rolling(20).max().iloc[-1]
+                            if price > high_20d:
+                                tags.append("📈 Breakout")
+                        except:
+                            pass
+                    
+                    data.append({
+                        "Select": ticker in st.session_state.selected_tickers,
+                        "Ticker": ticker,
+                        "Price": f"${price:.2f}",
+                        "% Change": f"{change:.2f}%",
+                        "RVOL": round(rvol, 2),
+                        "Short %": f"{short_pct:.1f}%",
+                        "Market Cap": cap_str,
+                        "AI Score": ai_score,
+                        "Signal": "",
+                        "Tags": ", ".join(tags)
+                    })
+                    
+                except:
+                    continue
+                
+                progress_bar.progress((i + 1) / len(st.session_state.finviz_tickers))
+            
+            progress_bar.empty()
+        
+        if data:
+            df = pd.DataFrame(data)
+            
+            # Assign signals
+            df["Signal"] = df["AI Score"].apply(
+                lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
             )
             
-            # Optional: Add refresh button
-            if st.button("🔄 Refresh Data"):
-                st.cache_data.clear()
-                st.rerun()
+            # Sort by AI Score
+            df = df.sort_values("AI Score", ascending=False).reset_index(drop=True)
+            
+            # Selection interface
+            st.markdown("#### ✅ Select stocks to add to your watchlist:")
+            
+            # Quick select buttons
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if st.button("Select All BUY"):
+                    buy_tickers = df[df["Signal"] == "BUY"]["Ticker"].tolist()
+                    st.session_state.selected_tickers.update(buy_tickers)
+                    st.rerun()
+            with col2:
+                if st.button("Select Top 10"):
+                    top_tickers = df.head(10)["Ticker"].tolist()
+                    st.session_state.selected_tickers.update(top_tickers)
+                    st.rerun()
+            with col3:
+                if st.button("Clear Selection"):
+                    st.session_state.selected_tickers.clear()
+                    st.rerun()
+            with col4:
+                if st.button("🎯 Add to Watchlist", type="primary"):
+                    if st.session_state.selected_tickers:
+                        new_tickers = [t for t in st.session_state.selected_tickers 
+                                     if t not in st.session_state.watchlist]
+                        st.session_state.watchlist.extend(new_tickers)
+                        save_watchlist(st.session_state.watchlist)
+                        st.success(f"Added {len(new_tickers)} stocks to watchlist!")
+                        st.session_state.selected_tickers.clear()
+                        time.sleep(1)
+                        st.rerun()
+            
+            # Display table with checkboxes
+            for idx, row in df.iterrows():
+                cols = st.columns([0.5, 1, 1, 1, 1, 1, 1, 1, 1, 2])
+                
+                with cols[0]:
+                    if st.checkbox("", key=f"check_{row['Ticker']}", 
+                                 value=row['Ticker'] in st.session_state.selected_tickers):
+                        st.session_state.selected_tickers.add(row['Ticker'])
+                    else:
+                        st.session_state.selected_tickers.discard(row['Ticker'])
+                
+                with cols[1]:
+                    st.write(row['Ticker'])
+                with cols[2]:
+                    if row['Signal'] == "BUY":
+                        st.success(row['Signal'])
+                    elif row['Signal'] == "WATCH":
+                        st.warning(row['Signal'])
+                    else:
+                        st.error(row['Signal'])
+                with cols[3]:
+                    st.write(row['Price'])
+                with cols[4]:
+                    st.write(row['% Change'])
+                with cols[5]:
+                    st.write(row['RVOL'])
+                with cols[6]:
+                    st.write(row['Short %'])
+                with cols[7]:
+                    st.write(row['Market Cap'])
+                with cols[8]:
+                    st.write(row['AI Score'])
+                with cols[9]:
+                    st.write(row['Tags'])
+            
+            # Summary
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Selected", len(st.session_state.selected_tickers))
+            with col2:
+                buy_count = len(df[df["Signal"] == "BUY"])
+                st.metric("BUY Signals", buy_count)
+            with col3:
+                avg_score = df["AI Score"].mean()
+                st.metric("Avg AI Score", f"{avg_score:.1f}")
+            with col4:
+                top_score = df["AI Score"].max()
+                st.metric("Top Score", f"{top_score:.1f}")
 
+with tab2:
+    st.markdown("### 📋 My Watchlist")
+    
+    if st.session_state.watchlist:
+        # Manual ticker input
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            manual_ticker = st.text_input("Add ticker manually:", key="manual_add")
+        with col2:
+            if st.button("➕ Add", key="manual_add_btn"):
+                if manual_ticker and manual_ticker.upper() not in st.session_state.watchlist:
+                    st.session_state.watchlist.append(manual_ticker.upper())
+                    save_watchlist(st.session_state.watchlist)
+                    st.rerun()
+        
+        # Analyze watchlist
+        if st.button("🔄 Refresh Watchlist Data", type="primary"):
+            st.cache_data.clear()
+            st.rerun()
+        
+        # Display watchlist analysis
+        with st.spinner("Analyzing watchlist..."):
+            watchlist_data = []
+            
+            for ticker in st.session_state.watchlist:
+                try:
+                    tkr = yf.Ticker(ticker)
+                    info = tkr.info
+                    
+                    if not info:
+                        continue
+                    
+                    hist = tkr.history(period="1mo")
+                    
+                    price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose", 0)
+                    prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose", price)
+                    
+                    if prev_close and prev_close != 0:
+                        change = ((price - prev_close) / prev_close) * 100
+                    else:
+                        change = 0
+                    
+                    volume = info.get("volume") or info.get("regularMarketVolume", 0)
+                    avg_volume = info.get("averageVolume") or info.get("averageDailyVolume10Day", 1)
+                    rvol = volume / avg_volume if avg_volume > 0 else 0
+                    
+                    short_pct = info.get("shortPercentOfFloat", 0) or 0
+                    if short_pct > 0:
+                        short_pct = short_pct * 100
+                    
+                    ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
+                    
+                    tags = []
+                    if change >= 2 and rvol >= 1.5:
+                        tags.append("🔁 Momentum")
+                    if not hist.empty and len(hist) >= 20:
+                        try:
+                            high_20d = hist["High"].rolling(20).max().iloc[-1]
+                            if price > high_20d:
+                                tags.append("📈 Breakout")
+                        except:
+                            pass
+                    
+                    watchlist_data.append({
+                        "Ticker": ticker,
+                        "Price": f"${price:.2f}",
+                        "% Change": f"{change:.2f}%",
+                        "RVOL": round(rvol, 2),
+                        "Short %": f"{short_pct:.1f}%",
+                        "AI Score": ai_score,
+                        "Signal": "BUY" if ai_score >= 60 else "WATCH" if ai_score >= 45 else "AVOID",
+                        "Tags": ", ".join(tags),
+                        "Remove": False
+                    })
+                except:
+                    continue
+        
+        if watchlist_data:
+            watchlist_df = pd.DataFrame(watchlist_data)
+            
+            # Sort by AI Score
+            watchlist_df = watchlist_df.sort_values("AI Score", ascending=False).reset_index(drop=True)
+            
+            # Tag top pick
+            if len(watchlist_df) > 0:
+                top_idx = watchlist_df["AI Score"].idxmax()
+                current_tags = watchlist_df.at[top_idx, "Tags"]
+                watchlist_df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + current_tags if current_tags else "")
+            
+            # Display with remove buttons
+            for idx, row in watchlist_df.iterrows():
+                cols = st.columns([1, 1, 1, 1, 1, 1, 1, 2, 1])
+                
+                with cols[0]:
+                    st.write(row['Ticker'])
+                with cols[1]:
+                    if row['Signal'] == "BUY":
+                        st.success(row['Signal'])
+                    elif row['Signal'] == "WATCH":
+                        st.warning(row['Signal'])
+                    else:
+                        st.error(row['Signal'])
+                with cols[2]:
+                    st.write(row['Price'])
+                with cols[3]:
+                    st.write(row['% Change'])
+                with cols[4]:
+                    st.write(row['RVOL'])
+                with cols[5]:
+                    st.write(row['Short %'])
+                with cols[6]:
+                    st.write(row['AI Score'])
+                with cols[7]:
+                    st.write(row['Tags'])
+                with cols[8]:
+                    if st.button("❌", key=f"remove_{row['Ticker']}"):
+                        st.session_state.watchlist.remove(row['Ticker'])
+                        save_watchlist(st.session_state.watchlist)
+                        st.rerun()
+            
+            # Export watchlist
+            st.markdown("---")
+            csv = watchlist_df.drop(columns=['Remove']).to_csv(index=False)
+            st.download_button(
+                label="📥 Export Watchlist",
+                data=csv,
+                file_name=f"watchlist_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
     else:
-        st.warning("No data could be fetched. Please check your ticker symbols.")
-else:
-    st.info("Please enter some ticker symbols to begin screening.")
+        st.info("Your watchlist is empty. Use the Finviz Scanner to find stocks to add!")
 
-# ─── Footer ────────────────────────────────────────────────────────────────────
-st.markdown("---")
-st.caption("💡 Tip: Data is cached for 5 minutes. Click 'Refresh Data' to force update.")
+with tab3:
+    st.markdown("""
+    ### 📘 How This Enhanced Screener Works
+    
+    #### 🔍 Finviz Integration
+    1. **Choose a Preset**: Select from pre-configured Finviz screeners:
+       - 🚀 **High Volume Movers**: Stocks with unusual volume and price movement
+       - 📈 **Momentum Stocks**: Strong performers with good technical indicators
+       - 🔥 **Short Squeeze Candidates**: High short interest stocks
+       - 💎 **Breakout Patterns**: Stocks breaking technical patterns
+       - 📊 **High Relative Volume**: Abnormal volume activity
+    
+    2. **Or Use Custom URL**: 
+       - Go to [Finviz Screener](https://finviz.com/screener.ashx)
+       - Set your filters
+       - Copy the URL and paste it here
+    
+    #### 🧠 AI Scoring System
+    The screener analyzes each stock with our AI Score formula:
+    
+    **AI Score = (% Change × 2) + (RVOL × 10) + (Short % × 2)**
+    
+    - 🟢 **BUY**: Score ≥ 60 (Strong momentum)
+    - 🟡 **WATCH**: Score ≥ 45 (Potential opportunity)
+    - 🔴 **AVOID**: Score < 45 (Weak momentum)
+    
+    #### 📋 Watchlist Management
+    - Review Finviz results and select promising stocks
+    - Your watchlist is saved locally (survives page refresh)
+    - Monitor your watchlist with real-time data
+    - Export to CSV for further analysis
+    
+    #### 💡 Pro Tips
+    - Scan during market hours for best results
+    - Combine multiple presets to find diverse opportunities
+    - Focus on BUY signals with high AI Scores
+    - Check watchlist daily for signal changes
+    """)
