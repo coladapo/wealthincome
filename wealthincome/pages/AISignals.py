@@ -172,8 +172,6 @@ with tab1:
     
     # Display Finviz results and analyze
     if st.session_state.finviz_tickers:
-        st.markdown("---")
-        st.markdown(f"### 📊 Analyzing {len(st.session_state.finviz_tickers)} Stocks")
         
         # Fetch and analyze data
         with st.spinner(f"Analyzing {len(st.session_state.finviz_tickers)} stocks..."):
@@ -343,6 +341,7 @@ with tab1:
             df = df.sort_values("AI Score", ascending=False).reset_index(drop=True)
             
             # Selection interface
+            st.markdown("---")
             st.markdown("#### ✅ Select stocks to add to your watchlist:")
             
             # Quick select buttons
@@ -362,7 +361,8 @@ with tab1:
                     st.session_state.selected_tickers.clear()
                     st.rerun()
             with col4:
-                if st.button("🎯 Add to Watchlist", type="primary"):
+                selected_count = len(st.session_state.selected_tickers)
+                if st.button(f"🎯 Add to Watchlist ({selected_count})", type="primary", disabled=selected_count == 0):
                     if st.session_state.selected_tickers:
                         new_tickers = [t for t in st.session_state.selected_tickers 
                                      if t not in st.session_state.watchlist]
@@ -370,18 +370,23 @@ with tab1:
                         save_watchlist(st.session_state.watchlist)
                         st.success(f"Added {len(new_tickers)} stocks to watchlist!")
                         st.session_state.selected_tickers.clear()
-                        time.sleep(1)
-                        st.rerun()
+                        # Don't rerun immediately to avoid re-analysis
             
             # Display table with checkboxes
             for idx, row in df.iterrows():
                 cols = st.columns([0.5, 1, 1, 1, 1, 1, 1, 1, 1, 2])
                 
                 with cols[0]:
-                    if st.checkbox("", key=f"check_{row['Ticker']}", 
-                                 value=row['Ticker'] in st.session_state.selected_tickers):
+                    # Use a unique key that doesn't trigger rerun
+                    is_selected = st.checkbox(
+                        "", 
+                        key=f"check_{row['Ticker']}_{idx}", 
+                        value=row['Ticker'] in st.session_state.selected_tickers,
+                        label_visibility="collapsed"
+                    )
+                    if is_selected and row['Ticker'] not in st.session_state.selected_tickers:
                         st.session_state.selected_tickers.add(row['Ticker'])
-                    else:
+                    elif not is_selected and row['Ticker'] in st.session_state.selected_tickers:
                         st.session_state.selected_tickers.discard(row['Ticker'])
                 
                 with cols[1]:
@@ -427,16 +432,28 @@ with tab2:
     st.markdown("### 📋 My Watchlist")
     
     if st.session_state.watchlist:
-        # Manual ticker input
+        # Manual ticker input - Fixed to handle multiple tickers with commas
         col1, col2 = st.columns([4, 1])
         with col1:
-            manual_ticker = st.text_input("Add ticker manually:", key="manual_add")
+            manual_ticker = st.text_input(
+                "Add ticker(s) manually (comma-separated for multiple):", 
+                key="manual_add",
+                placeholder="AAPL or AAPL,MSFT,GOOGL"
+            )
         with col2:
             if st.button("➕ Add", key="manual_add_btn"):
-                if manual_ticker and manual_ticker.upper() not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(manual_ticker.upper())
-                    save_watchlist(st.session_state.watchlist)
-                    st.rerun()
+                if manual_ticker:
+                    # Handle both single ticker and comma-separated list
+                    new_tickers = [t.strip().upper() for t in manual_ticker.split(",") if t.strip()]
+                    added_tickers = []
+                    for ticker in new_tickers:
+                        if ticker and ticker not in st.session_state.watchlist:
+                            st.session_state.watchlist.append(ticker)
+                            added_tickers.append(ticker)
+                    if added_tickers:
+                        save_watchlist(st.session_state.watchlist)
+                        st.success(f"Added {len(added_tickers)} ticker(s): {', '.join(added_tickers)}")
+                        st.rerun()
         
         # Analyze watchlist
         if st.button("🔄 Refresh Watchlist Data", type="primary"):
