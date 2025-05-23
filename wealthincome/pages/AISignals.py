@@ -1,109 +1,137 @@
-import streamlit as st
-import pandas as pd
-import yfinance as yf
+### 🏁 Signals:
+- 🟢 **BUY** if Score ≥ 60 **and** RSI(14) is between 30–70  
+- 🟡 **WATCH** if Score ≥ 45  
+- 🔴 **AVOID** if Score < 45  
 
-# ─── Page Setup ────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
-st.title("🧠 AI Stock Screener")
+### 🚦 Additional Filters:
+1. **50‑Day MA Trend**  
+   Only “🏆 Top Pick” if today’s price > 50‑day moving average.  
+2. **RSI Confirmation**  
+   A BUY signal requires 30 < RSI(14) < 70 to avoid extremes.  
+3. **Short‑Float Cap**  
+   Short interest contribution is capped at 30 % for score stability.
+    """)
 
-# ─── Pasteable Tickers Input ───────────────────────────────────────────────────
-default = (
-    "KSS,QBTS,QSI,MARA,SNOW,HIMS,SMCI,FL,ENPH,BL"
-)
-user_input = st.text_input(
-    "📋 Paste Tickers from Finviz (comma-separated):",
-    value=default,
-)
-tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
-
-# ─── Explainer ─────────────────────────────────────────────────────────────────
-with st.expander("📘 How This Screener Works"):
-    st.markdown("""
-This tool scans the market for **momentum setups** using:
-
-- **% Change** ×2  
-- **RVOL** (rel. vol) ×10  
-- **Short %** ×2  
-
-**BUY** ≥ 60, **WATCH** ≥ 45, **AVOID** < 45  
-""")
-
-# ─── Filter Control ────────────────────────────────────────────────────────────
+# ─── Signal Filter ─────────────────────────────────────────────────────────
 selected_signal = st.selectbox(
     "📍 Filter by Signal",
-    ["All", "BUY", "WATCH", "AVOID"],
+    options=["All", "BUY", "WATCH", "AVOID"]
 )
 
-# ─── Fetch & Score ─────────────────────────────────────────────────────────────
-records = []
-for sym in tickers:
+# ─── Fetch & Compute ───────────────────────────────────────────────────────
+data = []
+for ticker in tickers:
     try:
-        tk   = yf.Ticker(sym)
+        tk   = yf.Ticker(ticker)
         info = tk.info
-        hist = tk.history(period="1mo")
+        hist = tk.history(period="3mo")
 
-        price    = info.get("regularMarketPrice", 0) or 0
-        change   = info.get("regularMarketChangePercent", 0) or 0
-        rvol     = (info.get("regularMarketVolume", 1) or 1) / (info.get("averageVolume", 1) or 1)
-        short_pct= (info.get("shortPercentOfFloat", 0) or 0) * 100
-        ai_score = round((change*2) + (rvol*10) + (short_pct*2), 2)
+        # core metrics
+        price            = info.get("regularMarketPrice", 0)
+        change           = info.get("regularMarketChangePercent", 0)
+        rvol             = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
+        short_pct        = info.get("shortPercentOfFloat", 0) * 100
+        short_pct_capped = min(short_pct, 30)
 
-        # build tags
+        # RSI(14)
+        if hist["Close"].shape[0] >= 14:
+            rsi = RSIIndicator(hist["Close"], window=14).rsi().iloc[-1]
+        else:
+            rsi = 50  # neutral fallback
+
+        # AI Score
+        ai_score = round(
+            (change * 2) +
+            (rvol * 10) +
+            (short_pct_capped * 2),
+            2
+        )
+
+        # 50‑day MA
+        ma50 = hist["Close"].rolling(50).mean().iloc[-1] if hist.shape[0] >= 50 else price
+
+        # basic tags
         tags = []
         if change >= 2 and rvol >= 1.5:
             tags.append("🔁 Momentum")
-        if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
+        if hist["High"].rolling(20).max().iloc[-1] < price:
             tags.append("📈 Breakout")
 
-        records.append({
-            "Ticker":    sym,
-            "Price":     f"${price:.2f}",
-            "% Change":  f"{change:.2f}%",
-            "RVOL":      round(rvol, 3),
-            "Short %":   f"{short_pct:.1f}%",
-            "AI Score":  ai_score,
-            "Signal":    "",      # to set below
-            "Tags":      ", ".join(tags),
+        data.append({
+            "Ticker": ticker,
+            "Price": price,
+            "% Change": change,
+            "RVOL": rvol,
+            "Short %": short_pct,
+            "AI Score": ai_score,
+            "RSI": rsi,
+            "MA50": ma50,
+            "Signal": None,
+            "Tags": ", ".join(tags)
         })
+
     except Exception:
-        pass
+        # skip tickers we can’t fetch
+        continue
 
-df = pd.DataFrame(records)
+df = pd.DataFrame(data)
 
-# ─── Post‑Processing & Display ─────────────────────────────────────────────────
 if not df.empty:
-    # assign signals
-    df["Signal"] = df["AI Score"].apply(
-        lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
-    )
+    # ── 1) Assign Signals ────────────────────────────────────────────────────
+    def compute_signal(row):
+        if row["AI Score"] >= 60 and 30 < row["RSI"] < 70:
+            return "BUY"
+        elif row["AI Score"] >= 45:
+            return "WATCH"
+        else:
+            return "AVOID"
 
-    # tag top pick
-    top = df["AI Score"].idxmax()
-    if pd.notna(top):
-        base = df.at[top, "Tags"]
-        df.at[top, "Tags"] = "🏆 Top Pick" + (", " + base if base else "")
+    df["Signal"] = df.apply(compute_signal, axis=1)
 
-    # filter by dropdown
+    # ── 2) Tag Top Pick if > MA50 ────────────────────────────────────────────
+    top_idx = df["AI Score"].idxmax()
+    if pd.notna(top_idx) and df.at[top_idx, "Price"] > df.at[top_idx, "MA50"]:
+        base = df.at[top_idx, "Tags"]
+        df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + base if base else "")
+
+    # ── 3) Filter by chosen signal ──────────────────────────────────────────
     if selected_signal != "All":
         df = df[df["Signal"] == selected_signal]
 
-    # sort: BUY→WATCH→AVOID, then by AI Score desc
+    # ── 4) Sort: BUY first, then WATCH, then AVOID; within each by AI Score ─
     order_map = {"BUY": 0, "WATCH": 1, "AVOID": 2}
-    df["__order"] = df["Signal"].map(order_map)
-    df = df.sort_values(["__order","AI Score"], ascending=[True, False]).drop("__order", axis=1)
+    df = (
+        df
+        .sort_values(
+            by=["Signal","AI Score"],
+            key=lambda col: col.map(order_map) if col.name=="Signal" else col,
+            ascending=[True, False]
+        )
+        .reset_index(drop=True)
+    )
 
-    # reorder columns: Signal & Tags come right after Ticker
-    cols = ["Ticker", "Signal", "Tags", "Price", "% Change", "RVOL", "Short %", "AI Score"]
-    df = df[cols]
-
-    # styling
-    def color_sig(v):
-        if v=="BUY":   return "background-color: #16a34a; color:white;"
-        if v=="WATCH": return "background-color: #facc15; color:black;"
-        if v=="AVOID": return "background-color: #dc2626; color:white;"
+    # ── 5) Style & Render ───────────────────────────────────────────────────
+    def highlight_signal(v):
+        if v=="BUY":   return "background-color:#16a34a;color:white;"
+        if v=="WATCH": return "background-color:#facc15;color:black;"
+        if v=="AVOID": return "background-color:#dc2626;color:white;"
         return ""
-    styled = df.style.applymap(color_sig, subset=["Signal"])
+
+    styled = (
+        df[["Ticker","Signal","Tags","Price","% Change","RVOL","Short %","AI Score","RSI"]]
+        .style
+        .applymap(highlight_signal, subset=["Signal"])
+        .format({
+            "Price":     "${:.2f}",
+            "% Change":  "{:.2f}%",
+            "RVOL":      "{:.3f}",
+            "Short %":   "{:.1f}%",
+            "AI Score":  "{:.2f}",
+            "RSI":       "{:.1f}"
+        })
+    )
+
     st.dataframe(styled, use_container_width=True)
 
 else:
-    st.warning("No data available. Check your tickers and try again.")
+    st.warning("No data available. Check your tickers?")
