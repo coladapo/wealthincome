@@ -132,6 +132,17 @@ signal_filter = st.selectbox("📍 Filter by Signal", ["All", "BUY", "WATCH", 
 if signal_filter != "All":
     df = df[df["Signal"] == signal_filter]
 
+    # ➍ Sort so rows with 🏆 (or multiple tags) stay on top
+    df = (df
+          .assign(has_top=df["Tags"].str.contains("🏆"))
+          .sort_values(
+              by=["has_top", "AI Score"],  # first true/false, then score
+              ascending=[False, False]
+          )
+          .drop(columns="has_top")
+          .reset_index(drop=True)
+    )
+
 # colour‑coding
 def highlight(row):
     color = {
