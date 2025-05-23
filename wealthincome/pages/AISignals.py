@@ -7,7 +7,7 @@ st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
 # Pasteable Ticker Input (Finviz style)
-default = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
+default = "BTM,BSGM,TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
 user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=default)
 tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
 
