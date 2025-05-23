@@ -1,3 +1,5 @@
+import streamlit as st
+
 st.title("🧠 AI Stock Screener")
 
 with st.expander("🧠 How This Screener Works", expanded=False):
