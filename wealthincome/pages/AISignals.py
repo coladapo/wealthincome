@@ -98,14 +98,11 @@ with tab1:
     with col2:
         scan_button = st.button("🔄 Scan Finviz", type="primary", use_container_width=True)
     
-    # Custom URL input - This appears when you select "Custom URL"
+    # Custom URL input
     if preset == "🎯 Custom URL":
-        st.info("👇 Paste your Finviz URL below:")
         custom_url = st.text_input(
             "Paste your Finviz screener URL:",
-            placeholder="https://finviz.com/screener.ashx?v=111&f=...",
-            value="https://finviz.com/screener.ashx?v=111&s=ta_newhigh&f=geo_usa,sh_curvol_o1000,sh_price_u5,sh_relvol_o1.5",
-            help="Example: Your URL for new highs with high volume"
+            placeholder="https://finviz.com/screener.ashx?v=111&f=..."
         )
         finviz_url = custom_url
     else:
