@@ -1,14 +1,39 @@
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+
+try:
+    from finvizfinance.screener.overview import Overview
+    finviz_available = True
+except ImportError:
+    finviz_available = False
 
 # Page Setup
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
-# Pasteable Ticker Input (Finviz style)
-default = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
-user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=default)
+# Session Setup
+if "tickers" not in st.session_state:
+    st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
+
+# Finviz Top Gainers Add Button
+if finviz_available and st.button("🔄 Add Top Gainers from Finviz"):
+    try:
+        foverview = Overview()
+        foverview.set_filter(filters_dict={"Signal": "Top Gainers"})
+        top_df = foverview.screener_view()
+        top_gainers = top_df["Ticker"].tolist()
+        current = [t.strip().upper() for t in st.session_state["tickers"].split(",")]
+        combined = list(dict.fromkeys(current + top_gainers))  # remove duplicates
+        st.session_state["tickers"] = ",".join(combined)
+        st.experimental_rerun()
+    except Exception as e:
+        st.warning(f"Failed to fetch from Finviz: {e}")
+
+# Ticker Input
+user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=st.session_state["tickers"])
+st.session_state["tickers"] = user_input
 tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
 
 # How This Screener Works
@@ -42,7 +67,7 @@ Use the **signal dropdown below** to focus on actionable opportunities.
 |---------------|-------------|-----------------|
 | Los Angeles 🇺🇸 | 6:30 AM PST | 12:00 – 1:00 PM PST |
 | London 🇬🇧     | 8:00 AM GMT | 3:00 – 4:00 PM GMT |
-    """)
+""")
 
 # Filter dropdown
 selected_signal = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
@@ -64,14 +89,12 @@ for ticker in tickers:
         # Tags
         tag_list = []
 
-        # Top Pick
-        tag_list.append("")  # Will assign Top Pick later
+        # Top Pick placeholder
+        tag_list.append("")
 
-        # Momentum: high % change + high rvol
         if change >= 2 and rvol >= 1.5:
             tag_list.append("🔁 Momentum")
 
-        # Breakout Alert: today’s price > 20-day high
         if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
             tag_list.append("📈 Breakout")
 
@@ -82,40 +105,33 @@ for ticker in tickers:
             "RVOL": round(rvol, 3),
             "Short %": f"{short_pct:.1f}%",
             "AI Score": ai_score,
-            "Signal": "",  # Set later
-            "Tags": ", ".join(tag_list[1:])  # omit placeholder
+            "Signal": "",
+            "Tags": ", ".join(tag_list[1:])
         })
-
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
 
-# Create DataFrame
 df = pd.DataFrame(data)
 
+# Signal assignment and Top Pick logic
 if not df.empty:
-    # Set Signal
     df["Signal"] = df["AI Score"].apply(lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID")
-
-    # Set Top Pick tag
     top_idx = df["AI Score"].idxmax()
-    if pd.notna(top_idx):
+    if pd.notna(top_idx) and df.at[top_idx, "Signal"] == "BUY":
         current_tags = df.at[top_idx, "Tags"]
         df.at[top_idx, "Tags"] = ("🏆 Top Pick" + (", " + current_tags if current_tags else ""))
 
-    # Apply signal filter
     if selected_signal != "All":
         df = df[df["Signal"] == selected_signal]
 
-    # Custom color formatting
     def highlight_signal(val):
-        color = ""
         if val == "BUY":
-            color = "background-color: #16a34a; color: white;"
+            return "background-color: #16a34a; color: white;"
         elif val == "WATCH":
-            color = "background-color: #facc15; color: black;"
+            return "background-color: #facc15; color: black;"
         elif val == "AVOID":
-            color = "background-color: #dc2626; color: white;"
-        return color
+            return "background-color: #dc2626; color: white;"
+        return ""
 
     styled_df = df.style.applymap(highlight_signal, subset=["Signal"])
     st.dataframe(styled_df, use_container_width=True)
