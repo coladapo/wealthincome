@@ -2,156 +2,129 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-# ---------- 3rd‑party FinViz API ----------
+# Attempt FinViz imports
 try:
-    from analysis_engine.finviz.fetch_api import Overview
-    finviz_available = True
+    from analysis_engine.finviz.fetch_api import fetch_tickers_from_screener
+    finviz_api_available = True
 except ImportError:
-    finviz_available = False
-# ------------------------------------------
+    finviz_api_available = False
+    try:
+        from finvizfinance.quote import finvizfinance
+        finvizfinance_available = True
+    except ImportError:
+        finvizfinance_available = False
 
-# ---------- Page setup ----------
+# ------------------ Page setup ------------------
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
-# --------------------------------
 
-# ---------- Session tickers ----------
+# ------------------ Session state ------------------
 if "tickers" not in st.session_state:
-    st.session_state["tickers"] = (
-        "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
-    )
-# ------------------------------------
+    st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
 
-# ---------- Paste / edit tickers ----------
-user_input = st.text_input(
-    "📋 Paste Tickers from Finviz (comma‑separated):",
-    value=st.session_state["tickers"],
-)
+# ------------------ Ticker input ------------------
+user_input = st.text_input("📋 Paste Tickers from Finviz (comma‑separated):",
+                           value=st.session_state["tickers"])
 if user_input:
-    st.session_state["tickers"] = ",".join(
-        [t.strip().upper() for t in user_input.split(",") if t.strip()]
-    )
-# -----------------------------------------
+    st.session_state["tickers"] = user_input
 
-# ---------- FinViz Top‑Gainers button ----------
-def get_top_gainers() -> list[str]:
-    """
-    Pull top gainers via analysis_engine.finviz.fetch_api.
-    Returns a list of tickers (upper‑case) or [] on failure.
-    """
+tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
+
+# ------------------ FinViz top‑gainers helper ------------------
+def add_top_gainers():
+    """Append today's top gainers from FinViz to the ticker list."""
+    new = []
+    if finviz_api_available:
+        try:
+            url = "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o50,ta_perf_jump&ft=4"
+            res = fetch_tickers_from_screener(url, as_json=False)
+            new = res["ticker"].tolist() if "ticker" in res else []
+        except Exception as e:
+            st.error(f"⚠️ FinViz API error: {e}")
+    elif finvizfinance_available:
+        try:
+            q = finvizfinance("Top Gainers")
+            df = q.tickers_chart()
+            new = df["Ticker"].tolist()
+        except Exception as e:
+            st.error(f"⚠️ finvizfinance error: {e}")
+    else:
+        st.warning("FinViz API unavailable. Run `pip install analysis_engine` (preferred) "
+                   "or `pip install finvizfinance` then restart.")
+    if new:
+        combined = list(dict.fromkeys(tickers + new))  # preserve order / deduplicate
+        st.session_state["tickers"] = ",".join(combined)
+        st.success(f"Added {len(new)} tickers from FinViz.")
+    else:
+        st.info("No tickers added.")
+
+st.button("🔄 Add Top Gainers from FinViz", on_click=add_top_gainers)
+
+# ------------------ Metrics computation ------------------
+rows = []
+for tkr in tickers:
     try:
-        overview = Overview()
-        # Equivalent to FinViz preset: Average Vol > 500 K & RelVol > 1.5, ordered by % change
-        filters = {
-            "Average Volume": "Over 500K",
-            "Relative Volume": "Over 1.5",
-        }
-        overview.set_filter(filters_dict=filters)
-        overview.set_order("change")          # sort by % change descending
-        df = overview.screener_view()         # pull into DataFrame
-        return df["Ticker"].str.upper().tolist()
-    except Exception as e:                    # graceful fallback
-        st.error(f"⚠️ Failed to fetch FinViz data: {e}")
-        return []
+        info = yf.Ticker(tkr).info
+        price = info.get("regularMarketPrice", 0)
+        change = info.get("regularMarketChangePercent", 0)
+        rvol = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
+        short_pct = info.get("shortPercentOfFloat", 0) * 100
 
-if finviz_available:
-    if st.button("🔄 Add Top Gainers from Finviz"):
-        new = get_top_gainers()
-        if new:
-            merged = list(
-                dict.fromkeys(       # keeps order, removes dups
-                    st.session_state["tickers"].split(",") + new
-                )
-            )
-            st.session_state["tickers"] = ",".join(merged)
-        st.experimental_rerun()
-else:
-    st.info(
-        "FinViz API unavailable. Run `pip install analysis_engine` "
-        "and restart, or ignore this button."
-    )
-# ------------------------------------------------
+        ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
-# ---------- Main screener logic ----------
-tickers = [t for t in st.session_state["tickers"].split(",") if t]
-
-data = []
-for t in tickers:
-    try:
-        yft = yf.Ticker(t)
-        info = yft.info
-        hist = yft.history(period="1mo")
-
-        price      = info.get("regularMarketPrice", 0)
-        change_pct = info.get("regularMarketChangePercent", 0)
-        rvol       = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
-        short_pct  = info.get("shortPercentOfFloat", 0) * 100
-
-        ai_score = round((change_pct * 2) + (rvol * 10) + (short_pct * 2), 2)
-
-        # ---- tags ----
         tags = []
-        # placeholder for Top Pick – set later
-        tags.append("")
-        if change_pct >= 2 and rvol >= 1.5:
-            tags.append("🔁 Momentum")
-        if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
-            tags.append("📈 Breakout")
 
-        data.append(
-            {
-                "Ticker": t,
-                "Price": f"${price:.2f}",
-                "% Change": f"{change_pct:.2f}%",
-                "RVOL": round(rvol, 3),
-                "Short %": f"{short_pct:.1f}%",
-                "AI Score": ai_score,
-                "Signal": "",     # set after DataFrame creation
-                "Tags": ", ".join(tags[1:]),
-            }
+        # Momentum tag
+        if change >= 2 and rvol >= 1.5:
+            tags.append("🔁 Momentum")
+
+        # Breakout tag (20‑day high)
+        hist = yf.Ticker(tkr).history(period="1mo")
+        if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
+            tags.append("📈 Breakout")
+
+        rows.append(
+            {"Ticker": tkr,
+             "Price": f"${price:.2f}",
+             "% Change": f"{change:.2f}%",
+             "RVOL": round(rvol, 3),
+             "Short %": f"{short_pct:.1f}%",
+             "AI Score": ai_score,
+             "Signal": "",   # fill later
+             "Tags": ", ".join(tags)}
         )
     except Exception:
-        pass  # silently skip bad ticker
-df = pd.DataFrame(data)
+        continue
 
+df = pd.DataFrame(rows)
 if df.empty:
     st.warning("No data available. Please check the tickers.")
     st.stop()
 
-# set signals
-df["Signal"] = df["AI Score"].apply(
-    lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
-)
+# Signal classification
+df["Signal"] = df["AI Score"].apply(lambda s: "BUY" if s >= 60 else "WATCH" if s >= 45 else "AVOID")
 
-# mark Top Pick
-idx = df["AI Score"].idxmax()
-df.at[idx, "Tags"] = "🏆 Top Pick" + (", " + df.at[idx, "Tags"] if df.at[idx, "Tags"] else "")
+# Add 🏆 Top Pick tag
+if not df.empty:
+    best_idx = df["AI Score"].idxmax()
+    df.at[best_idx, "Tags"] = ("🏆 Top Pick" + (", " + df.at[best_idx,"Tags"] if df.at[best_idx,"Tags"] else ""))
 
-# filter dropdown
-signal_filter = st.selectbox("📍 Filter by Signal", ["All", "BUY", "WATCH", "AVOID"])
-if signal_filter != "All":
-    df = df[df["Signal"] == signal_filter]
+# Sort so rows with 🏆 or multiple tags float to top
+df = (df.sort_values(by=["Tags"], key=lambda col: col.apply(lambda x: "🏆" in x or ("," in x)))
+        .reset_index(drop=True))
 
-    # ➍ Sort so rows with 🏆 (or multiple tags) stay on top
-    df = (df
-          .assign(has_top=df["Tags"].str.contains("🏆"))
-          .sort_values(
-              by=["has_top", "AI Score"],  # first true/false, then score
-              ascending=[False, False]
-          )
-          .drop(columns="has_top")
-          .reset_index(drop=True)
-    )
+# Optional filter
+sig_choice = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"], index=0)
+if sig_choice != "All":
+    df = df[df["Signal"] == sig_choice]
 
-# colour‑coding
-def highlight(row):
-    color = {
-        "BUY":   "background-color:#16a34a;color:white;",
-        "WATCH": "background-color:#facc15;color:black;",
-        "AVOID": "background-color:#dc2626;color:white;",
-    }.get(row["Signal"], "")
-    return [""] * (len(row) - 2) + [color] + [""]  # only apply to Signal col
+# ------------------ Styling ------------------
+def color_signal(val):
+    if val == "BUY":
+        return "background-color:#16a34a;color:white"
+    if val == "WATCH":
+        return "background-color:#facc15;color:black"
+    return "background-color:#dc2626;color:white"
 
-styled = df.style.apply(highlight, axis=1)
+styled = df.style.applymap(color_signal, subset=["Signal"])
 st.dataframe(styled, use_container_width=True)
-# --------------------------------------------
