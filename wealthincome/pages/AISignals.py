@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -14,29 +15,30 @@ st.title("🧠 AI Stock Screener")
 
 # Session Setup
 if "tickers" not in st.session_state:
-    st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR".split(",")
+    st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
 
 # Pasteable Ticker Input (Finviz style)
-user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=",".join(st.session_state["tickers"]))
+user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=st.session_state["tickers"])
 if user_input:
-    st.session_state["tickers"] = [t.strip().upper() for t in user_input.split(",") if t.strip()]
+    st.session_state["tickers"] = user_input
+tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
 
 # Finviz Top Gainers Button
 if finviz_available:
     if st.button("🔄 Add Top Gainers from Finviz"):
         try:
             overview = Overview()
-            overview.set_signal("Top Gainers")
-            overview.set_filter("sh_avgvol_o500", order="change")
+            overview.set_filter(filters=["sh_avgvol_o50", "ta_perf_1wup"])
+            overview.set_order("change")
             top_df = overview.screener_view()
             top_tickers = top_df["Ticker"].tolist()
             new_tickers = [t.strip().upper() for t in top_tickers]
-            updated_tickers = list(set(st.session_state["tickers"] + new_tickers))
-            st.session_state["tickers"] = updated_tickers
+            updated_tickers = list(set(tickers + new_tickers))
+            st.session_state["tickers"] = ",".join(updated_tickers)
         except Exception as e:
             st.error(f"❌ Failed to fetch Finviz data: {e}")
 
-tickers = st.session_state["tickers"]
+tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
 
 # How This Screener Works
 with st.expander("📘 How This Screener Works"):
@@ -80,15 +82,15 @@ for ticker in tickers:
     try:
         info = yf.Ticker(ticker).info
         hist = yf.Ticker(ticker).history(period="1mo")
+
         price = info.get("regularMarketPrice", 0)
         change = info.get("regularMarketChangePercent", 0)
         rvol = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
         short_pct = info.get("shortPercentOfFloat", 0) * 100
+
         ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
-        # Tags
         tag_list = []
-        tag_list.append("")  # Placeholder
 
         if change >= 2 and rvol >= 1.5:
             tag_list.append("🔁 Momentum")
@@ -103,13 +105,13 @@ for ticker in tickers:
             "RVOL": round(rvol, 3),
             "Short %": f"{short_pct:.1f}%",
             "AI Score": ai_score,
-            "Signal": "",  # Will set later
-            "Tags": ", ".join(tag_list[1:])
+            "Signal": "",
+            "Tags": ", ".join(tag_list)
         })
+
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
 
-# Create DataFrame
 df = pd.DataFrame(data)
 
 if not df.empty:
