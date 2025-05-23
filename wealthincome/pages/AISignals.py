@@ -3,66 +3,81 @@ import yfinance as yf
 import pandas as pd
 
 st.set_page_config(page_title="🧠 AI Screener", layout="wide")
-st.title("🧠 AI Stock Screener")
 
+st.title("🧠 AI Stock Screener")
 st.markdown("""
-This tool scans **top US tickers** and highlights potential plays based on:
-- High Relative Volume (RVOL)
-- Strong price momentum
-- AI-style rule logic: % Change + RVOL + Short %
+This tool scans top US tickers and highlights potential plays based on:
+
+- **High Relative Volume (RVOL)**
+- **Strong Price Momentum**
+- **Short % interest**
+- A-style rule logic: `% Change * 2 + RVOL * 10 + Short% * 2`
 """)
 
-# Define sample tickers to scan
-tickers = ["TSLA", "NVDA", "AMD", "AAPL", "MSFT", "AMZN", "META", "NFLX", "GME", "PLTR", "QSI", "RUN", "CRVW", "ENPH"]
+# Sample tickers — swap in your watchlist or use dynamic scanning later
+tickers = ["TSLA", "NVDA", "AMD", "AAPL", "MSFT", "AMZN", "META", "NFLX", "GME", "PLTR"]
 
-def get_screener_data(ticker):
+data = []
+for ticker in tickers:
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        hist = stock.history(period="5d")
-        current_price = info.get("regularMarketPrice", None)
-        previous_close = info.get("previousClose", None)
-        percent_change = ((current_price - previous_close) / previous_close * 100) if current_price and previous_close else None
-        volume = info.get("volume", None)
-        avg_volume = info.get("averageVolume", None)
-        rvol = round(volume / avg_volume, 2) if volume and avg_volume else None
-        short_percent = info.get("shortPercentOfFloat", None)
-        signal = ""
+        t = yf.Ticker(ticker)
+        info = t.info
 
-        if rvol and percent_change:
-            if rvol > 2 and percent_change > 3:
-                signal = "🔥 Momentum"
-            elif short_percent and short_percent > 0.2:
-                signal = "🧨 Squeeze Risk"
-            elif percent_change < -3:
-                signal = "📉 Pullback"
+        price = info.get("currentPrice", None)
+        change = info.get("regularMarketChangePercent", 0)
+        rvol = info.get("averageDailyVolume10Day", 1) / info.get("averageVolume", 1)
+        short_pct = info.get("shortPercentOfFloat", 0) * 100 if info.get("shortPercentOfFloat") else 0
 
-        return {
+        # AI Scoring logic
+        score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
+
+        if score >= 80:
+            signal = "BUY"
+        elif score >= 50:
+            signal = "WATCH"
+        else:
+            signal = "AVOID"
+
+        data.append({
             "Ticker": ticker,
-            "Price": f"${current_price:.2f}" if current_price else "N/A",
-            "% Change": f"{percent_change:.2f}%" if percent_change else "N/A",
-            "RVOL": rvol,
-            "Short %": f"{short_percent*100:.1f}%" if short_percent else "N/A",
-            "AI Tag": signal or "➖ Neutral"
-        }
-    except:
-        return {
-            "Ticker": ticker,
-            "Price": "Error",
-            "% Change": "Error",
-            "RVOL": "Error",
-            "Short %": "Error",
-            "AI Tag": "Error"
-        }
+            "Price": f"${price:.2f}" if price else "N/A",
+            "% Change": f"{change:.2f}%",
+            "RVOL": round(rvol, 2),
+            "Short %": f"{short_pct:.1f}%",
+            "AI Score": score,
+            "Signal": signal
+        })
 
-# Process data
-results = [get_screener_data(t) for t in tickers]
-df = pd.DataFrame(results)
+    except Exception as e:
+        st.warning(f"{ticker}: {e}")
 
-# Display table
-st.dataframe(df, use_container_width=True)
+df = pd.DataFrame(data)
 
-# Filter option
-tag = st.selectbox("🔍 Filter by Tag", ["All", "🔥 Momentum", "🧨 Squeeze Risk", "📉 Pullback"])
-if tag != "All":
-    st.dataframe(df[df["AI Tag"] == tag], use_container_width=True)
+# Sort by top score
+df = df.sort_values("AI Score", ascending=False)
+
+# Color formatter
+def highlight_signal(val):
+    color = {
+        "BUY": "background-color: #16c784; color: white;",
+        "WATCH": "background-color: #facc15; color: black;",
+        "AVOID": "background-color: #ef4444; color: white;"
+    }
+    return color.get(val, "")
+
+# Display
+st.dataframe(
+    df.style.applymap(highlight_signal, subset=["Signal"]),
+    use_container_width=True,
+    hide_index=True
+)
+
+# Optional filter
+st.divider()
+tag_filter = st.selectbox("🔎 Filter by Signal", ["All"] + df["Signal"].unique().tolist())
+if tag_filter != "All":
+    st.dataframe(
+        df[df["Signal"] == tag_filter].style.applymap(highlight_signal, subset=["Signal"]),
+        use_container_width=True,
+        hide_index=True
+    )
