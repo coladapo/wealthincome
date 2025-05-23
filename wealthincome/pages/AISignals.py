@@ -1,70 +1,88 @@
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-# Attempt FinViz imports
+# Optional FinViz top gainers fetch
 try:
-    from analysis_engine.finviz.fetch_api import fetch_tickers_from_screener
-    finviz_api_available = True
+    from finvizfinance.quote import finvizfinance
+    finviz_available = True
 except ImportError:
-    finviz_api_available = False
-    try:
-        from finvizfinance.quote import finvizfinance
-        finvizfinance_available = True
-    except ImportError:
-        finvizfinance_available = False
+    finviz_available = False
 
-# ------------------ Page setup ------------------
+# ---------- Page Setup ----------
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
-# ------------------ Session state ------------------
+# ---------- Session ----------
 if "tickers" not in st.session_state:
     st.session_state["tickers"] = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
 
-# ------------------ Ticker input ------------------
-user_input = st.text_input("📋 Paste Tickers from Finviz (comma‑separated):",
-                           value=st.session_state["tickers"])
+# ---------- Ticker Input ----------
+user_input = st.text_input(
+    "📋 Paste Tickers from Finviz (comma‑separated):",
+    value=st.session_state["tickers"],
+)
 if user_input:
     st.session_state["tickers"] = user_input
 
 tickers = [t.strip().upper() for t in st.session_state["tickers"].split(",") if t.strip()]
 
-# ------------------ FinViz top‑gainers helper ------------------
-def add_top_gainers():
-    """Append today's top gainers from FinViz to the ticker list."""
-    new = []
-    if finviz_api_available:
+# ---------- FinViz Top Gainers ----------
+if finviz_available:
+    if st.button("🔄 Add Top Gainers from Finviz"):
         try:
-            url = "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o50,ta_perf_jump&ft=4"
-            res = fetch_tickers_from_screener(url, as_json=False)
-            new = res["ticker"].tolist() if "ticker" in res else []
+            soup = finvizfinance("Top Gainers")
+            top = soup.ticker
+            new_tickers = [t for t in top if t not in tickers]
+            tickers.extend(new_tickers)
+            st.session_state["tickers"] = ",".join(tickers)
+            st.success(f"Added {len(new_tickers)} top gainers.")
         except Exception as e:
-            st.error(f"⚠️ FinViz API error: {e}")
-    elif finvizfinance_available:
-        try:
-            q = finvizfinance("Top Gainers")
-            df = q.tickers_chart()
-            new = df["Ticker"].tolist()
-        except Exception as e:
-            st.error(f"⚠️ finvizfinance error: {e}")
-    else:
-        st.warning("FinViz API unavailable. Run `pip install analysis_engine` (preferred) "
-                   "or `pip install finvizfinance` then restart.")
-    if new:
-        combined = list(dict.fromkeys(tickers + new))  # preserve order / deduplicate
-        st.session_state["tickers"] = ",".join(combined)
-        st.success(f"Added {len(new)} tickers from FinViz.")
-    else:
-        st.info("No tickers added.")
+            st.error(f"❌ finvizfinance error: {e}")
+else:
+    st.info(
+        "FinViz API unavailable. Run `pip install finvizfinance` locally "
+        "or ignore this button."
+    )
 
-st.button("🔄 Add Top Gainers from FinViz", on_click=add_top_gainers)
+# ---------- How It Works ----------
+with st.expander("📘 How This Screener Works"):
+    st.markdown(
+        """
+This tool scans the market for **momentum setups** using the logic below:
 
-# ------------------ Metrics computation ------------------
-rows = []
-for tkr in tickers:
+### 📊 Key Metrics
+* **% Change** – today's movement  
+* **RVOL** – relative volume  
+* **Short %** – short interest float  
+
+### 🧠 AI Score Formula
+```text
+AI Score = (% Change × 2) + (RVOL × 10) + (Short % × 2)
+```
+
+### 🏁 Signals
+* 🟢 **BUY** if Score ≥ 60  
+* 🟡 **WATCH** if Score ≥ 45  
+* 🔴 **AVOID** if Score < 45  
+
+Use the **signal dropdown** below to focus on actionable opportunities.
+
+🕐 **Tip:** Use this screener before market open or during **power hour** (last hour of trading).
+"""
+    )
+
+# ---------- Filter dropdown ----------
+selected_signal = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
+
+# ---------- Fetch + Compute ----------
+data = []
+for ticker in tickers:
     try:
-        info = yf.Ticker(tkr).info
+        info = yf.Ticker(ticker).info
+        hist = yf.Ticker(ticker).history(period="1mo")
+
         price = info.get("regularMarketPrice", 0)
         change = info.get("regularMarketChangePercent", 0)
         rvol = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
@@ -72,59 +90,70 @@ for tkr in tickers:
 
         ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
+        # Tags
         tags = []
 
-        # Momentum tag
+        # Top Pick placeholder
+        tags.append("")
+
+        # Momentum Tag
         if change >= 2 and rvol >= 1.5:
             tags.append("🔁 Momentum")
 
-        # Breakout tag (20‑day high)
-        hist = yf.Ticker(tkr).history(period="1mo")
+        # Breakout Tag
         if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
             tags.append("📈 Breakout")
 
-        rows.append(
-            {"Ticker": tkr,
-             "Price": f"${price:.2f}",
-             "% Change": f"{change:.2f}%",
-             "RVOL": round(rvol, 3),
-             "Short %": f"{short_pct:.1f}%",
-             "AI Score": ai_score,
-             "Signal": "",   # fill later
-             "Tags": ", ".join(tags)}
+        data.append(
+            {
+                "Ticker": ticker,
+                "Price": f"${price:.2f}",
+                "% Change": f"{change:.2f}%",
+                "RVOL": round(rvol, 6),
+                "Short %": f"{short_pct:.1f}%",
+                "AI Score": ai_score,
+                "Signal": "",  # to fill later
+                "Tags": ", ".join(tags[1:]),
+            }
         )
     except Exception:
-        continue
+        pass
 
-df = pd.DataFrame(rows)
-if df.empty:
-    st.warning("No data available. Please check the tickers.")
-    st.stop()
+df = pd.DataFrame(data)
 
-# Signal classification
-df["Signal"] = df["AI Score"].apply(lambda s: "BUY" if s >= 60 else "WATCH" if s >= 45 else "AVOID")
-
-# Add 🏆 Top Pick tag
 if not df.empty:
-    best_idx = df["AI Score"].idxmax()
-    df.at[best_idx, "Tags"] = ("🏆 Top Pick" + (", " + df.at[best_idx,"Tags"] if df.at[best_idx,"Tags"] else ""))
+    # Signals
+    df["Signal"] = df["AI Score"].apply(
+        lambda x: "BUY" if x >= 60 else ("WATCH" if x >= 45 else "AVOID")
+    )
 
-# Sort so rows with 🏆 or multiple tags float to top
-df = (df.sort_values(by=["Tags"], key=lambda col: col.apply(lambda x: "🏆" in x or ("," in x)))
-        .reset_index(drop=True))
+    # Top Pick Tag
+    top_idx = df["AI Score"].idxmax()
+    if pd.notna(top_idx):
+        current = df.at[top_idx, "Tags"]
+        df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + current if current else "")
 
-# Optional filter
-sig_choice = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"], index=0)
-if sig_choice != "All":
-    df = df[df["Signal"] == sig_choice]
+    # Default sort: Top Pick / multiple tags on top
+    df = (
+        df.sort_values(by="Tags", key=lambda s: s.str.count(",") + s.str.contains("🏆"))
+        .reset_index(drop=True)
+    )
 
-# ------------------ Styling ------------------
-def color_signal(val):
-    if val == "BUY":
-        return "background-color:#16a34a;color:white"
-    if val == "WATCH":
-        return "background-color:#facc15;color:black"
-    return "background-color:#dc2626;color:white"
+    # Apply filter
+    if selected_signal != "All":
+        df = df[df["Signal"] == selected_signal]
 
-styled = df.style.applymap(color_signal, subset=["Signal"])
-st.dataframe(styled, use_container_width=True)
+    # Color formatting
+    def highlight_signal(val):
+        if val == "BUY":
+            return "background-color:#16a34a;color:white"
+        if val == "WATCH":
+            return "background-color:#facc15;color:black"
+        return "background-color:#dc2626;color:white"
+
+    st.dataframe(
+        df.style.applymap(highlight_signal, subset=["Signal"]),
+        use_container_width=True,
+    )
+else:
+    st.warning("No tickers added.")
