@@ -1,0 +1,23 @@
+[theme]
+primaryColor = "#0E76A8"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+
+[server]
+headless = true
+
+[client]
+showSidebarNavigation = true
+
+[[pages]]
+path = "Home.py"
+name = "🏠 Dashboard Hub"
+
+[[pages]]
+path = "Watchlist.py"
+name = "📋 Watchlist"
+
+[[pages]]
+path = "AISignals.py"
+name = "🧠 AI Screener"
