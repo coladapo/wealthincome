@@ -4,7 +4,7 @@ import yfinance as yf
 
 # ─── Page Setup ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
-st.title("🧠 AI Stock Screener")
+st.title("🧠 AISignals")
 
 # ─── Pasteable Ticker Input ────────────────────────────────────────────────────
 default = "KSS,QBTS,QSI,MARA,SNOW,HIMS,SMCI,FL,ENPH,BL"
