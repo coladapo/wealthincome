@@ -2,5 +2,6 @@ streamlit
 yfinance
 pandas
 plotly
+
 # FinViz wrapper (hosted on PyPI)
 analysis_engine
