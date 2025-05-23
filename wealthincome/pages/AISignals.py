@@ -1,10 +1,9 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 
 # --- Page Setup ---
-st.set_page_config(page_title="🧠 AI Stock Screener", layout="wide")
+st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
 # --- Pasteable Ticker Input (Finviz style) ---
@@ -12,7 +11,7 @@ default_tickers = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
 if "tickers" not in st.session_state:
     st.session_state["tickers"] = default_tickers
 
-user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", st.session_state["tickers"])
+user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=st.session_state["tickers"])
 if user_input:
     st.session_state["tickers"] = user_input
 
@@ -23,7 +22,7 @@ with st.expander("📘 How This Screener Works"):
     st.markdown("""
 This tool scans the market for **momentum setups** using the logic below:
 
-### 🧠 Key Metrics:
+### 📊 Key Metrics:
 - **% Change** – today's movement
 - **RVOL** – relative volume
 - **Short %** – short interest float
@@ -32,74 +31,74 @@ This tool scans the market for **momentum setups** using the logic below:
 ```text
 AI Score = (% Change × 2) + (RVOL × 10) + (Short % × 2)
 ```
+
 This composite score helps rank stocks by **momentum + volume + sentiment**.
 
-### 🎯 Signals:
+### 🏁 Signals:
 - 🟢 **BUY** if Score ≥ 60
 - 🟡 **WATCH** if Score ≥ 45
 - 🔴 **AVOID** if Score < 45
 
-💡 Tip: Use this screener before market open or during **power hour** (last hour of trading).
+Use the **signal dropdown below** to focus on actionable opportunities.
 
-🕰️ **Market Hours Reference:**
+🧠 Tip: Use this screener before market open or during power hour (last hour of trading).
 
-| Location       | Market Open | Power Hour       |
-|----------------|-------------|------------------|
+### 🕰️ Market Hours Reference:
+
+| Location       | Market Open | Power Hour     |
+|----------------|-------------|----------------|
 | Los Angeles 🇺🇸 | 6:30 AM PST | 12:00 – 1:00 PM PST |
 | London 🇬🇧      | 8:00 AM GMT | 3:00 – 4:00 PM GMT |
     """)
 
-# --- Filter by Signal ---
-signal_filter = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
+# --- Filter UI ---
+filter_option = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
 
-# --- Screener Logic ---
+# --- Data Fetching ---
 data = []
 for ticker in tickers:
     try:
         info = yf.Ticker(ticker).info
         price = info.get("regularMarketPrice", 0)
         change = info.get("regularMarketChangePercent", 0)
-        rvol = info.get("averageDailyVolume10Day", 1) / info.get("averageVolume", 1)
-        short_pct = info.get("shortPercentOfFloat", 0) * 100
+        rvol = info.get("averageDailyVolume10Day", 0) / info.get("averageVolume", 1)
+        short_pct = info.get("shortPercentOfFloat", 0) * 100 if info.get("shortPercentOfFloat") else 0
         ai_score = (change * 2) + (rvol * 10) + (short_pct * 2)
 
-        if ai_score >= 60:
-            signal = "BUY"
-        elif ai_score >= 45:
-            signal = "WATCH"
-        else:
-            signal = "AVOID"
+        data.append({
+            "Ticker": ticker,
+            "Price": f"${price:.2f}",
+            "% Change": f"{change:.2f}%",
+            "RVOL": round(rvol, 3),
+            "Short %": f"{short_pct:.1f}%",
+            "AI Score": round(ai_score, 2),
+        })
+    except Exception as e:
+        print(f"Error fetching data for {ticker}: {e}")
 
-        tags = []
-        # Top Pick
-        tags.append("🏆 Top Pick") if ai_score == max([ai_score] + [x[-1] for x in data]) else None
-        # Momentum
-        if change >= 3 and rvol >= 2:
-            tags.append("🔁 Momentum")
-        # Breakout logic placeholder
-        # if price > 20-day high (not yet implemented): tags.append("📈 Breakout")
+df = pd.DataFrame(data)
 
-        data.append([ticker, f"${price:.2f}", f"{change:.2f}%", round(rvol, 3), f"{short_pct:.1f}%", round(ai_score, 2), signal, ", ".join(tags)])
-    except Exception:
-        pass
-
-df = pd.DataFrame(data, columns=["Ticker", "Price", "% Change", "RVOL", "Short %", "AI Score", "Signal", "Tags"])
-
-if signal_filter != "All":
-    df = df[df["Signal"] == signal_filter]
-
-# --- Style Function ---
-def highlight_signals(row):
-    signal = row["Signal"]
-    if signal == "BUY":
-        return [""]*6 + ["background-color: #16a34a; color: white;", ""]
-    elif signal == "WATCH":
-        return [""]*6 + ["background-color: #facc15; color: black;", ""]
-    elif signal == "AVOID":
-        return [""]*6 + ["background-color: #dc2626; color: white;", ""]
+# --- Apply Signals ---
+def classify_signal(score):
+    if score >= 60:
+        return "BUY"
+    elif score >= 45:
+        return "WATCH"
     else:
-        return [""] * len(row)
+        return "AVOID"
 
+df["Signal"] = df["AI Score"].apply(classify_signal)
+
+# --- Top Pick Tag ---
 if not df.empty:
-    styled_df = df.style.apply(highlight_signals, axis=1)
-    st.dataframe(styled_df, use_container_width=True)
+    top_score = df["AI Score"].max()
+    df["Tags"] = df.apply(
+        lambda row: "🏆 Top Pick" if row["AI Score"] == top_score and row["Signal"] == "BUY" else "", axis=1
+    )
+
+# --- Filter View ---
+if filter_option != "All":
+    df = df[df["Signal"] == filter_option]
+
+# --- Display Table ---
+st.dataframe(df, use_container_width=True, hide_index=True)
