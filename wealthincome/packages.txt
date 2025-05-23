@@ -1,3 +1,0 @@
-# packages.txt  (only if the build logs complain about missing system libs)
-libxml2-dev
-libxslt1-dev
