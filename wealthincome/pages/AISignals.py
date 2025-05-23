@@ -3,17 +3,18 @@ import pandas as pd
 import yfinance as yf
 import json
 from pathlib import Path
+import time
 
 # ─── Page Setup ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
 st.title("🧠 AI Stock Screener")
 
 # ─── State Management ─────────────────────────────────────────────────────────
-# Option 1: Use session state (persists during session, not across browser refresh)
+# Initialize session state
 if 'tickers' not in st.session_state:
     st.session_state.tickers = "KSS,QBTS,QSI,MARA,SNOW,HIMS,SMCI,FL,ENPH,BL"
 
-# Option 2: Use local file storage (persists across browser refresh)
+# Local file storage for persistence
 STORAGE_FILE = Path("ticker_storage.json")
 
 def load_tickers():
@@ -23,7 +24,8 @@ def load_tickers():
             with open(STORAGE_FILE, 'r') as f:
                 data = json.load(f)
                 return data.get('tickers', st.session_state.tickers)
-        except:
+        except Exception as e:
+            st.error(f"Error loading saved tickers: {str(e)}")
             return st.session_state.tickers
     return st.session_state.tickers
 
@@ -32,8 +34,8 @@ def save_tickers(tickers):
     try:
         with open(STORAGE_FILE, 'w') as f:
             json.dump({'tickers': tickers}, f)
-    except:
-        pass
+    except Exception as e:
+        st.error(f"Error saving tickers: {str(e)}")
 
 # Load saved tickers
 saved_tickers = load_tickers()
@@ -58,7 +60,7 @@ with col1:
     new_ticker = st.text_input("Add ticker:", key="add_ticker")
     if st.button("➕ Add") and new_ticker:
         new_ticker = new_ticker.strip().upper()
-        if new_ticker not in tickers:
+        if new_ticker and new_ticker not in tickers:
             tickers.append(new_ticker)
             updated_input = ",".join(tickers)
             st.session_state.tickers = updated_input
@@ -67,7 +69,7 @@ with col1:
 
 with col2:
     if tickers:
-        remove_ticker = st.selectbox("Remove ticker:", [""] + tickers)
+        remove_ticker = st.selectbox("Remove ticker:", [""] + tickers, key="remove_ticker")
         if st.button("➖ Remove") and remove_ticker:
             tickers.remove(remove_ticker)
             updated_input = ",".join(tickers)
@@ -102,129 +104,174 @@ Use the **signal dropdown** below to filter to BUY, WATCH, or AVOID.
 # ─── Filter Dropdown ───────────────────────────────────────────────────────────
 selected_signal = st.selectbox("📍 Filter by Signal", ["All", "BUY", "WATCH", "AVOID"])
 
-# ─── Fetch Data & Compute Scores ───────────────────────────────────────────────
+# ─── Fetch Data Function ───────────────────────────────────────────────────────
 @st.cache_data(ttl=300)  # Cache for 5 minutes
-def fetch_stock_data(ticker):
-    """Fetch data for a single ticker with caching"""
-    try:
-        tkr = yf.Ticker(ticker)
-        info = tkr.info
-        hist = tkr.history(period="1mo")
+def fetch_all_stock_data(ticker_list):
+    """Fetch data for all tickers with caching"""
+    data = []
+    for ticker in ticker_list:
+        try:
+            tkr = yf.Ticker(ticker)
+            info = tkr.info
+            
+            # Sometimes yfinance returns None for info
+            if not info:
+                continue
+                
+            hist = tkr.history(period="1mo")
 
-        price = info.get("regularMarketPrice", 0) or 0
-        change = info.get("regularMarketChangePercent", 0) or 0
-        rvol = (info.get("regularMarketVolume", 1) or 1) / (info.get("averageVolume", 1) or 1)
-        short_pct = (info.get("shortPercentOfFloat", 0) or 0) * 100
+            # Get values with better error handling
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose", 0)
+            prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose", price)
+            
+            # Calculate % change manually if not provided
+            if prev_close and prev_close != 0:
+                change = ((price - prev_close) / prev_close) * 100
+            else:
+                change = info.get("regularMarketChangePercent", 0) or 0
+            
+            # Volume calculations
+            volume = info.get("volume") or info.get("regularMarketVolume", 0)
+            avg_volume = info.get("averageVolume") or info.get("averageDailyVolume10Day", 1)
+            rvol = volume / avg_volume if avg_volume > 0 else 0
+            
+            # Short interest
+            short_pct = info.get("shortPercentOfFloat", 0) or 0
+            if short_pct > 0:
+                short_pct = short_pct * 100
 
-        ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
+            ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
-        # build tags
-        tags = []
-        if change >= 2 and rvol >= 1.5:
-            tags.append("🔁 Momentum")
-        if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
-            tags.append("📈 Breakout")
+            # Build tags
+            tags = []
+            if change >= 2 and rvol >= 1.5:
+                tags.append("🔁 Momentum")
+            if not hist.empty and len(hist) >= 20:
+                try:
+                    high_20d = hist["High"].rolling(20).max().iloc[-1]
+                    if price > high_20d:
+                        tags.append("📈 Breakout")
+                except:
+                    pass
 
-        return {
-            "Ticker": ticker,
-            "Price": f"${price:.2f}",
-            "% Change": f"{change:.2f}%",
-            "RVOL": round(rvol, 3),
-            "Short %": f"{short_pct:.1f}%",
-            "AI Score": ai_score,
-            "Signal": "",  # placeholder
-            "Tags": ", ".join(tags)
-        }
-    except Exception as e:
-        return None
+            data.append({
+                "Ticker": ticker,
+                "Price": f"${price:.2f}",
+                "% Change": f"{change:.2f}%",
+                "RVOL": round(rvol, 3),
+                "Short %": f"{short_pct:.1f}%",
+                "AI Score": ai_score,
+                "Signal": "",  # placeholder
+                "Tags": ", ".join(tags),
+                "_change_raw": change,  # for sorting
+                "_price_raw": price  # for export
+            })
 
-# Fetch data with progress bar
-data = []
-progress_bar = st.progress(0)
-status_text = st.empty()
+        except Exception as e:
+            st.warning(f"Failed to fetch data for {ticker}: {str(e)}")
+            continue
+    
+    return data
 
-for i, ticker in enumerate(tickers):
-    status_text.text(f"Fetching {ticker}...")
-    result = fetch_stock_data(ticker)
-    if result:
-        data.append(result)
-    progress_bar.progress((i + 1) / len(tickers))
-
-progress_bar.empty()
-status_text.empty()
-
-# ─── Build DataFrame ───────────────────────────────────────────────────────────
-df = pd.DataFrame(data)
-if not df.empty:
-    # assign Signal
-    df["Signal"] = df["AI Score"].apply(
-        lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
-    )
-
-    # tag the top AI Score
-    top = df["AI Score"].idxmax()
-    if pd.notna(top):
-        df.at[top, "Tags"] = "🏆 Top Pick" + (", " + df.at[top, "Tags"] if df.at[top, "Tags"] else "")
-
-    # filter by signal dropdown
-    if selected_signal != "All":
-        df = df[df["Signal"] == selected_signal]
-
-    # sort: all BUY first by descending AI Score
-    df["is_buy"] = df["Signal"] == "BUY"
-    df = df.sort_values(
-        by=["is_buy", "AI Score"], 
-        ascending=[False, False]
-    ).drop(columns="is_buy").reset_index(drop=True)
-
-    # reorder columns: Ticker, Signal, Tags, then the rest
-    cols = ["Ticker", "Signal", "Tags", "Price", "% Change", "RVOL", "Short %", "AI Score"]
-    df = df[cols]
-
-    # highlight colors for Signal
-    def highlight_signal(val):
-        if val == "BUY":
-            return "background-color: #16a34a; color: white;"
-        if val == "WATCH":
-            return "background-color: #facc15; color: black;"
-        if val == "AVOID":
-            return "background-color: #dc2626; color: white;"
-        return ""
-
-    styled = df.style.applymap(highlight_signal, subset=["Signal"])
-    st.dataframe(styled, use_container_width=True, height=600)
-
-    # Export functionality
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        csv = df.to_csv(index=False)
-        st.download_button(
-            label="📥 Export CSV",
-            data=csv,
-            file_name="ai_stock_screener.csv",
-            mime="text/csv"
+# ─── Fetch and Display Data ────────────────────────────────────────────────────
+if tickers:
+    # Show progress
+    with st.spinner(f"Fetching data for {len(tickers)} tickers..."):
+        data = fetch_all_stock_data(tickers)
+    
+    if data:
+        df = pd.DataFrame(data)
+        
+        # Assign Signal
+        df["Signal"] = df["AI Score"].apply(
+            lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
         )
 
-else:
-    st.warning("No data available. Please check your tickers.")
+        # Tag the top AI Score
+        if len(df) > 0:
+            top_idx = df["AI Score"].idxmax()
+            current_tags = df.at[top_idx, "Tags"]
+            df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + current_tags if current_tags else "")
 
-# ─── Quick Stats ───────────────────────────────────────────────────────────────
-if not df.empty:
-    st.markdown("### 📊 Quick Stats")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        buy_count = len(df[df["Signal"] == "BUY"])
-        st.metric("🟢 BUY Signals", buy_count)
-    
-    with col2:
-        watch_count = len(df[df["Signal"] == "WATCH"])
-        st.metric("🟡 WATCH Signals", watch_count)
-    
-    with col3:
-        avoid_count = len(df[df["Signal"] == "AVOID"])
-        st.metric("🔴 AVOID Signals", avoid_count)
-    
-    with col4:
-        avg_score = df["AI Score"].mean()
-        st.metric("📈 Avg AI Score", f"{avg_score:.1f}")
+        # Filter by signal
+        if selected_signal != "All":
+            df = df[df["Signal"] == selected_signal]
+
+        # Sort: BUY first, then by AI Score
+        df["_signal_sort"] = df["Signal"].map({"BUY": 0, "WATCH": 1, "AVOID": 2})
+        df = df.sort_values(
+            by=["_signal_sort", "AI Score"], 
+            ascending=[True, False]
+        ).reset_index(drop=True)
+
+        # Select columns to display
+        display_cols = ["Ticker", "Signal", "Tags", "Price", "% Change", "RVOL", "Short %", "AI Score"]
+        display_df = df[display_cols]
+
+        # Style the dataframe
+        def highlight_signal(val):
+            if val == "BUY":
+                return "background-color: #16a34a; color: white; font-weight: bold;"
+            elif val == "WATCH":
+                return "background-color: #facc15; color: black; font-weight: bold;"
+            elif val == "AVOID":
+                return "background-color: #dc2626; color: white; font-weight: bold;"
+            return ""
+
+        styled = display_df.style.applymap(highlight_signal, subset=["Signal"])
+        
+        # Display the dataframe
+        st.dataframe(
+            styled, 
+            use_container_width=True, 
+            height=400,
+            hide_index=True
+        )
+
+        # ─── Export and Stats Row ─────────────────────────────────────────────
+        st.markdown("---")
+        
+        col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
+        
+        with col1:
+            buy_count = len(df[df["Signal"] == "BUY"])
+            st.metric("🟢 BUY", buy_count)
+        
+        with col2:
+            watch_count = len(df[df["Signal"] == "WATCH"])
+            st.metric("🟡 WATCH", watch_count)
+        
+        with col3:
+            avoid_count = len(df[df["Signal"] == "AVOID"])
+            st.metric("🔴 AVOID", avoid_count)
+        
+        with col4:
+            avg_score = df["AI Score"].mean()
+            st.metric("📈 Avg Score", f"{avg_score:.1f}")
+        
+        with col5:
+            # Prepare CSV for download
+            export_df = df[display_cols].copy()
+            csv = export_df.to_csv(index=False)
+            
+            st.download_button(
+                label="📥 Export to CSV",
+                data=csv,
+                file_name=f"ai_screener_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                help="Download the screener results as CSV"
+            )
+            
+            # Optional: Add refresh button
+            if st.button("🔄 Refresh Data"):
+                st.cache_data.clear()
+                st.rerun()
+
+    else:
+        st.warning("No data could be fetched. Please check your ticker symbols.")
+else:
+    st.info("Please enter some ticker symbols to begin screening.")
+
+# ─── Footer ────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.caption("💡 Tip: Data is cached for 5 minutes. Click 'Refresh Data' to force update.")
