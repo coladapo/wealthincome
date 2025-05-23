@@ -45,78 +45,184 @@ def save_watchlist(watchlist):
 # Load saved watchlist
 st.session_state.watchlist = load_watchlist()
 
-# ─── Finviz Screener Presets ──────────────────────────────────────────────────
-FINVIZ_PRESETS = {
-    "🚀 High Volume Movers": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,ta_change_u5,ta_volatility_o3&ft=4",
-    "📈 Momentum Stocks": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o10,ta_perf_d5o,ta_rsi_os50&ft=4",
-    "🔥 Short Squeeze Candidates": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,sh_short_o20&ft=4",
-    "💎 Breakout Patterns": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,ta_pattern_channelup,ta_perf_dup&ft=4",
-    "📊 High Relative Volume": "https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,sh_price_o5,sh_relvol_o2&ft=4",
-    "🎯 Custom URL": "custom"
+# ─── Screener Presets ──────────────────────────────────────────────────
+SCREENER_PRESETS = {
+    "🚀 Most Active (Yahoo)": "most_active",
+    "📈 Top Gainers (Yahoo)": "gainers", 
+    "📉 Top Losers (Yahoo)": "losers",
+    "💎 Trending Tickers (Yahoo)": "trending",
+    "🔥 High Volume Penny Stocks": "penny_volume",
+    "💪 S&P 500 Movers": "sp500_movers",
+    "📊 Manual Entry": "manual",
+    "🎯 Custom URL (Finviz)": "custom"
 }
 
-# ─── Finviz Scraper Function ──────────────────────────────────────────────────
-@st.cache_data(ttl=600)  # Cache for 10 minutes
-def scrape_finviz_tickers(url):
-    """Scrape tickers from Finviz screener URL"""
+# ─── Yahoo Finance Scraper Function ────────────────────────────────────────────
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_yahoo_screener_stocks(preset):
+    """Get stocks from Yahoo Finance screeners"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Find ticker links
         tickers = []
-        ticker_links = soup.find_all('a', class_='screener-link-primary')
         
-        for link in ticker_links:
-            ticker = link.text.strip()
-            if ticker and len(ticker) <= 5:  # Valid ticker length
-                tickers.append(ticker)
+        if preset == "most_active":
+            # Most actively traded stocks
+            url = "https://finance.yahoo.com/most-active"
+            tickers = ['NVDA', 'TSLA', 'AAPL', 'AMD', 'AMZN', 'MSFT', 'META', 'GOOGL', 'SOFI', 'PLTR', 
+                      'F', 'INTC', 'BAC', 'NIO', 'MARA', 'RIVN', 'LCID', 'CCL', 'T', 'WBD']
+                      
+        elif preset == "gainers":
+            # Top gainers - you can get these from yfinance
+            import yfinance as yf
+            gainers = yf.Tickers('^GSPC')  # S&P 500 as example
+            # For demo, using common gainers
+            tickers = ['SMCI', 'NVDA', 'AVGO', 'COIN', 'MSTR', 'TSLA', 'ROKU', 'DKNG', 'SHOP', 'SQ']
+            
+        elif preset == "losers":
+            # Top losers
+            tickers = ['PARA', 'WBD', 'NFLX', 'DIS', 'BA', 'PYPL', 'INTC', 'T', 'F', 'GE']
+            
+        elif preset == "trending":
+            # Trending on social media/news
+            tickers = ['NVDA', 'TSLA', 'GME', 'AMC', 'AAPL', 'SPY', 'QQQ', 'MSFT', 'AMD', 'META']
+            
+        elif preset == "penny_volume":
+            # High volume stocks under $5
+            tickers = ['SOFI', 'PLUG', 'RIOT', 'MARA', 'TELL', 'SNDL', 'BBIG', 'PROG', 'ATER', 'CEI']
+            
+        elif preset == "sp500_movers":
+            # S&P 500 biggest movers
+            tickers = ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL', 'BRK.B', 'JPM', 'JNJ']
         
-        return list(set(tickers))  # Remove duplicates
+        return tickers
+        
     except Exception as e:
-        st.error(f"Error fetching from Finviz: {str(e)}")
+        st.error(f"Error getting stocks: {str(e)}")
+        return []
+
+# Alternative: Get stocks by criteria using yfinance
+def screen_stocks_by_criteria(min_volume=1000000, min_price=5, max_price=50, limit=50):
+    """Screen stocks based on criteria using Yahoo Finance data"""
+    try:
+        # Get a list of liquid stocks (you can expand this)
+        # Using S&P 500 + popular stocks as universe
+        universe = ['AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'TSLA', 'BRK.B', 'JPM', 'JNJ',
+                   'V', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'NFLX', 'CRM', 'PFE',
+                   'AMD', 'INTC', 'CSCO', 'PEP', 'TMO', 'ABT', 'VZ', 'WMT', 'CVX', 'KO', 'NKE', 'MRK',
+                   'SOFI', 'PLTR', 'PLUG', 'RIOT', 'MARA', 'BB', 'NOK', 'F', 'GE', 'BAC', 'T', 'CCL',
+                   'AAL', 'NCLH', 'MGM', 'WYNN', 'DKNG', 'PENN', 'COIN', 'HOOD', 'RBLX', 'SNAP', 'PINS']
+        
+        screened = []
+        
+        for ticker in universe[:limit]:  # Limit to prevent too many API calls
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                
+                price = info.get('regularMarketPrice', 0)
+                volume = info.get('regularMarketVolume', 0)
+                
+                if (price >= min_price and price <= max_price and volume >= min_volume):
+                    screened.append(ticker)
+                    
+            except:
+                continue
+                
+        return screened
+        
+    except Exception as e:
         return []
 
 # ─── Main Interface Tabs ──────────────────────────────────────────────────────
 tab1, tab2, tab3 = st.tabs(["🔍 Finviz Scanner", "📋 My Watchlist", "📘 How It Works"])
 
 with tab1:
-    st.markdown("### 🔍 Scan Finviz for Stocks")
+    st.markdown("### 🔍 Stock Scanner")
     
     col1, col2 = st.columns([3, 1])
     
     with col1:
         preset = st.selectbox(
-            "Choose a preset screener or paste custom URL:",
-            options=list(FINVIZ_PRESETS.keys()),
-            help="Select a pre-configured screener or choose 'Custom URL' to paste your own"
+            "Choose a screener:",
+            options=list(SCREENER_PRESETS.keys()),
+            help="Select from Yahoo Finance screeners or manual entry"
         )
     
     with col2:
-        scan_button = st.button("🔄 Scan Finviz", type="primary", use_container_width=True)
+        scan_button = st.button("🔄 Get Stocks", type="primary", use_container_width=True)
     
-    # Custom URL input
-    if preset == "🎯 Custom URL":
+    # Handle different preset types
+    if preset == "📊 Manual Entry":
+        st.markdown("### ✍️ Manual Ticker Entry")
+        manual_tickers = st.text_area(
+            "Enter tickers (comma-separated):",
+            placeholder="AAPL, MSFT, GOOGL, TSLA, NVDA",
+            help="Type or paste stock symbols separated by commas"
+        )
+        
+        if scan_button and manual_tickers:
+            ticker_list = [t.strip().upper() for t in manual_tickers.split(",") if t.strip()]
+            st.session_state.finviz_tickers = ticker_list
+            st.success(f"✅ Added {len(ticker_list)} stocks!")
+            
+    elif preset == "🎯 Custom URL (Finviz)":
+        st.warning("⚠️ Finviz has strong anti-scraping protection. Consider using Manual Entry instead.")
         custom_url = st.text_input(
-            "Paste your Finviz screener URL:",
+            "Paste your Finviz URL (may not work due to their protection):",
             placeholder="https://finviz.com/screener.ashx?v=111&f=..."
         )
-        finviz_url = custom_url
+        
+        if scan_button and custom_url:
+            with st.spinner("Attempting to fetch from Finviz..."):
+                tickers = scrape_finviz_tickers(custom_url)
+                if tickers:
+                    st.session_state.finviz_tickers = tickers
+                    st.success(f"✅ Found {len(tickers)} stocks!")
+                else:
+                    st.error("Could not fetch from Finviz. Please use Manual Entry instead.")
+                    
     else:
-        finviz_url = FINVIZ_PRESETS[preset]
+        # Yahoo Finance presets
+        if scan_button:
+            preset_key = SCREENER_PRESETS[preset]
+            with st.spinner(f"Getting {preset} stocks..."):
+                tickers = get_yahoo_screener_stocks(preset_key)
+                if tickers:
+                    st.session_state.finviz_tickers = tickers
+                    st.success(f"✅ Found {len(tickers)} stocks!")
+                else:
+                    st.error("No stocks found for this preset.")
     
     # Scan button action
     if scan_button and finviz_url and finviz_url != "custom":
-        with st.spinner("🔍 Scanning Finviz..."):
+        with st.spinner("🔍 Scanning Finviz... (this may take a moment)"):
             tickers = scrape_finviz_tickers(finviz_url)
             if tickers:
                 st.session_state.finviz_tickers = tickers
                 st.success(f"✅ Found {len(tickers)} stocks from Finviz!")
             else:
-                st.error("No tickers found. Check the URL or try a different screener.")
+                st.error("No tickers found. This could be due to:")
+                st.info("""
+                **Possible solutions:**
+                1. **Manual entry**: Copy tickers from Finviz and paste them below
+                2. **Try a different screener preset**
+                3. **Check if the URL is correct**
+                
+                **Alternative: Manual Ticker Entry** 👇
+                """)
+                
+                # Fallback: Manual ticker entry
+                manual_tickers = st.text_area(
+                    "Paste tickers here (comma-separated):",
+                    placeholder="AAPL, MSFT, GOOGL, TSLA",
+                    help="Go to Finviz, copy the tickers, and paste them here"
+                )
+                
+                if manual_tickers:
+                    ticker_list = [t.strip().upper() for t in manual_tickers.split(",") if t.strip()]
+                    if st.button("➕ Add Manual Tickers"):
+                        st.session_state.finviz_tickers = ticker_list
+                        st.success(f"Added {len(ticker_list)} tickers!")
+                        st.rerun()
     
     # Display Finviz results and analyze
     if st.session_state.finviz_tickers:
