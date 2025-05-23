@@ -4,10 +4,15 @@ import pandas as pd
 import yfinance as yf
 
 try:
-    from finvizfinance.screener.overview import Overview
-    finviz_available = True
-except ImportError:
-    finviz_available = False
+  from finvizfinance.screener.overview import Overview
+
+overview = Overview()
+filters = {
+    'Average Volume': 'Over 500K',
+    'Relative Volume': 'Over 1.5'
+}
+overview.set_filter(filters_dict=filters)
+df = overview.screener_view()
 
 # Page Setup
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
