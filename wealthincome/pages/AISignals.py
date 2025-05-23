@@ -8,12 +8,7 @@ st.title("🧠 AI Stock Screener")
 
 # ─── Pasteable Tickers Input ───────────────────────────────────────────────────
 default = (
-    "AVGO,MRVL,CRWD,BJ,FL,S,Z,PANW,NET,DG,LMT,FDX,CVX,XOM,EQT,"
-    "HOOD,COIN,DDOG,VIX,MARA,MDB,XLV,BA,CMG,VRT,TXN,LRCX,GOOGL,SNOW,CRM,DELL,"
-    "X,XLK,XLY,WM,BBY,R,M,KSS,TGT,TJX,WMT,AMZN,GFI,MSTR,TSM,NFLX,PLTR,CVS,"
-    "UBER,HUBS,HIMS,AMD,SMCI,ANET,VST,BABA,BL,JNJ,MS,ASML,IBM,ALLY,AXP,PG,"
-    "META,LLY,ENPH,TMQ,MCO,MSFT,V,BTC,ETH,IBIT,QQQ,NVDA,LOW,COST,VOO,CRVW,"
-    "QSI,QBTS,SPY,TSLA,ULTA,EQIX,INTC,BSX,SMH"
+    "KSS,QBTS,QSI,MARA,SNOW,HIMS,SMCI,FL,ENPH,BL"
 )
 user_input = st.text_input(
     "📋 Paste Tickers from Finviz (comma-separated):",
