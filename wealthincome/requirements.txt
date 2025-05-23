@@ -2,4 +2,5 @@ streamlit
 yfinance
 pandas
 plotly
-analysis_engine   # <‑‑ new – pip installs the FinViz API wrapper
+# FinViz wrapper (hosted on PyPI)
+analysis_engine
