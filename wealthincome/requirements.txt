@@ -1,7 +1,5 @@
 streamlit
-yfinance
 pandas
+yfinance
 plotly
-
-# FinViz wrapper (hosted on PyPI)
-analysis_engine
+analysis_engine==1.9.3   # or the latest tag
