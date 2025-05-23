@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -27,15 +26,13 @@ if finviz_available:
     if st.button("🔄 Add Top Gainers from Finviz"):
         try:
             overview = Overview()
-            overview.set_filter(
-                filters=["sh_avgvol_o500", "sh_price_o1", "ta_change_o5"],
-                order="change"
-            )
+            overview.set_signal("Top Gainers")
+            overview.set_filter("sh_avgvol_o500", order="change")
             top_df = overview.screener_view()
             top_tickers = top_df["Ticker"].tolist()
-            current = set(st.session_state["tickers"])
-            updated = list(current.union(top_tickers))
-            st.session_state["tickers"] = updated
+            new_tickers = [t.strip().upper() for t in top_tickers]
+            updated_tickers = list(set(st.session_state["tickers"] + new_tickers))
+            st.session_state["tickers"] = updated_tickers
         except Exception as e:
             st.error(f"❌ Failed to fetch Finviz data: {e}")
 
@@ -83,19 +80,15 @@ for ticker in tickers:
     try:
         info = yf.Ticker(ticker).info
         hist = yf.Ticker(ticker).history(period="1mo")
-
         price = info.get("regularMarketPrice", 0)
         change = info.get("regularMarketChangePercent", 0)
         rvol = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
         short_pct = info.get("shortPercentOfFloat", 0) * 100
-
         ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
         # Tags
         tag_list = []
-
-        # Top Pick (placeholder, assigned after full sort)
-        tag_list.append("")
+        tag_list.append("")  # Placeholder
 
         if change >= 2 and rvol >= 1.5:
             tag_list.append("🔁 Momentum")
@@ -110,10 +103,9 @@ for ticker in tickers:
             "RVOL": round(rvol, 3),
             "Short %": f"{short_pct:.1f}%",
             "AI Score": ai_score,
-            "Signal": "",  # Assigned later
-            "Tags": ", ".join(tag_list[1:])  # Skip placeholder
+            "Signal": "",  # Will set later
+            "Tags": ", ".join(tag_list[1:])
         })
-
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
 
@@ -125,7 +117,7 @@ if not df.empty:
     top_idx = df["AI Score"].idxmax()
     if pd.notna(top_idx):
         current_tags = df.at[top_idx, "Tags"]
-        df.at[top_idx, "Tags"] = "🏆 Top Pick" + (", " + current_tags if current_tags else "")
+        df.at[top_idx, "Tags"] = ("🏆 Top Pick" + (", " + current_tags if current_tags else ""))
 
     if selected_signal != "All":
         df = df[df["Signal"] == selected_signal]
