@@ -60,69 +60,24 @@ FINVIZ_PRESETS = {
 def scrape_finviz_tickers(url):
     """Scrape tickers from Finviz screener URL"""
     try:
-        import time
-        import random
-        
-        # More realistic headers
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        
-        # Add delay to avoid rate limiting
-        time.sleep(random.uniform(1, 2))
-        
         response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Multiple methods to find tickers
+        # Find ticker links
         tickers = []
-        
-        # Method 1: Look for ticker links
         ticker_links = soup.find_all('a', class_='screener-link-primary')
+        
         for link in ticker_links:
             ticker = link.text.strip()
-            if ticker and len(ticker) <= 5 and ticker.isalpha():
-                tickers.append(ticker.upper())
+            if ticker and len(ticker) <= 5:  # Valid ticker length
+                tickers.append(ticker)
         
-        # Method 2: If no tickers found, try table approach
-        if not tickers:
-            table = soup.find('table', {'id': 'screener-views-table'})
-            if table:
-                rows = table.find_all('tr')[1:]  # Skip header
-                for row in rows:
-                    cells = row.find_all('td')
-                    if cells and len(cells) > 1:
-                        ticker_cell = cells[1]  # Usually 2nd column
-                        ticker_link = ticker_cell.find('a')
-                        if ticker_link:
-                            ticker = ticker_link.text.strip()
-                            if ticker and len(ticker) <= 5:
-                                tickers.append(ticker.upper())
-        
-        # Method 3: Look for any links containing "quote.ashx"
-        if not tickers:
-            all_links = soup.find_all('a', href=True)
-            for link in all_links:
-                if 'quote.ashx?t=' in link['href']:
-                    ticker = link.text.strip()
-                    if ticker and len(ticker) <= 5 and ticker.isalpha():
-                        tickers.append(ticker.upper())
-        
-        # Remove duplicates and return
-        return list(set(tickers))
-        
-    except requests.exceptions.RequestException as e:
-        st.error(f"Network error: {str(e)}")
-        return []
+        return list(set(tickers))  # Remove duplicates
     except Exception as e:
-        st.error(f"Error parsing Finviz data: {str(e)}")
+        st.error(f"Error fetching from Finviz: {str(e)}")
         return []
 
 # ─── Main Interface Tabs ──────────────────────────────────────────────────────
@@ -158,35 +113,13 @@ with tab1:
     
     # Scan button action
     if scan_button and finviz_url and finviz_url != "custom":
-        with st.spinner("🔍 Scanning Finviz... (this may take a moment)"):
+        with st.spinner("🔍 Scanning Finviz..."):
             tickers = scrape_finviz_tickers(finviz_url)
             if tickers:
                 st.session_state.finviz_tickers = tickers
                 st.success(f"✅ Found {len(tickers)} stocks from Finviz!")
             else:
-                st.error("No tickers found. This could be due to:")
-                st.info("""
-                **Possible solutions:**
-                1. **Manual entry**: Copy tickers from Finviz and paste them below
-                2. **Try a different screener preset**
-                3. **Check if the URL is correct**
-                
-                **Alternative: Manual Ticker Entry** 👇
-                """)
-                
-                # Fallback: Manual ticker entry
-                manual_tickers = st.text_area(
-                    "Paste tickers here (comma-separated):",
-                    placeholder="AAPL, MSFT, GOOGL, TSLA",
-                    help="Go to Finviz, copy the tickers, and paste them here"
-                )
-                
-                if manual_tickers:
-                    ticker_list = [t.strip().upper() for t in manual_tickers.split(",") if t.strip()]
-                    if st.button("➕ Add Manual Tickers"):
-                        st.session_state.finviz_tickers = ticker_list
-                        st.success(f"Added {len(ticker_list)} tickers!")
-                        st.rerun()
+                st.error("No tickers found. Check the URL or try a different screener.")
     
     # Display Finviz results and analyze
     if st.session_state.finviz_tickers:
