@@ -1,129 +1,123 @@
-# AISignals.py
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-# ─── 1) This must be your very first Streamlit command ────────────────────────
+# Page Setup
 st.set_page_config(page_title="📊 AI Stock Screener", layout="wide")
-
-# ─── 2) App Title ─────────────────────────────────────────────────────────────
 st.title("🧠 AI Stock Screener")
 
-# ─── 3) Persisted Ticker Input ────────────────────────────────────────────────
-if "tickers" not in st.session_state:
-    st.session_state.tickers = []
+# Pasteable Ticker Input (Finviz style)
+default = "TSLA,NVDA,AMD,AAPL,MSFT,AMZN,META,NFLX,GME,PLTR"
+user_input = st.text_input("📋 Paste Tickers from Finviz (comma-separated):", value=default)
+tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
 
-# Show text_input with current list
-ticker_str = st.text_input(
-    "📋 Paste Tickers (comma-separated):",
-    value=",".join(st.session_state.tickers),
-    help="Any tickers you paste here will stay in this session until you close the tab."
-)
-
-# Whenever it changes, update the session list
-if ticker_str is not None:
-    st.session_state.tickers = [
-        t.strip().upper() for t in ticker_str.split(",") if t.strip()
-    ]
-
-tickers = st.session_state.tickers
-
-# ─── 4) How it Works (optional) ──────────────────────────────────────────────
+# How This Screener Works
 with st.expander("📘 How This Screener Works"):
     st.markdown("""
-- **AI Score** = (% Change × 2) + (RVOL × 10) + (Short% × 2)  
-- **Signals**  
-  - 🟢 BUY if Score ≥ 60  
-  - 🟡 WATCH if Score ≥ 45  
-  - 🔴 AVOID if Score < 45  
-- **Tags**  
-  - 🏆 Top Pick → highest score each refresh  
-  - 🔁 Momentum → % Change ≥ 2% & RVOL ≥ 1.5  
-  - 📈 Breakout → price > 20‑day high  
+This tool scans the market for **momentum setups** using the logic below:
+
+### 📊 Key Metrics:
+- **% Change** – today's movement
+- **RVOL** – relative volume
+- **Short %** – short interest float
+
+### 🧠 AI Score Formula:
+```text
+AI Score = (% Change × 2) + (RVOL × 10) + (Short % × 2)
+```
+This composite score ranks stocks by **momentum + volume + sentiment**.
+
+### 🏁 Signals:
+- 🟢 **BUY** if Score ≥ 60
+- 🟡 **WATCH** if Score ≥ 45
+- 🔴 **AVOID** if Score < 45
+
+Use the **signal dropdown below** to focus on actionable opportunities.
+
+🕐 **Tip:** Use this screener before market open or during **power hour** (last hour of trading).
+
+⏰ **Market Hours Reference:**
+
+| Location      | Market Open | Power Hour      |
+|---------------|-------------|-----------------|
+| Los Angeles 🇺🇸 | 6:30 AM PST | 12:00 – 1:00 PM PST |
+| London 🇬🇧     | 8:00 AM GMT | 3:00 – 4:00 PM GMT |
     """)
 
-# ─── 5) Signal Filter ───────────────────────────────────────────────────────
-selected_signal = st.selectbox(
-    "📍 Filter by Signal", ["All", "BUY", "WATCH", "AVOID"]
-)
+# Filter dropdown
+selected_signal = st.selectbox("📍 Filter by Signal", options=["All", "BUY", "WATCH", "AVOID"])
 
-# ─── 6) Fetch, Score & Tag ────────────────────────────────────────────────────
-records = []
-for sym in tickers:
+# Fetch and compute
+data = []
+for ticker in tickers:
     try:
-        tk   = yf.Ticker(sym)
-        info = tk.info
-        hist = tk.history(period="1mo")
+        info = yf.Ticker(ticker).info
+        hist = yf.Ticker(ticker).history(period="1mo")
 
-        price   = info.get("regularMarketPrice", 0) or 0
-        change  = info.get("regularMarketChangePercent", 0) or 0
-        avg_vol = info.get("averageVolume", 1) or 1
-        rvol    = (info.get("regularMarketVolume", 1) or 1) / avg_vol
-        shortp  = (info.get("shortPercentOfFloat", 0) or 0) * 100
+        price = info.get("regularMarketPrice", 0)
+        change = info.get("regularMarketChangePercent", 0)
+        rvol = info.get("regularMarketVolume", 1) / info.get("averageVolume", 1)
+        short_pct = info.get("shortPercentOfFloat", 0) * 100
 
-        score = round((change * 2) + (rvol * 10) + (shortp * 2), 2)
+        ai_score = round((change * 2) + (rvol * 10) + (short_pct * 2), 2)
 
-        tags = []
+        # Tags
+        tag_list = []
+
+        # Top Pick
+        tag_list.append("")  # Will assign Top Pick later
+
+        # Momentum: high % change + high rvol
         if change >= 2 and rvol >= 1.5:
-            tags.append("🔁 Momentum")
-        if not hist.empty:
-            high20 = hist["High"].rolling(20).max().iloc[-1]
-            if price > high20:
-                tags.append("📈 Breakout")
+            tag_list.append("🔁 Momentum")
 
-        records.append({
-            "Ticker":    sym,
-            "Price":     f"${price:.2f}",
-            "% Change":  f"{change:.2f}%",
-            "RVOL":      round(rvol,3),
-            "Short %":   f"{shortp:.1f}%",
-            "AI Score":  score,
-            "Tags":      ", ".join(tags)  # Top Pick added below
+        # Breakout Alert: today’s price > 20-day high
+        if not hist.empty and price > hist["High"].rolling(20).max().iloc[-1]:
+            tag_list.append("📈 Breakout")
+
+        data.append({
+            "Ticker": ticker,
+            "Price": f"${price:.2f}",
+            "% Change": f"{change:.2f}%",
+            "RVOL": round(rvol, 3),
+            "Short %": f"{short_pct:.1f}%",
+            "AI Score": ai_score,
+            "Signal": "",  # Set later
+            "Tags": ", ".join(tag_list[1:])  # omit placeholder
         })
 
     except Exception as e:
-        st.error(f"Error fetching {sym}: {e}")
+        print(f"Error fetching data for {ticker}: {e}")
 
-df = pd.DataFrame(records)
+# Create DataFrame
+df = pd.DataFrame(data)
 
 if not df.empty:
-    # ─── 7) Derive Signal ──────────────────────────────────────────────────────
-    df["Signal"] = df["AI Score"].apply(
-        lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID"
-    )
+    # Set Signal
+    df["Signal"] = df["AI Score"].apply(lambda x: "BUY" if x >= 60 else "WATCH" if x >= 45 else "AVOID")
 
-    # ─── 8) Mark Top Pick ──────────────────────────────────────────────────────
-    top_i = df["AI Score"].idxmax()
-    df.at[top_i, "Tags"] = "🏆 Top Pick" + (
-        (", " + df.at[top_i, "Tags"]) if df.at[top_i, "Tags"] else ""
-    )
+    # Set Top Pick tag
+    top_idx = df["AI Score"].idxmax()
+    if pd.notna(top_idx):
+        current_tags = df.at[top_idx, "Tags"]
+        df.at[top_idx, "Tags"] = ("🏆 Top Pick" + (", " + current_tags if current_tags else ""))
 
-    # ─── 9) Apply User Filter ─────────────────────────────────────────────────
+    # Apply signal filter
     if selected_signal != "All":
         df = df[df["Signal"] == selected_signal]
 
-    # ─── 🔽 10) Custom Sort ───────────────────────────────────────────────────
-    def sort_key(row):
-        # Top Pick first
-        if "🏆" in row["Tags"]:
-            return (0, -row["AI Score"])
-        # Then BUY, WATCH, AVOID
-        order = {"BUY":1, "WATCH":2, "AVOID":3}
-        return (order.get(row["Signal"], 4), -row["AI Score"])
+    # Custom color formatting
+    def highlight_signal(val):
+        color = ""
+        if val == "BUY":
+            color = "background-color: #16a34a; color: white;"
+        elif val == "WATCH":
+            color = "background-color: #facc15; color: black;"
+        elif val == "AVOID":
+            color = "background-color: #dc2626; color: white;"
+        return color
 
-    # build a temporary sort-key column, sort, then drop it
-    df["_sort"] = df.apply(sort_key, axis=1)
-    df = df.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
-
-    # ─── 11) Styling ───────────────────────────────────────────────────────────
-    def style_sig(v):
-        if v=="BUY":   return "background-color:#16a34a;color:white"
-        if v=="WATCH": return "background-color:#facc15;color:black"
-        if v=="AVOID": return "background-color:#dc2626;color:white"
-        return ""
-
-    st.dataframe(df.style.applymap(style_sig, subset=["Signal"]),
-                 use_container_width=True)
-
+    styled_df = df.style.applymap(highlight_signal, subset=["Signal"])
+    st.dataframe(styled_df, use_container_width=True)
 else:
-    st.warning("No data available. Paste some tickers above and press Enter.")
+    st.warning("No data available. Please check the tickers.")
