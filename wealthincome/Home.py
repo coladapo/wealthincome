@@ -3,10 +3,6 @@ import streamlit as st
 # Set up page configuration
 st.set_page_config(page_title="Trading Hub", layout="wide")
 
-# Optional Sidebar header
-with st.sidebar:
-    st.header("📊 Navigation")
-
 # Main dashboard hub content
 st.title("📈 Trading Dashboard Hub")
 st.markdown("Welcome! Choose a module from the sidebar to begin:")
