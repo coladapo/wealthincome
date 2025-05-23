@@ -1,5 +1,6 @@
+# requirements.txt
 streamlit
-pandas
 yfinance
+pandas
 plotly
-analysis_engine==1.9.3   # or the latest tag
+analysis_engine==1.9.5   # or the latest that exists on PyPI
