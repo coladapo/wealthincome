@@ -3,3 +3,4 @@ finvizfinance
 streamlit>=1.10
 pandas
 yfinance
+ta
