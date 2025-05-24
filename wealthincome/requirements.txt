@@ -1,6 +1,7 @@
 plotly
 finvizfinance 
-streamlit>=1.10
+streamlit
 pandas
 yfinance
 ta
+matplotlib
