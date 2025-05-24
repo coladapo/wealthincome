@@ -1,5 +1,5 @@
 plotly
-finvizfinance>=0.14.0
+finvizfinance==1.1.0
 streamlit
 pandas
 yfinance
