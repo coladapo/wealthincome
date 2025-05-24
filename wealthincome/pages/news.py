@@ -58,20 +58,43 @@ def fetch_ticker_news_yfinance(tickers_string):
             # Create a yfinance Ticker object
             stock = yf.Ticker(ticker)
             
-            # Get news
+            # Get news - this returns a list of dictionaries
             news_data = stock.news
             
             if news_data:
                 for article in news_data:
+                    # Debug: uncomment to see the structure
+                    # st.write(f"Article keys: {article.keys()}")
+                    # st.write(f"Sample article: {article}")
+                    
+                    # Extract data with multiple possible key names
+                    title = article.get('title') or article.get('Title') or article.get('headline') or 'No Title'
+                    link = article.get('link') or article.get('Link') or article.get('url') or '#'
+                    
+                    # Handle the timestamp
+                    timestamp = article.get('providerPublishTime') or article.get('publishedAt') or article.get('published_at')
+                    if timestamp:
+                        try:
+                            date_obj = datetime.fromtimestamp(timestamp)
+                            date_str = date_obj.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            date_str = str(timestamp)
+                            date_obj = datetime.min
+                    else:
+                        date_str = 'No Date'
+                        date_obj = datetime.min
+                    
                     # Standardize the format
                     formatted_article = {
-                        'Title': article.get('title', 'No Title'),
-                        'Link': article.get('link', '#'),
-                        'Date': datetime.fromtimestamp(article.get('providerPublishTime', 0)).strftime('%Y-%m-%d %H:%M:%S') if article.get('providerPublishTime') else 'No Date',
-                        'Source': article.get('publisher', 'Unknown'),
+                        'Title': title,
+                        'Link': link,
+                        'Date': date_str,
+                        'Source': article.get('publisher') or article.get('source') or article.get('Provider') or 'Unknown',
                         'Ticker': ticker,
-                        'Summary': article.get('summary', ''),
-                        'Parsed_Date': datetime.fromtimestamp(article.get('providerPublishTime', 0)) if article.get('providerPublishTime') else datetime.min
+                        'Summary': article.get('summary') or article.get('description') or '',
+                        'Parsed_Date': date_obj,
+                        # Store original for debugging
+                        'Original': article
                     }
                     all_news.append(formatted_article)
                     
@@ -116,18 +139,31 @@ default_tickers = "AAPL,TSLA,GOOGL" # Default tickers
 tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=default_tickers, key="news_tickers_input")
 
 # Add a news source selector for future expansion
-news_source = st.selectbox(
-    "Select News Source:",
-    ["Yahoo Finance (Free)", "Finviz (Requires API Key - Not Active)", "NewsAPI (Requires API Key - Not Active)"],
-    index=0,
-    help="Currently only Yahoo Finance is active. Other sources require API keys."
-)
+col1, col2 = st.columns([3, 1])
+with col1:
+    news_source = st.selectbox(
+        "Select News Source:",
+        ["Yahoo Finance (Free)", "Finviz (Requires API Key - Not Active)", "NewsAPI (Requires API Key - Not Active)"],
+        index=0,
+        help="Currently only Yahoo Finance is active. Other sources require API keys."
+    )
+with col2:
+    debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
 
 if st.button("Fetch News", key="fetch_news_button"):
     if tickers_input:
         with st.spinner("Fetching news articles..."):
             if news_source == "Yahoo Finance (Free)":
                 news_articles = fetch_ticker_news_yfinance(tickers_input)
+                
+                # Debug mode: show first article structure
+                if debug_mode and news_articles and len(news_articles) > 0:
+                    st.write("🔍 Debug Info - First Article Structure:")
+                    first_article = news_articles[0]
+                    if 'Original' in first_article:
+                        st.json(first_article['Original'])
+                    else:
+                        st.json(first_article)
             else:
                 st.warning(f"{news_source} is not currently active. Please use Yahoo Finance.")
                 news_articles = []
