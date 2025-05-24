@@ -1,51 +1,55 @@
-import sys
-import os
-import streamlit as st
-
-# --- Start of Fix ---
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
-# --- End of Fix ---
-
-# --- Enhanced Debugging ---
-st.subheader("🛠️ Import Debugging Info")
+# --- Enhanced Debugging V2 ---
+st.subheader("🛠️ Import Debugging Info (V2)")
 st.write("**Current sys.path:**", sys.path)
 st.write(f"**Checking for 'data_manager.py' in:** `{parent_dir}`")
 try:
     dir_list = os.listdir(parent_dir)
     st.write("**Files/Folders in Root:**", dir_list)
-    is_present = 'data_manager.py' in dir_list
-    st.write(f"**Is 'data_manager.py' present?** {is_present}")
-    if not is_present:
-        st.warning("Warning: 'data_manager.py' not found in the listed directory. Check filename and location.")
+
+    # --- New Detailed Check ---
+    st.write("**Detailed File Check (using repr):**")
+    found_it = False
+    target_name = 'data_manager.py'
+    st.write(f"Looking for: {repr(target_name)}") # Show target representation
+    
+    for filename in dir_list:
+        st.write(f"  -> Checking: {repr(filename)}") # Show exact representation
+        if filename == target_name:
+            st.success(f"      -> Found a match!: {repr(filename)}")
+            found_it = True
+            
+    st.write(f"**Is 'data_manager.py' present?** {found_it}")
+    # --- End Detailed Check ---
+
+    if not found_it:
+        st.warning("Warning: 'data_manager.py' *still* not found via direct comparison. Check for hidden characters/typos or try rebooting the app.")
+
 except Exception as e:
     st.error(f"Could not list directory: {e}")
 st.markdown("---")
-# --- End Enhanced Debugging ---
+# --- End Enhanced Debugging V2 ---
 
-# Now, try importing data_manager
+# --- Rest of your import code ---
 try:
     st.write("Attempting: `import data_manager`...")
-    import data_manager as dm
+    import data_manager as dm # Keep this line
     st.success("✅ Successfully imported `data_manager` as `dm`.")
 
     st.write("Attempting: `from data_manager import data_manager`...")
-    from data_manager import data_manager
+    from data_manager import data_manager # Keep this line
     st.success("✅ Successfully imported the `data_manager` object.")
-    st.session_state['data_manager_loaded'] = True # Flag success
 
 except ImportError as e:
     st.error(f"🚨 **ImportError Caught!**")
-    st.error(f"**Error Details:** `{e}`") # <-- This line shows the *actual* error.
-    st.warning("Please check the Streamlit logs for the full traceback.")
-    st.warning("Possible causes: Syntax error in 'data_manager.py', an import error within it, or the 'data_manager' object is not defined.")
+    st.error(f"**Error Details:** `{e}`") # This will show the actual error.
     st.stop()
 except Exception as e:
     st.error(f"🚨 **An Unexpected Error Occurred During Import!**")
     st.error(f"**Error Details:** `{e}`")
     st.stop()
+
+# --- Rest of your page code ---
+# ...
 
 
 
