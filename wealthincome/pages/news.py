@@ -53,20 +53,47 @@ def fetch_ticker_news(tickers_string):
     all_news = []
 
     for ticker in tickers_list:
-        # This st.write can be commented out if you don't want it in the final UI
-        # st.caption(f"Fetching news for {ticker}...") 
+        # Uncomment the line below for debugging
+        # st.write(f"Fetching news for {ticker}...")
         try:
-            fn = FinvizNews(ticker)  # Create a new instance with the ticker
-            news_data_for_ticker = fn.get_news()
+            # Create a new FinvizNews instance for each ticker
+            fn = FinvizNews(ticker)
             
-            if news_data_for_ticker:
-                for article in news_data_for_ticker:
-                    article['Ticker'] = ticker 
-                    all_news.append(article)
-            # else:
-                # st.caption(f"No news found for {ticker} via Finviz.") # Can be noisy
+            # Get the news data
+            news_data = fn.get_news()
+            
+            # Debug: Show what type of data we got
+            # st.write(f"Type of news_data: {type(news_data)}")
+            # if news_data:
+            #     st.write(f"First item: {news_data[0] if isinstance(news_data, list) else news_data}")
+            
+            if news_data:
+                # Check if it's a list directly
+                if isinstance(news_data, list):
+                    for article in news_data:
+                        article['Ticker'] = ticker
+                        all_news.append(article)
+                # Check if it's a dictionary with ticker as key
+                elif isinstance(news_data, dict) and ticker in news_data:
+                    for article in news_data[ticker]:
+                        article['Ticker'] = ticker
+                        all_news.append(article)
+                # Try to handle other possible formats
+                elif isinstance(news_data, dict):
+                    # Maybe the data is in a different key
+                    for key, articles in news_data.items():
+                        if isinstance(articles, list):
+                            for article in articles:
+                                article['Ticker'] = ticker
+                                all_news.append(article)
+                            break
+                
+        except TypeError as e:
+            st.error(f"TypeError for {ticker}: {str(e)}")
+            st.write("This might be due to API changes in finvizfinance library.")
+            continue
         except Exception as e:
-            st.error(f"Error fetching news for {ticker}: {e}")
+            st.error(f"Error fetching news for {ticker}: {type(e).__name__}: {str(e)}")
             continue 
     
     def parse_date(date_str):
