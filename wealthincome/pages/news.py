@@ -151,16 +151,15 @@ default_tickers = "AAPL,TSLA,GOOGL" # Default tickers
 tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=default_tickers, key="news_tickers_input")
 
 # Add a news source selector for future expansion
-col1, col2 = st.columns([3, 1])
-with col1:
-    news_source = st.selectbox(
-        "Select News Source:",
-        ["Yahoo Finance (Free)", "Finviz (Requires API Key - Not Active)", "NewsAPI (Requires API Key - Not Active)"],
-        index=0,
-        help="Currently only Yahoo Finance is active. Other sources require API keys."
-    )
-with col2:
-    debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
+news_source = st.selectbox(
+    "Select News Source:",
+    ["Yahoo Finance (Free)", "Finviz (Requires API Key - Not Active)", "NewsAPI (Requires API Key - Not Active)"],
+    index=0,
+    help="Currently only Yahoo Finance is active. Other sources require API keys."
+)
+
+# Debug mode on a new line
+debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
 
 if st.button("Fetch News", key="fetch_news_button"):
     if tickers_input:
