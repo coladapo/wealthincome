@@ -80,23 +80,23 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Scanner", "📈 Signals", "💼 Portfoli
 def calculate_technical_indicators(ticker_symbol, period="1mo"):
     try:
         ticker = yf.Ticker(ticker_symbol)
-        hist = ticker.history(period=period, auto_adjust=True)
+        hist = ticker.history(period=period, auto_adjust=True) # auto_adjust=True is common
         if hist.empty: return None
         current_price = hist['Close'].iloc[-1] if not hist['Close'].empty else 0
 
         tech_data = {'price': current_price}
         tech_data['sma_20'] = ta.trend.sma_indicator(hist['Close'], window=20).iloc[-1] if len(hist['Close']) >= 20 else None
         tech_data['sma_50'] = ta.trend.sma_indicator(hist['Close'], window=50).iloc[-1] if len(hist['Close']) >= 50 else None
-        tech_data['rsi'] = ta.momentum.RSIIndicator(hist['Close'], window=14).rsi().iloc[-1] if len(hist['Close']) >= 15 else None
+        tech_data['rsi'] = ta.momentum.RSIIndicator(hist['Close'], window=14).rsi().iloc[-1] if len(hist['Close']) >= 15 else None # RSI typically needs more data
         
-        if len(hist['Close']) >= 26:
+        if len(hist['Close']) >= 26: # MACD needs enough data
             macd_obj = ta.trend.MACD(hist['Close'])
             tech_data['macd'] = macd_obj.macd().iloc[-1]
             tech_data['macd_signal'] = macd_obj.macd_signal().iloc[-1]
         else:
             tech_data['macd'], tech_data['macd_signal'] = None, None
 
-        if len(hist['Close']) >= 20:
+        if len(hist['Close']) >= 20: # Bollinger Bands
             bb_obj = ta.volatility.BollingerBands(hist['Close'])
             tech_data['bb_upper'] = bb_obj.bollinger_hband().iloc[-1]
             tech_data['bb_lower'] = bb_obj.bollinger_lband().iloc[-1]
@@ -105,19 +105,17 @@ def calculate_technical_indicators(ticker_symbol, period="1mo"):
             volume_sma_last = hist['Volume'].rolling(window=20).mean().iloc[-1]
             tech_data['volume_trend'] = (hist['Volume'].iloc[-1] / volume_sma_last) if volume_sma_last and volume_sma_last > 0 else 0
         else:
-            tech_data['bb_upper'], tech_data['bb_lower'] = None, None
-            tech_data['support'] = current_price * 0.95 if current_price else 0 # Fallback if current_price is 0
-            tech_data['resistance'] = current_price * 1.05 if current_price else 0 # Fallback
-            tech_data['volume_trend'] = 0
+            tech_data['bb_upper'], tech_data['bb_lower'], tech_data['support'], tech_data['resistance'], tech_data['volume_trend'] = None, None, current_price * 0.95, current_price * 1.05, 0
         
         return tech_data
     except Exception as e:
+        # st.caption(f"TA error for {ticker_symbol}: {e}")
         return None
 
 def get_intraday_momentum(ticker_symbol):
     try:
         ticker = yf.Ticker(ticker_symbol)
-        intraday = ticker.history(period="1d", interval="5m") 
+        intraday = ticker.history(period="1d", interval="5m") # Using 5m for more reliability
         if intraday.empty or len(intraday) < 2: return None
 
         open_price = intraday['Open'].iloc[0]
@@ -126,13 +124,14 @@ def get_intraday_momentum(ticker_symbol):
         
         price_position = (current_price - low) / (high - low) if (high - low) != 0 else 0.5
         avg_volume = intraday['Volume'].mean()
-        current_volume = intraday['Volume'].iloc[-1] 
+        current_volume = intraday['Volume'].iloc[-1] # Last interval's volume
         volume_surge = current_volume / avg_volume if avg_volume and avg_volume > 0 else 1
         price_change = ((current_price - open_price) / open_price) * 100 if open_price != 0 else 0
         
         return {'intraday_change': price_change, 'price_position': price_position,
                 'volume_surge': volume_surge, 'day_high': high, 'day_low': low, 'range': high - low}
     except Exception as e:
+        # st.caption(f"Intraday error for {ticker_symbol}: {e}")
         return None
 
 def calculate_ai_scores(ticker_data):
@@ -153,38 +152,24 @@ def calculate_ai_scores(ticker_data):
 
     if tech:
         swing_score = 0
-        rsi_val = tech.get('rsi')
-        if rsi_val is not None:
-            if 30 < rsi_val < 70: swing_score += 10
-            if rsi_val < 30: swing_score += 20
-        
-        price_val, sma20_val, sma50_val = tech.get('price'), tech.get('sma_20'), tech.get('sma_50')
-        if all(v is not None for v in [price_val, sma20_val, sma50_val]) and price_val > sma20_val > sma50_val:
-            swing_score += 25
-            
-        macd_val, macdsig_val = tech.get('macd'), tech.get('macd_signal')
-        if all(v is not None for v in [macd_val, macdsig_val]) and macd_val > macdsig_val:
-            swing_score += 15
-            
-        support_val = tech.get('support')
-        if all(v is not None for v in [price_val, support_val]) and price_val > 0 and abs(price_val - support_val) / price_val < 0.02:
-            swing_score += 20
+        if tech.get('rsi') is not None:
+            if 30 < tech['rsi'] < 70: swing_score += 10
+            if tech['rsi'] < 30: swing_score += 20
+        if all(tech.get(k) is not None for k in ['price', 'sma_20', 'sma_50']) and \
+           tech['price'] > tech['sma_20'] > tech['sma_50']: swing_score += 25
+        if all(tech.get(k) is not None for k in ['macd', 'macd_signal']) and \
+           tech['macd'] > tech['macd_signal']: swing_score += 15
+        if all(tech.get(k) is not None for k in ['price', 'support']) and \
+           tech['price'] > 0 and abs(tech['price'] - tech['support']) / tech['price'] < 0.02: swing_score += 20
         scores['swing_trade'] = round(swing_score, 2)
 
     if fund and tech:
         position_score = 0
-        pe_ratio_val = fund.get('pe_ratio')
-        if pe_ratio_val is not None and 0 < pe_ratio_val < 25: position_score += 20
-        
-        peg_ratio_val = fund.get('peg_ratio')
-        if peg_ratio_val is not None and peg_ratio_val < 1.5: position_score += 25
-        
-        rev_growth_val = fund.get('revenue_growth')
-        if rev_growth_val is not None and rev_growth_val > 0.15: position_score += 20
-        
-        price_val, sma50_val = tech.get('price'), tech.get('sma_50')
-        if all(v is not None for v in [price_val, sma50_val]) and price_val > sma50_val:
-            position_score += 15
+        if fund.get('pe_ratio') is not None and 0 < fund['pe_ratio'] < 25: position_score += 20
+        if fund.get('peg_ratio') is not None and fund['peg_ratio'] < 1.5: position_score += 25
+        if fund.get('revenue_growth') is not None and fund['revenue_growth'] > 0.15: position_score += 20
+        if all(tech.get(k) is not None for k in ['price', 'sma_50']) and \
+           tech['price'] > tech['sma_50']: position_score += 15
         scores['position_trade'] = round(position_score, 2)
     
     scores['overall'] = round((scores.get('day_trade',0) + scores.get('swing_trade',0) + scores.get('position_trade',0)) / 3, 2)
@@ -234,10 +219,10 @@ with tab1:
         ticker_input = st.text_area("Enter tickers (comma-separated):", value=default_tickers, height=100, key="ticker_text_area")
         tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
     elif data_source == "🔥 Top Movers":
-        tickers = ["NVDA", "TSLA", "AMD", "SOFI", "PLTR", "RIVN", "LCID", "NIO", "MARA", "RIOT"] 
+        tickers = ["NVDA", "TSLA", "AMD", "SOFI", "PLTR", "RIVN", "LCID", "NIO", "MARA", "RIOT"] # Sample
         st.info(f"Scanning top {len(tickers)} movers (sample data)...")
     else: 
-        tickers = ["NVDA", "TSLA", "AAPL", "SPY", "QQQ", "AMD", "MSFT", "META", "GOOGL", "AMZN"] 
+        tickers = ["NVDA", "TSLA", "AAPL", "SPY", "QQQ", "AMD", "MSFT", "META", "GOOGL", "AMZN"] # Sample
         st.info(f"Scanning {len(tickers)} trending stocks (sample data)...")
 
     if st.button("🚀 Run Analysis", type="primary", key="run_analysis_button_main"):
@@ -245,7 +230,7 @@ with tab1:
             st.warning("Please enter some tickers or select a valid data source.")
         else:
             progress_bar = st.progress(0, text="Initializing Analysis...")
-            results_list = [] 
+            results_list = [] # Use a different name to avoid conflict
             total_tickers = len(tickers)
 
             with ThreadPoolExecutor(max_workers=min(10, total_tickers if total_tickers > 0 else 1)) as executor:
@@ -312,23 +297,10 @@ with tab2:
                     with col_d1:
                         st.subheader("📊 Technical Analysis")
                         st.write(f"**Price:** ${tech.get('price', 0):.2f}")
-                        
-                        # Corrected RSI display
-                        rsi_val = tech.get('rsi')
-                        if isinstance(rsi_val, (int, float)):
-                            st.write(f"**RSI:** {rsi_val:.2f}")
-                        else:
-                            st.write(f"**RSI:** N/A")
-                            
-                        st.write(f"**Support:** ${tech.get('support', 0):.2f}")
-                        st.write(f"**Resistance:** ${tech.get('resistance', 0):.2f}")
-                        
-                        st.markdown("### 🎯 Trade Setup")
-                        entry = tech.get('price')
-                        stop = tech.get('support')
+                        st.write(f"**RSI:** {tech.get('rsi', 'N/A') if tech.get('rsi') is None else f'{tech.get(
                         target = tech.get('resistance')
 
-                        if all(isinstance(val, (int, float)) for val in [entry, stop, target]) and entry > stop and target > entry :
+                        if all(isinstance(val, (int, float)) for val in [entry, stop, target]) and entry > stop and target > entry:
                             risk_reward = (target - entry) / (entry - stop) if (entry - stop) != 0 else 0
                             st.write(f"**Entry:** ${entry:.2f}")
                             st.write(f"**Stop Loss:** ${stop:.2f} (-{((entry-stop)/entry*100):.1f}%)" if entry != 0 else "N/A")
@@ -357,53 +329,10 @@ with tab3:
     st.info("Portfolio tracking coming soon! This will track your positions, P&L, and performance metrics.")
 with tab4:
     st.header("📚 Trading Education")
-    # Keeping your markdown content concise for this example
-    with st.expander("⚡ Day Trading Strategy"):
-        st.markdown("""
-        ### Entry Criteria:
-        1. **AI Day Score > 60**
-        2. **RVOL > 2.0** (High relative volume)
-        3. **Price breaking VWAP or key level**
-        4. **Strong market (SPY green)**
-        ### Risk Management:
-        - Max 1-2% risk per trade
-        - Stop loss at previous candle low
-        - Take profits at resistance or 2:1 R/R
-        - No overnight positions
-        ### Best Times:
-        - First 30 minutes (9:30-10:00 AM ET)
-        - Power hour (3:00-4:00 PM ET)
-        """)
-    with st.expander("📊 Swing Trading Strategy"):
-        st.markdown("""
-        ### Entry Criteria:
-        1. **AI Swing Score > 70**
-        2. **RSI oversold bounce or momentum**
-        3. **Price above 20 SMA**
-        4. **Volume confirmation**
-        ### Position Management:
-        - Hold 2-10 days
-        - Trail stop at 20 SMA
-        - Scale out at targets
-        - Position size: 5-10% of account
-        ### Best Setups:
-        - Bull flag breakouts
-        - Oversold bounces at support
-        - Moving average reclaims
-        """)
-    with st.expander("💎 Position Trading Strategy"):
-        st.markdown("""
-        ### Entry Criteria:
-        1. **AI Position Score > 75**
-        2. **Strong fundamentals (PE < 25, Growth > 15%)**
-        3. **Technical uptrend (above 50 SMA)**
-        4. **Sector leadership**
-        ### Long-term Approach:
-        - Hold weeks to months
-        - Add on dips to support
-        - Rebalance quarterly
-        - Focus on quality over quantity
-        """)
+    with st.expander("⚡ Day Trading Strategy"): st.markdown("...")
+    with st.expander("📊 Swing Trading Strategy"): st.markdown("...")
+    with st.expander("💎 Position Trading Strategy"): st.markdown("...")
 
 st.markdown("---")
 st.markdown("🚨 **Disclaimer:** This tool is for educational purposes. Always do your own research and manage risk appropriately.")
+
