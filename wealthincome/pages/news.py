@@ -63,38 +63,50 @@ def fetch_ticker_news_yfinance(tickers_string):
             
             if news_data:
                 for article in news_data:
-                    # Debug: uncomment to see the structure
-                    # st.write(f"Article keys: {article.keys()}")
-                    # st.write(f"Sample article: {article}")
+                    # The actual content is nested inside 'content' key
+                    content = article.get('content', {})
                     
-                    # Extract data with multiple possible key names
-                    title = article.get('title') or article.get('Title') or article.get('headline') or 'No Title'
-                    link = article.get('link') or article.get('Link') or article.get('url') or '#'
+                    # Extract title and other info from the content
+                    title = content.get('title', 'No Title')
                     
-                    # Handle the timestamp
-                    timestamp = article.get('providerPublishTime') or article.get('publishedAt') or article.get('published_at')
-                    if timestamp:
+                    # Extract link from canonicalUrl or clickThroughUrl
+                    link_data = content.get('clickThroughUrl') or content.get('canonicalUrl') or {}
+                    link = link_data.get('url', '#')
+                    
+                    # Handle the date - it's in pubDate field
+                    pub_date = content.get('pubDate')
+                    if pub_date:
                         try:
-                            date_obj = datetime.fromtimestamp(timestamp)
+                            # Parse ISO format date
+                            date_obj = datetime.fromisoformat(pub_date.replace('Z', '+00:00'))
                             date_str = date_obj.strftime('%Y-%m-%d %H:%M:%S')
                         except:
-                            date_str = str(timestamp)
+                            date_str = pub_date
                             date_obj = datetime.min
                     else:
                         date_str = 'No Date'
                         date_obj = datetime.min
+                    
+                    # Get provider info
+                    provider = content.get('provider', {})
+                    source = provider.get('displayName', 'Unknown')
+                    
+                    # Get summary
+                    summary = content.get('summary', content.get('description', ''))
+                    # Clean HTML from summary
+                    if summary:
+                        soup = BeautifulSoup(summary, 'html.parser')
+                        summary = soup.get_text()
                     
                     # Standardize the format
                     formatted_article = {
                         'Title': title,
                         'Link': link,
                         'Date': date_str,
-                        'Source': article.get('publisher') or article.get('source') or article.get('Provider') or 'Unknown',
+                        'Source': source,
                         'Ticker': ticker,
-                        'Summary': article.get('summary') or article.get('description') or '',
-                        'Parsed_Date': date_obj,
-                        # Store original for debugging
-                        'Original': article
+                        'Summary': summary,
+                        'Parsed_Date': date_obj
                     }
                     all_news.append(formatted_article)
                     
