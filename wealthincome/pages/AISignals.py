@@ -1,24 +1,52 @@
 import sys
 import os
-import streamlit as st # Keep st import if needed early
+import streamlit as st
 
 # --- Start of Fix ---
-# Get the absolute path of the directory containing the current script (e.g., .../pages)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# Get the absolute path of the parent directory (e.g., .../wealthincome)
 parent_dir = os.path.dirname(current_dir)
-
-# Add the parent directory to the Python system path if it's not already there
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 # --- End of Fix ---
 
-# Now you can import data_manager
+# --- Enhanced Debugging ---
+st.subheader("🛠️ Import Debugging Info")
+st.write("**Current sys.path:**", sys.path)
+st.write(f"**Checking for 'data_manager.py' in:** `{parent_dir}`")
 try:
+    dir_list = os.listdir(parent_dir)
+    st.write("**Files/Folders in Root:**", dir_list)
+    is_present = 'data_manager.py' in dir_list
+    st.write(f"**Is 'data_manager.py' present?** {is_present}")
+    if not is_present:
+        st.warning("Warning: 'data_manager.py' not found in the listed directory. Check filename and location.")
+except Exception as e:
+    st.error(f"Could not list directory: {e}")
+st.markdown("---")
+# --- End Enhanced Debugging ---
+
+# Now, try importing data_manager
+try:
+    st.write("Attempting: `import data_manager`...")
+    import data_manager as dm
+    st.success("✅ Successfully imported `data_manager` as `dm`.")
+
+    st.write("Attempting: `from data_manager import data_manager`...")
     from data_manager import data_manager
-except ImportError:
-    st.error("🚨 Failed to import 'data_manager'. Please ensure 'data_manager.py' exists in the root directory and the path is correct.")
+    st.success("✅ Successfully imported the `data_manager` object.")
+    st.session_state['data_manager_loaded'] = True # Flag success
+
+except ImportError as e:
+    st.error(f"🚨 **ImportError Caught!**")
+    st.error(f"**Error Details:** `{e}`") # <-- This line shows the *actual* error.
+    st.warning("Please check the Streamlit logs for the full traceback.")
+    st.warning("Possible causes: Syntax error in 'data_manager.py', an import error within it, or the 'data_manager' object is not defined.")
     st.stop()
+except Exception as e:
+    st.error(f"🚨 **An Unexpected Error Occurred During Import!**")
+    st.error(f"**Error Details:** `{e}`")
+    st.stop()
+
 
 
 import streamlit as st
