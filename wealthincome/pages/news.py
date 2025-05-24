@@ -51,16 +51,16 @@ def fetch_ticker_news(tickers_string):
     
     tickers_list = [ticker.strip().upper() for ticker in tickers_string.split(',')]
     all_news = []
-    fn = FinvizNews() 
 
     for ticker in tickers_list:
         # This st.write can be commented out if you don't want it in the final UI
         # st.caption(f"Fetching news for {ticker}...") 
         try:
-            news_data_for_ticker = fn.get_news(ticker) 
+            fn = FinvizNews(ticker)  # Create a new instance with the ticker
+            news_data_for_ticker = fn.get_news()
             
-            if ticker in news_data_for_ticker and news_data_for_ticker[ticker]:
-                for article in news_data_for_ticker[ticker]:
+            if news_data_for_ticker:
+                for article in news_data_for_ticker:
                     article['Ticker'] = ticker 
                     all_news.append(article)
             # else:
