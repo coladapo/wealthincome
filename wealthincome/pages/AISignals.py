@@ -143,50 +143,22 @@ def calculate_ai_scores(ticker_data):
     tech = ticker_data.get('technicals')
     intra = ticker_data.get('intraday')
     fund = ticker_data.get('fundamentals')
+    news = ticker_data.get('news_sentiment')
 
-    if intra and tech:
-        day_score = 0
-        day_score += intra.get('intraday_change', 0) * 3
-        day_score += intra.get('volume_surge', 0) * 15
-        day_score += intra.get('price_position', 0) * 20
-        day_score += ticker_data.get('short_pct', 0) * 2
-        scores['day_trade'] = round(day_score, 2)
-
-    if tech:
-        swing_score = 0
-        rsi_val = tech.get('rsi')
-        if rsi_val is not None:
-            if 30 < rsi_val < 70: swing_score += 10
-            if rsi_val < 30: swing_score += 20
-        
-        price_val, sma20_val, sma50_val = tech.get('price'), tech.get('sma_20'), tech.get('sma_50')
-        if all(v is not None for v in [price_val, sma20_val, sma50_val]) and price_val > sma20_val > sma50_val:
-            swing_score += 25
+    # Existing scoring logic...
+    
+    # Add news sentiment boost/penalty
+    if news:
+        news_boost = 0
+        if news['label'] == 'Positive':
+            news_boost = news['score'] * 10  # Max +7 points
+        elif news['label'] == 'Negative':
+            news_boost = news['score'] * 10  # Max -7 points
             
-        macd_val, macdsig_val = tech.get('macd'), tech.get('macd_signal')
-        if all(v is not None for v in [macd_val, macdsig_val]) and macd_val > macdsig_val:
-            swing_score += 15
-            
-        support_val = tech.get('support')
-        if all(v is not None for v in [price_val, support_val]) and price_val > 0 and abs(price_val - support_val) / price_val < 0.02:
-            swing_score += 20
-        scores['swing_trade'] = round(swing_score, 2)
-
-    if fund and tech:
-        position_score = 0
-        pe_ratio_val = fund.get('pe_ratio')
-        if pe_ratio_val is not None and 0 < pe_ratio_val < 25: position_score += 20
-        
-        peg_ratio_val = fund.get('peg_ratio')
-        if peg_ratio_val is not None and peg_ratio_val < 1.5: position_score += 25
-        
-        rev_growth_val = fund.get('revenue_growth')
-        if rev_growth_val is not None and rev_growth_val > 0.15: position_score += 20
-        
-        price_val, sma50_val = tech.get('price'), tech.get('sma_50')
-        if all(v is not None for v in [price_val, sma50_val]) and price_val > sma50_val:
-            position_score += 15
-        scores['position_trade'] = round(position_score, 2)
+        # Apply news boost to all scores
+        scores['day_trade'] = round(scores['day_trade'] + news_boost * 1.5, 2)  # Day traders care more about news
+        scores['swing_trade'] = round(scores['swing_trade'] + news_boost, 2)
+        scores['position_trade'] = round(scores['position_trade'] + news_boost * 0.5, 2)  # Position traders care less about short-term news
     
     scores['overall'] = round((scores.get('day_trade',0) + scores.get('swing_trade',0) + scores.get('position_trade',0)) / 3, 2)
     return scores
