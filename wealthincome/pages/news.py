@@ -384,7 +384,10 @@ def fetch_ticker_news_yfinance(tickers_string, append_to_existing=False):
                             'Parsed_Date': datetime.now(),  # Approximate
                             'Price_Data': ticker_prices.get(ticker),
                             'DM_Sentiment': dm_news['label'],  # Store DataManager's sentiment
-                            'DM_Score': dm_news['score']
+                            'DM_Score': dm_news['score'],
+                            'Fetch_Time': fetch_timestamp,
+                            'Fetch_ID': fetch_id,
+                            'Article_ID': f"{ticker}_{hash(dm_news['headline'])}_{dm_news['date']}"
                         }
                         all_news.append(formatted_article)
                         continue
@@ -754,7 +757,7 @@ if debug_mode and use_ai_sentiment:
             st.error(f"❌ Error: {type(e).__name__}: {str(e)}")
 
 # Show last fetch time and what tickers we have
-if 'news_articles' in st.session_state and st.session_state['news_articles']:
+if 'news_articles' in st.session_state and st.session_state.get('news_articles'):
     # Get unique tickers from cached news
     cached_tickers = sorted(list(set(article.get('Ticker', 'Unknown') for article in st.session_state['news_articles'])))
     
@@ -776,18 +779,21 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
     
     # Show fetch history
     with st.expander("📜 Fetch History", expanded=False):
-        for fetch_id, session_data in sorted(fetch_sessions.items(), key=lambda x: x[1]['timestamp'], reverse=True):
-            if session_data['timestamp'] != datetime.min:
-                age = datetime.now() - session_data['timestamp']
-                hours = age.total_seconds() / 3600
-                if hours < 1:
-                    age_text = f"{int(age.total_seconds() / 60)} minutes ago"
-                elif hours < 24:
-                    age_text = f"{int(hours)} hours ago"
-                else:
-                    age_text = f"{int(hours / 24)} days ago"
-                
-                st.caption(f"• {age_text}: Fetched {session_data['count']} articles for {', '.join(sorted(session_data['tickers']))}")
+        if fetch_sessions:
+            for fetch_id, session_data in sorted(fetch_sessions.items(), key=lambda x: x[1]['timestamp'], reverse=True):
+                if session_data['timestamp'] != datetime.min:
+                    age = datetime.now() - session_data['timestamp']
+                    hours = age.total_seconds() / 3600
+                    if hours < 1:
+                        age_text = f"{int(age.total_seconds() / 60)} minutes ago"
+                    elif hours < 24:
+                        age_text = f"{int(hours)} hours ago"
+                    else:
+                        age_text = f"{int(hours / 24)} days ago"
+                    
+                    st.caption(f"• {age_text}: Fetched {session_data['count']} articles for {', '.join(sorted(session_data['tickers']))}")
+        else:
+            st.info("No fetch history available")
 
 # Fetch options
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -1012,6 +1018,11 @@ AttributeError: 'str' object has no attribute 'tzinfo'
                     age_emoji = "⚪"
                 
                 st.info(f"**{ticker}**\n{data['count']} articles\n{age_emoji} {age_text}")
+    
+    # Initialize filter variables
+    filter_mode = "Single"  # Default value
+    selected_ticker_filter = "All"  # Default value
+    selected_tickers = []  # Default value
     
     # Sorting and filtering options
     col1, col2, col3, col4 = st.columns(4)
