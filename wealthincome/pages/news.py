@@ -12,8 +12,8 @@ import pytz
 
 # Attempt to import openai
 OPENAI_INSTALLED = False
-openai_client = None # Will hold the OpenAI client instance
-OPENAI_AUTH_ERROR_MESSAGE = None # To store persistent auth errors
+openai_client = None 
+OPENAI_AUTH_ERROR_MESSAGE = None 
 
 try:
     import openai
@@ -34,7 +34,7 @@ try:
     from data_manager import data_manager as dm_instance 
     data_manager_instance = dm_instance 
 except ImportError:
-    st.error("Could not import data_manager. Some features might be limited.")
+    st.error("Could not import data_manager. Some features might be limited.") 
 except Exception:
     st.error("Unexpected error importing data_manager.")
 # --- End Imports ---
@@ -57,10 +57,8 @@ if OPENAI_INSTALLED:
     if openai_api_key_from_secrets:
         try:
             openai_client = openai.OpenAI(api_key=openai_api_key_from_secrets)
-            # Perform a lightweight test to check API key validity early
-            # This call is relatively inexpensive.
             try:
-                openai_client.models.list(limit=1) # Test the key
+                openai_client.models.list(limit=1) 
                 st.success("✅ OpenAI API Key configured. AI Sentiment Active.")
                 use_ai_sentiment = True
             except openai.AuthenticationError as auth_err:
@@ -70,12 +68,12 @@ if OPENAI_INSTALLED:
             except openai.APIConnectionError as conn_err:
                 st.error(f"🚨 OpenAI APIConnectionError: Could not connect to OpenAI. Check network or OpenAI status. Error: {conn_err}")
                 st.warning("Falling back to basic sentiment analysis.")
-            except Exception as e_test: # Catch other potential errors during the test call
+            except Exception as e_test: 
                 st.error(f"🚨 OpenAI API Key test failed: {type(e_test).__name__} - {e_test}. Using basic sentiment.")
         except Exception as e_client_init:
             st.error(f"🚨 Error initializing OpenAI client: {e_client_init}. Using basic sentiment.")
     else:
-        st.warning("⚠️ OpenAI API Key not found in Streamlit secrets. Using basic sentiment. Add OPENAI_API_KEY to enable.")
+        st.warning("⚠️ OpenAI API Key not found in Streamlit secrets. Using basic sentiment analysis. Add OPENAI_API_KEY to enable.")
 else:
     st.info("OpenAI library not installed. Using basic sentiment. Add 'openai>=1.0.0' to requirements.txt.")
 
@@ -96,8 +94,8 @@ def basic_sentiment_analysis(text):
     else: return "Neutral", score
 
 def get_ai_sentiment(title, summary, ticker, current_debug_mode):
-    global OPENAI_AUTH_ERROR_MESSAGE # Access the global variable
-    if OPENAI_AUTH_ERROR_MESSAGE: # If there was an auth error during init, don't try again
+    global OPENAI_AUTH_ERROR_MESSAGE 
+    if OPENAI_AUTH_ERROR_MESSAGE: 
         if current_debug_mode: st.caption(f"Skipping AI for {ticker} due to previous auth error.")
         return basic_sentiment_analysis(f"{title} {summary}")
 
@@ -139,12 +137,12 @@ def get_ai_sentiment(title, summary, ticker, current_debug_mode):
         
         return sentiment, score
             
-    except openai.AuthenticationError as auth_err:
+    except openai.AuthenticationError as auth_err: # type: ignore
         OPENAI_AUTH_ERROR_MESSAGE = f"OpenAI AuthenticationError for {ticker}: Key invalid or billing issue. Check OpenAI dashboard. Error: {auth_err}"
         if current_debug_mode: st.error(OPENAI_AUTH_ERROR_MESSAGE)
         else: st.caption(f"AI sentiment for {ticker} failed (Auth). Using basic.")
         return basic_sentiment_analysis(f"{title} {summary}")
-    except openai.APIError as e_api:
+    except openai.APIError as e_api: # type: ignore
         error_message = f"OpenAI API Error for {ticker}: {type(e_api).__name__} - {e_api}"
         if current_debug_mode: st.error(error_message)
         else: st.caption(f"AI sentiment for {ticker} failed (API). Using basic.")
@@ -183,7 +181,7 @@ def fetch_ticker_news_yfinance(tickers_string):
                         'volume': regular_volume, 'avg_volume': avg_volume, 'volume_ratio': volume_ratio,
                         'unusual_volume': volume_ratio > 2.0 
                     }
-            except Exception: ticker_prices_cache[ticker_symbol_for_price] = None # Mark as failed to fetch price
+            except Exception: ticker_prices_cache[ticker_symbol_for_price] = None
     for ticker in tickers_list:
         try:
             stock = yf.Ticker(ticker)
@@ -213,11 +211,9 @@ def fetch_ticker_news_yfinance(tickers_string):
 
 # --- UI Elements ---
 st.header("📰 Fetch News")
-# The OpenAI status is now printed at the top during configuration
 
 default_tickers = "AAPL,TSLA,GOOGL"
 tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=default_tickers, key="news_tickers_input")
-
 debug_mode_checkbox = st.checkbox("Enable Debug Mode for AI Sentiment", value=False, help="Show detailed AI analysis steps and errors.", key="news_debug_mode_checkbox")
 
 if st.button("Fetch News", key="fetch_news_button_main"):
@@ -272,8 +268,8 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
 
     if sort_by == "Newest First": articles_to_display_intermediate.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
     elif sort_by == "Oldest First": articles_to_display_intermediate.sort(key=lambda x: x.get('Parsed_Date', datetime.min))
-    elif sort_by == "Most Positive": articles_to_display_intermediate.sort(key=lambda x: x.get('Sentiment_Score', -2.0), reverse=True) # Default to very low for sorting
-    elif sort_by == "Most Negative": articles_to_display_intermediate.sort(key=lambda x: x.get('Sentiment_Score', 2.0)) # Default to very high for sorting
+    elif sort_by == "Most Positive": articles_to_display_intermediate.sort(key=lambda x: x.get('Sentiment_Score', -2.0), reverse=True)
+    elif sort_by == "Most Negative": articles_to_display_intermediate.sort(key=lambda x: x.get('Sentiment_Score', 2.0))
     elif sort_by == "High Volume First": articles_to_display_intermediate.sort(key=lambda x: x.get('Price_Data', {}).get('volume_ratio', 0) if x.get('Price_Data') else 0, reverse=True)
 
     final_display_list = []
@@ -305,7 +301,7 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         sentiment_label = article.get('Sentiment_Label', 'Neutral')
         sentiment_score = article.get('Sentiment_Score', 0.0)
 
-        with st.container(border=True, key=f"news_article_main_v2_{ticker_symbol}_{article_idx}"):
+        with st.container(border=True, key=f"news_article_main_v3_{ticker_symbol}_{article_idx}"): # Unique key
             st.markdown(f"### [{title}]({link})")
             if article.get('Parsed_Date') and article['Parsed_Date'] != datetime.min:
                 try:
@@ -324,6 +320,10 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                 st.caption(f"📰 {source} | 💹 {ticker_symbol}")
             
             price_data = article.get('Price_Data')
+            sentiment_color = "gray"
+            if sentiment_label == "Positive": sentiment_color = "green"
+            elif sentiment_label == "Negative": sentiment_color = "red"
+
             if price_data:
                 with meta_col2:
                     price = price_data.get('current_price', 0)
@@ -339,16 +339,16 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                     if vol_ratio > 2: vol_status_text = "🔥 Unusual"
                     elif vol_ratio > 1.5: vol_status_text = "⚠️ High"
                     st.metric(label=f"{vol_status_text} Vol", value=f"{vol_ratio:.1f}x Avg", help=f"Actual: {price_data.get('volume',0):,}, Avg: {price_data.get('avg_volume',0):,}")
-            else:
-                with meta_col2: st.caption("Price data unavailable.")
+                
+                # Sentiment display below price and volume columns if price_data exists
+                st.markdown(f"Sentiment: <b style='color:{sentiment_color};'>{sentiment_label}</b> (Score: {sentiment_score:.2f})", unsafe_allow_html=True)
             
-            sentiment_color = "gray"
-            if sentiment_label == "Positive": sentiment_color = "green"
-            elif sentiment_label == "Negative": sentiment_color = "red"
-            
-            target_col_for_sentiment = meta_col3 if not price_data else st # Place in col3 if no price data, else full width
-            with target_col_for_sentiment:
-                 target_col_for_sentiment.markdown(f"Sentiment: <b style='color:{sentiment_color};'>{sentiment_label}</b> (Score: {sentiment_score:.2f})", unsafe_allow_html=True)
+            else: # No price data, put sentiment in meta_col2 (meta_col3 used by caption implicitly if no metric)
+                with meta_col2: 
+                    st.caption("Price data unavailable.")
+                with meta_col3:
+                     st.markdown(f"Sentiment: <b style='color:{sentiment_color};'>{sentiment_label}</b>", unsafe_allow_html=True)
+                     st.caption(f"(Score: {sentiment_score:.2f})")
 
 
             if summary and summary != title:
@@ -373,7 +373,7 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                                     fig.add_vline(x=news_time_for_chart, line_dash="dash", line_color="yellow", row=2, col=1)
                             fig.update_layout(title_text=None, height=400, showlegend=False, template="plotly_dark", margin=dict(l=20, r=20, t=30, b=20))
                             fig.update_xaxes(rangeslider_visible=False)
-                            st.plotly_chart(fig, use_container_width=True, key=f"chart_main_v2_{ticker_symbol}_{article_idx}")
+                            st.plotly_chart(fig, use_container_width=True, key=f"chart_main_v3_{ticker_symbol}_{article_idx}") # Unique key
                         else: st.caption("Not enough data for 5-min chart.")
                     except Exception as e_chart:
                         if debug_mode_checkbox: st.error(f"Chart error: {e_chart}")
@@ -392,8 +392,7 @@ col_foot1, col_foot2 = st.columns(2)
 with col_foot1:
     st.markdown("**Data Source:** Yahoo Finance API. AI Sentiment via OpenAI (if configured).")
 with col_foot2:
-    if st.button("Clear News Feed", key="clear_news_button_main_v2"):
+    if st.button("Clear News Feed", key="clear_news_button_main_v3"): # Unique key
         if 'news_articles' in st.session_state:
             del st.session_state['news_articles']
         st.rerun()
-
