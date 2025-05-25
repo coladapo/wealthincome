@@ -11,6 +11,7 @@ from plotly.subplots import make_subplots
 import pytz
 import json
 from collections import defaultdict
+import ast
 
 # --- Start of Path Fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -156,7 +157,6 @@ if 'last_viewed_time' not in st.session_state:
 
 # --- Helper Functions ---
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_cached_sentiment(title, summary, ticker):
     """Cache wrapper for sentiment analysis"""
     cache_key = f"{ticker}:{hash(title + summary)}"
@@ -803,6 +803,9 @@ with col3:
             del st.session_state['sentiment_cache']
         st.rerun()
 
+# Store append_mode in session state to make it accessible later
+st.session_state['append_mode'] = append_mode
+
 if fetch_button or ('news_articles' not in st.session_state and st.session_state.get('auto_load_attempted', False) == False):
     # Set flag to prevent infinite auto-loading attempts
     st.session_state['auto_load_attempted'] = True
@@ -818,9 +821,11 @@ if fetch_button or ('news_articles' not in st.session_state and st.session_state
         if not existing_articles:
             need_fetch = True
             fetch_reason = "No cached articles"
+            cache_age_text = "N/A"
         elif requested_tickers != existing_tickers:
             need_fetch = True
             fetch_reason = f"Different tickers requested. Cached: {existing_tickers}, Requested: {requested_tickers}"
+            cache_age_text = "N/A"
         else:
             # Check age of cached articles
             if existing_articles and 'Parsed_Date' in existing_articles[0]:
@@ -847,6 +852,9 @@ if fetch_button or ('news_articles' not in st.session_state and st.session_state
                     cache_age_text = "unknown time"
         
         if need_fetch:
+            # Get append_mode from session state
+            append_mode = st.session_state.get('append_mode', True)
+            
             with st.spinner(f"Fetching news articles... ({fetch_reason})"):
                 if news_source in ["Yahoo Finance (Free)", "DataManager Enhanced"]:
                     news_articles = fetch_ticker_news_yfinance(tickers_input, append_to_existing=append_mode)
