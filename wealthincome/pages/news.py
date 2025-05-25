@@ -43,26 +43,96 @@ except st.errors.StreamlitAPIException as e:
 
 st.title('🗞️ Market News & Sentiment Feed')
 
+# --- OpenAI Configuration ---
+# Check if API key is configured
+try:
+    import openai
+    openai_api_key = st.secrets.get("OPENAI_API_KEY", None)
+    use_ai_sentiment = openai_api_key is not None
+    if openai_api_key:
+        openai.api_key = openai_api_key
+        st.success("✅ AI-Powered Sentiment Analysis Active (OpenAI)")
+    else:
+        st.warning("⚠️ Using basic sentiment analysis. Add OPENAI_API_KEY to secrets.toml for better accuracy.")
+except ImportError:
+    use_ai_sentiment = False
+    st.info("OpenAI not installed. Using basic sentiment analysis.")
+
 # --- Helper Functions ---
+
+def get_ai_sentiment(title, summary, ticker):
+    """
+    Use OpenAI to analyze sentiment specifically for the given ticker
+    """
+    if not use_ai_sentiment:
+        return basic_sentiment_analysis(f"{title} {summary}")
+    
+    try:
+        prompt = f"""
+        Analyze this news article's sentiment specifically for {ticker} stock:
+        
+        Title: {title}
+        Summary: {summary[:500]}
+        
+        Determine if this news is positive, negative, or neutral FOR {ticker} STOCK SPECIFICALLY.
+        Consider:
+        - Does this news directly impact {ticker}?
+        - Is it good or bad for {ticker} shareholders?
+        - Ignore general market sentiment unless it specifically affects {ticker}
+        
+        Respond with ONLY ONE WORD: Positive, Negative, or Neutral
+        """
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a financial analyst. Respond with only: Positive, Negative, or Neutral"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=10
+        )
+        
+        sentiment = response.choices[0].message.content.strip()
+        
+        # Calculate score based on sentiment
+        if sentiment == "Positive":
+            return sentiment, 0.7
+        elif sentiment == "Negative":
+            return sentiment, -0.7
+        else:
+            return "Neutral", 0.0
+            
+    except Exception as e:
+        if debug_mode:
+            st.error(f"AI sentiment analysis failed: {str(e)}")
+        return basic_sentiment_analysis(f"{title} {summary}")
 
 def basic_sentiment_analysis(text):
     """
-    Fallback basic sentiment analysis
+    Current basic sentiment analysis - THIS IS WHAT'S BEING USED NOW
+    Problems:
+    - Only counts keywords without context
+    - "Apple faces challenges" = negative (even if article says they'll overcome them)
+    - Doesn't understand sarcasm or nuance
     """
     if not text or not isinstance(text, str):
         return "Neutral", 0.0
     
     text_lower = text.lower()
+    
+    # Current keyword lists - TOO SIMPLE!
     positive_keywords = ['up', 'gain', 'profit', 'bullish', 'rally', 'strong', 'positive', 'upgrade', 
                         'outperform', 'beat', 'good', 'great', 'excellent', 'record', 'high', 'boom', 
                         'surge', 'growth', 'rise']
     negative_keywords = ['down', 'loss', 'bearish', 'slump', 'weak', 'negative', 'downgrade', 
                         'underperform', 'miss', 'bad', 'terrible', 'poor', 'plunge', 'drop', 'crisis', 
-                        'fear', 'fall', 'decline']
+                        'fear', 'fall', 'decline', 'isn\'t worth', 'lost']
     
     positive_score = sum(1 for keyword in positive_keywords if keyword in text_lower)
     negative_score = sum(1 for keyword in negative_keywords if keyword in text_lower)
     
+    # This is the problem - just counting words!
     total_keywords = positive_score + negative_score
     if total_keywords == 0:
         return "Neutral", 0.0
@@ -309,9 +379,12 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         ticker_symbol = article.get('Ticker', 'N/A')
         summary = article.get('Summary', '')
 
-        # Analyze sentiment on both title and summary
-        combined_text = f"{title} {summary}"
-        sentiment_label, sentiment_score = basic_sentiment_analysis(combined_text)
+        # Analyze sentiment - Use AI if available, otherwise basic
+        if use_ai_sentiment:
+            sentiment_label, sentiment_score = get_ai_sentiment(title, summary, ticker_symbol)
+        else:
+            combined_text = f"{title} {summary}"
+            sentiment_label, sentiment_score = basic_sentiment_analysis(combined_text)
 
         if selected_ticker_filter != "All" and ticker_symbol != selected_ticker_filter: continue
         if selected_sentiment_filter != "All" and sentiment_label != selected_sentiment_filter: continue
@@ -486,7 +559,7 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                         fig.update_yaxes(title_text="Price ($)", row=1, col=1)
                         fig.update_yaxes(title_text="Volume", row=2, col=1)
                         
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{ticker_symbol}_{article.get('Date', '')}_{displayed_count}")
                         
                         # Trading statistics
                         col1, col2, col3, col4 = st.columns(4)
