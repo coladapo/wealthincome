@@ -38,6 +38,24 @@ except st.errors.StreamlitAPIException:
 
 st.title('🗞️ Market News & Sentiment Feed')
 
+# --- Helper function to handle datetime conversion ---
+def ensure_datetime(date_value):
+    """Convert string dates to datetime objects"""
+    if isinstance(date_value, str):
+        try:
+            # Try ISO format first
+            return datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+        except:
+            try:
+                # Try other common formats
+                return datetime.strptime(date_value, '%Y-%m-%d %H:%M:%S')
+            except:
+                return datetime.min
+    elif isinstance(date_value, datetime):
+        return date_value
+    else:
+        return datetime.min
+
 # --- OpenAI Configuration ---
 try:
     from openai import OpenAI
@@ -118,7 +136,7 @@ if 'news_articles' not in st.session_state and data_manager_instance:
         try:
             with open(news_cache_file, 'r') as f:
                 cached_data = json.load(f)
-                cache_time = datetime.fromisoformat(cached_data.get('timestamp', '2000-01-01'))
+                cache_time = ensure_datetime(cached_data.get('timestamp', '2000-01-01'))
                 st.session_state['news_articles'] = cached_data.get('articles', [])
                 st.session_state['last_fetch_time'] = cache_time
                 
@@ -415,17 +433,27 @@ if fetch_button:
                 news_articles = fetch_ticker_news_yfinance(tickers_input, append_to_existing=append_mode)
                 
                 # Handle append mode
-                if append_mode and 'news_articles' in st.session_state:
+                if append_mode and 'news_articles' in st.session_state and st.session_state.get('news_articles'):
                     existing_articles = st.session_state['news_articles']
-                    existing_ids = set(article.get('Article_ID', '') for article in existing_articles if article.get('Article_ID'))
+                    # Create a set of existing article IDs to avoid duplicates
+                    existing_ids = set()
+                    for article in existing_articles:
+                        if article.get('Article_ID'):
+                            existing_ids.add(article['Article_ID'])
                     
                     new_articles_to_add = []
                     for article in news_articles:
                         if article.get('Article_ID') and article['Article_ID'] not in existing_ids:
                             new_articles_to_add.append(article)
                     
+                    # Combine articles
                     all_articles = existing_articles + new_articles_to_add
-                    all_articles.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
+                    
+                    # Sort by date - handle both datetime objects and strings
+                    def get_sort_date(article):
+                        return ensure_datetime(article.get('Parsed_Date', datetime.min))
+                    
+                    all_articles.sort(key=get_sort_date, reverse=True)
                     
                     st.success(f"✅ Added {len(new_articles_to_add)} new articles to existing {len(existing_articles)} articles")
                     news_articles = all_articles
@@ -486,9 +514,9 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
     articles_to_display = st.session_state.news_articles.copy()
     
     if sort_by == "Newest First":
-        articles_to_display.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
+        articles_to_display.sort(key=lambda x: ensure_datetime(x.get('Parsed_Date', datetime.min)), reverse=True)
     elif sort_by == "Oldest First":
-        articles_to_display.sort(key=lambda x: x.get('Parsed_Date', datetime.min))
+        articles_to_display.sort(key=lambda x: ensure_datetime(x.get('Parsed_Date', datetime.min)))
     elif sort_by in ["Most Positive", "Most Negative"]:
         for article in articles_to_display:
             if 'Sentiment_Score' not in article:
@@ -543,14 +571,20 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
             with col_ticker:
                 st.markdown(f"**{ticker_symbol}** | {source}")
             with col_fetch:
-                if 'Fetch_Time' in article and article['Fetch_Time'] != datetime.min:
-                    fetch_age = datetime.now() - article['Fetch_Time']
-                    if fetch_age.total_seconds() < 300:
-                        st.caption("🟢 Just fetched")
-                    elif fetch_age.total_seconds() < 3600:
-                        st.caption(f"🟡 {int(fetch_age.total_seconds() / 60)}m ago")
-                    else:
-                        st.caption(f"⚪ {int(fetch_age.total_seconds() / 3600)}h ago")
+                if 'Fetch_Time' in article:
+                    try:
+                        fetch_time = ensure_datetime(article['Fetch_Time'])
+                        
+                        if fetch_time != datetime.min:
+                            fetch_age = datetime.now() - fetch_time
+                            if fetch_age.total_seconds() < 300:
+                                st.caption("🟢 Just fetched")
+                            elif fetch_age.total_seconds() < 3600:
+                                st.caption(f"🟡 {int(fetch_age.total_seconds() / 60)}m ago")
+                            else:
+                                st.caption(f"⚪ {int(fetch_age.total_seconds() / 3600)}h ago")
+                    except:
+                        st.caption("⚪ Fetched")
             
             # Title
             st.markdown(f"### [{title}]({link})")
