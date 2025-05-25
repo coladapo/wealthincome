@@ -5,5 +5,5 @@ pandas
 yfinance
 ta
 matplotlib
-openai
+openaiopenai>=1.0.0
 vaderSentiment==3.3.2
