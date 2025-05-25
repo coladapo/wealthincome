@@ -6,6 +6,7 @@ from datetime import datetime
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+import plotly.graph_objects as go
 
 # --- Start of Path Fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -80,6 +81,27 @@ def fetch_ticker_news_yfinance(tickers_string):
     
     tickers_list = [ticker.strip().upper() for ticker in tickers_string.split(',')]
     all_news = []
+    ticker_prices = {}
+
+    # Fetch current prices for all tickers
+    for ticker in tickers_list:
+        try:
+            stock = yf.Ticker(ticker)
+            # Get current price and daily change
+            info = stock.info
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
+            previous_close = info.get('previousClose') or info.get('regularMarketPreviousClose', 0)
+            
+            if current_price and previous_close:
+                change_percent = ((current_price - previous_close) / previous_close) * 100
+                ticker_prices[ticker] = {
+                    'current_price': current_price,
+                    'previous_close': previous_close,
+                    'change_percent': change_percent,
+                    'change_dollar': current_price - previous_close
+                }
+        except:
+            ticker_prices[ticker] = None
 
     for ticker in tickers_list:
         try:
@@ -134,7 +156,8 @@ def fetch_ticker_news_yfinance(tickers_string):
                         'Source': source,
                         'Ticker': ticker,
                         'Summary': summary,
-                        'Parsed_Date': date_obj
+                        'Parsed_Date': date_obj,
+                        'Price_Data': ticker_prices.get(ticker)
                     }
                     all_news.append(formatted_article)
                     
@@ -238,8 +261,9 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
             # Title with link
             st.markdown(f"### [{title}]({link})")
             
-            # Metadata row
-            meta_col1, meta_col2, meta_col3, meta_col4 = st.columns([2, 2, 1, 1])
+            # Price and metadata row
+            meta_col1, meta_col2, meta_col3, meta_col4, price_col = st.columns([2, 2, 1, 1, 2])
+            
             meta_col1.caption(f"🗓️ {date_str}")
             meta_col2.caption(f"📰 {source}")
             meta_col3.caption(f"💹 {ticker_symbol}")
@@ -252,9 +276,96 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
             else:
                 meta_col4.info(f"→ {sentiment_label}")
             
+            # Price information
+            price_data = article.get('Price_Data')
+            if price_data:
+                price = price_data['current_price']
+                change_pct = price_data['change_percent']
+                change_dollar = price_data['change_dollar']
+                
+                if change_pct >= 0:
+                    price_col.metric(
+                        label="Price",
+                        value=f"${price:.2f}",
+                        delta=f"{change_pct:.2f}% (${change_dollar:.2f})",
+                        delta_color="normal"
+                    )
+                else:
+                    price_col.metric(
+                        label="Price",
+                        value=f"${price:.2f}",
+                        delta=f"{change_pct:.2f}% (${change_dollar:.2f})",
+                        delta_color="normal"
+                    )
+            else:
+                price_col.caption("Price data unavailable")
+            
             # Summary if available
             if summary:
                 st.caption(summary[:200] + "..." if len(summary) > 200 else summary)
+            
+            # News age and potential impact
+            if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
+                news_age = datetime.now() - article['Parsed_Date'].replace(tzinfo=None)
+                hours_old = news_age.total_seconds() / 3600
+                
+                if hours_old < 1:
+                    st.caption(f"🔥 **Fresh news** - Published {int(hours_old * 60)} minutes ago")
+                elif hours_old < 6:
+                    st.caption(f"📍 **Recent** - Published {hours_old:.1f} hours ago")
+                elif hours_old < 24:
+                    st.caption(f"📅 Published {hours_old:.0f} hours ago")
+                else:
+                    days_old = hours_old / 24
+                    st.caption(f"📅 Published {days_old:.0f} days ago")
+            
+            # Mini price chart (last 5 days)
+            with st.expander("📊 View Price Movement"):
+                try:
+                    ticker_obj = yf.Ticker(ticker_symbol)
+                    hist = ticker_obj.history(period="5d", interval="1h")
+                    
+                    if not hist.empty:
+                        import plotly.graph_objects as go
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Candlestick(
+                            x=hist.index,
+                            open=hist['Open'],
+                            high=hist['High'],
+                            low=hist['Low'],
+                            close=hist['Close'],
+                            name='Price'
+                        ))
+                        
+                        # Add a vertical line at news publication time
+                        if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
+                            fig.add_vline(
+                                x=article['Parsed_Date'], 
+                                line_dash="dash", 
+                                line_color="yellow",
+                                annotation_text="News Published"
+                            )
+                        
+                        fig.update_layout(
+                            title=f"{ticker_symbol} - 5 Day Price Movement",
+                            yaxis_title="Price ($)",
+                            xaxis_title="Date",
+                            height=300,
+                            showlegend=False,
+                            template="plotly_dark"
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Price statistics
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("5-Day High", f"${hist['High'].max():.2f}")
+                        col2.metric("5-Day Low", f"${hist['Low'].min():.2f}")
+                        col3.metric("Avg Volume", f"{hist['Volume'].mean():,.0f}")
+                        
+                except Exception as e:
+                    st.error(f"Could not load price chart: {str(e)}")
             
             # Sentiment score (smaller, less prominent)
             st.caption(f"Sentiment Score: {sentiment_score:.2f}")
