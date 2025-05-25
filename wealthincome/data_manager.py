@@ -10,8 +10,8 @@ import pandas as pd
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-import pickle # Retained, though not used in the provided snippet for news
-import pytz # For timezone consistent datetime objects
+import pickle
+import pytz
 
 # Attempt to import openai
 OPENAI_INSTALLED_DM = False
@@ -22,9 +22,7 @@ try:
     import openai
     OPENAI_INSTALLED_DM = True
 except ImportError:
-    # This warning will appear when DataManager is initialized if openai is not installed
-    # Consider logging or a less obtrusive notification if this is too noisy
-    pass # Handled in __init__
+    pass
 
 class DataManager:
     """Manages all data operations across the platform"""
@@ -32,34 +30,23 @@ class DataManager:
     def __init__(self):
         self.cache_dir = Path("cache")
         self.cache_dir.mkdir(exist_ok=True)
-        self.use_ai_sentiment_dm = False # Will be set based on API key
+        self.use_ai_sentiment_dm = False
 
         if OPENAI_INSTALLED_DM:
             openai_api_key_from_secrets = st.secrets.get("OPENAI_API_KEY")
             if openai_api_key_from_secrets:
                 try:
-                    global openai_client_dm # Make it accessible to methods
+                    global openai_client_dm
                     openai_client_dm = openai.OpenAI(api_key=openai_api_key_from_secrets)
-                    # Optional: Perform a lightweight test call here if desired
-                    # openai_client_dm.models.list() 
                     self.use_ai_sentiment_dm = True
-                    # st.sidebar.caption("DM: OpenAI Active") # Optional debug
-                except openai.AuthenticationError as auth_err: # type: ignore
+                except openai.AuthenticationError as auth_err:
                     global OPENAI_AUTH_ERROR_MESSAGE_DM
                     OPENAI_AUTH_ERROR_MESSAGE_DM = f"DM OpenAI AuthError: {auth_err}. Basic sentiment will be used."
-                    # st.sidebar.warning(OPENAI_AUTH_ERROR_MESSAGE_DM) # Optional debug
                 except Exception as e_client_init:
-                    # st.sidebar.error(f"DM Error initializing OpenAI: {e_client_init}. Basic sentiment.") # Optional debug
-                    pass # Fallback to basic
-            # else:
-                # st.sidebar.caption("DM: OpenAI key not found. Basic sentiment.") # Optional debug
-        # else:
-            # st.sidebar.caption("DM: OpenAI lib not installed. Basic sentiment.") # Optional debug
+                    pass
 
-
-    @st.cache_data(ttl=300) # 5 minute cache
-    def get_stock_data(self, tickers, period="1mo"):
-        # (Your existing get_stock_data method - no changes here)
+    @st.cache_data(ttl=300)
+    def get_stock_data(_self, tickers, period="1mo"):  # Changed self to _self
         data = {}
         for ticker in tickers:
             try:
@@ -67,33 +54,28 @@ class DataManager:
                 info = stock.info
                 hist = stock.history(period=period)
                 intraday = None
-                if self.is_market_open(): # Assuming is_market_open is defined
+                if _self.is_market_open():
                     intraday = stock.history(period="1d", interval="5m")
                 data[ticker] = {
                     'info': info, 'history': hist, 'intraday': intraday,
                     'last_updated': datetime.now()
                 }
-            except Exception: # Broad except, consider more specific handling
+            except Exception:
                 continue
         return data
     
     def is_market_open(self):
-        # (Your existing is_market_open method - no changes here)
-        # Ensure this handles timezones correctly if your server is not in ET
-        # For simplicity, assuming server runs in a context where now() is comparable to ET market hours
-        # A more robust solution would use pytz to handle timezones explicitly.
         now_utc = datetime.now(pytz.utc)
         et_tz = pytz.timezone('US/Eastern')
         now_et = now_utc.astimezone(et_tz)
 
-        if now_et.weekday() >= 5: return False # Weekend
+        if now_et.weekday() >= 5: return False
         
         market_open_time = now_et.replace(hour=9, minute=30, second=0, microsecond=0).time()
         market_close_time = now_et.replace(hour=16, minute=0, second=0, microsecond=0).time()
         
         return market_open_time <= now_et.time() <= market_close_time
 
-    # --- NEW: News Sentiment Method and Helpers ---
     def _basic_sentiment_analysis_for_dm(self, text):
         if not text or not isinstance(text, str): return "Neutral", 0.0
         text_lower = text.lower()
@@ -109,7 +91,7 @@ class DataManager:
         else: return "Neutral", score
 
     def _get_openai_sentiment_for_dm(self, title, summary, ticker, debug_mode=False):
-        global OPENAI_AUTH_ERROR_MESSAGE_DM # Use the global auth error message
+        global OPENAI_AUTH_ERROR_MESSAGE_DM
         if OPENAI_AUTH_ERROR_MESSAGE_DM:
             if debug_mode: st.caption(f"DM Skipping AI for {ticker} due to: {OPENAI_AUTH_ERROR_MESSAGE_DM}")
             return self._basic_sentiment_analysis_for_dm(f"{title} {summary}")
@@ -147,7 +129,7 @@ class DataManager:
                 if debug_mode: st.warning(f"DM Unexpected AI word: '{sentiment_text}' for {ticker}.")
                 return self._basic_sentiment_analysis_for_dm(f"{title} {summary}")
             return sentiment, score
-        except openai.AuthenticationError as auth_err: # type: ignore
+        except openai.AuthenticationError as auth_err:
             OPENAI_AUTH_ERROR_MESSAGE_DM = f"DM OpenAI AuthError for {ticker}: {auth_err}"
             if debug_mode: st.error(OPENAI_AUTH_ERROR_MESSAGE_DM)
             return self._basic_sentiment_analysis_for_dm(f"{title} {summary}")
@@ -155,20 +137,16 @@ class DataManager:
             if debug_mode: st.error(f"DM General error in AI sentiment for {ticker}: {e}")
             return self._basic_sentiment_analysis_for_dm(f"{title} {summary}")
 
-    @st.cache_data(ttl=1800) # Cache news sentiment for 30 minutes
-    def get_latest_news_sentiment(self, ticker_symbol, debug_mode=False):
-        """
-        Fetches the latest news for a ticker and returns its sentiment.
-        Returns a dict: {'label': str, 'score': float, 'headline': str, 'link': str, 'source': str, 'date': str} or None
-        """
+    @st.cache_data(ttl=1800)
+    def get_latest_news_sentiment(_self, ticker_symbol, debug_mode=False):  # Changed self to _self
         try:
             stock = yf.Ticker(ticker_symbol)
-            news_list = stock.news # list of dicts
+            news_list = stock.news
             if not news_list:
                 if debug_mode: st.caption(f"DM: No news found for {ticker_symbol} via yfinance.")
                 return None
 
-            latest_article_raw = news_list[0] # Assume first is latest, yfinance usually sorts this way
+            latest_article_raw = news_list[0]
             
             title = latest_article_raw.get('title', 'No Title')
             link = latest_article_raw.get('link', '#')
@@ -179,20 +157,18 @@ class DataManager:
             if publish_time_unix:
                 try:
                     date_obj_utc = datetime.fromtimestamp(publish_time_unix, tz=pytz.utc)
-                    date_str = date_obj_utc.strftime('%Y-%m-%d %H:%M') # Shorter format
+                    date_str = date_obj_utc.strftime('%Y-%m-%d %H:%M')
                 except Exception:
-                    pass # Keep "N/A"
+                    pass
 
-            # For sentiment, yfinance news often lacks a good summary field.
-            # We'll primarily use the title.
             summary_for_sentiment = title 
 
-            sentiment_label, sentiment_score = self._get_openai_sentiment_for_dm(title, summary_for_sentiment, ticker_symbol, debug_mode)
+            sentiment_label, sentiment_score = _self._get_openai_sentiment_for_dm(title, summary_for_sentiment, ticker_symbol, debug_mode)
             
             return {
                 'label': sentiment_label,
                 'score': sentiment_score,
-                'headline': title, # Using title as the main headline
+                'headline': title,
                 'link': link,
                 'source': publisher,
                 'date': date_str
@@ -200,31 +176,28 @@ class DataManager:
         except Exception as e:
             if debug_mode: st.error(f"DM Error in get_latest_news_sentiment for {ticker_symbol}: {e}")
             return None
-    # --- End News Sentiment ---
 
-    @st.cache_data(ttl=3600) # 1 hour cache
-    def calculate_signals(self, ticker_data):
-        # (Your existing calculate_signals method - no changes here)
+    @st.cache_data(ttl=3600)
+    def calculate_signals(_self, ticker_data):  # Changed self to _self
         signals = {
-            'momentum': self._momentum_signal(ticker_data),
-            'technical': self._technical_signal(ticker_data),
-            'volume': self._volume_signal(ticker_data),
-            'pattern': self._pattern_signal(ticker_data)
+            'momentum': _self._momentum_signal(ticker_data),
+            'technical': _self._technical_signal(ticker_data),
+            'volume': _self._volume_signal(ticker_data),
+            'pattern': _self._pattern_signal(ticker_data)
         }
         signals['day_score'] = (signals['momentum'] * 0.4 + signals['volume'] * 0.4 + signals['technical'] * 0.2)
         signals['swing_score'] = (signals['technical'] * 0.5 + signals['pattern'] * 0.3 + signals['momentum'] * 0.2)
         return signals
     
-    # (Keep your existing _momentum_signal, _technical_signal, _volume_signal, _pattern_signal, _calculate_rsi methods)
     def _momentum_signal(self, data):
         try:
-            info = data.get('info', {}) # Use .get for safety
+            info = data.get('info', {})
             change = info.get('regularMarketChangePercent', 0)
-            if change > 0.10: return 100 # Corresponds to > 10%
+            if change > 0.10: return 100
             elif change > 0.05: return 80
             elif change > 0.02: return 60
             elif change > 0: return 50
-            else: return max(0, 50 + (change * 500)) # Scale -10% to 0, 0% to 50
+            else: return max(0, 50 + (change * 500))
         except: return 50
     
     def _technical_signal(self, data):
@@ -237,7 +210,7 @@ class DataManager:
             score = 50
             if current > sma20: score += 25
             rsi = self._calculate_rsi(close)
-            if rsi is not None: # Check if RSI calculation was successful
+            if rsi is not None:
                  if 30 < rsi < 70: score += 25
                  elif rsi <= 30: score += 15
             return min(100, score)
@@ -248,13 +221,13 @@ class DataManager:
             info = data.get('info',{})
             volume = info.get('regularMarketVolume', 0)
             avg_volume = info.get('averageVolume', 1)
-            if avg_volume == 0: return 0 # Avoid division by zero if avg_volume is truly 0
+            if avg_volume == 0: return 0
             rvol = volume / avg_volume
             if rvol > 3: return 100
             elif rvol > 2: return 80
             elif rvol > 1.5: return 60
             elif rvol > 1: return 50
-            else: return max(0, rvol * 50) # Ensure score is not negative
+            else: return max(0, rvol * 50)
         except: return 50
 
     def _pattern_signal(self, data):
@@ -269,18 +242,17 @@ class DataManager:
         except: return 50
 
     def _calculate_rsi(self, prices, period=14):
-        if prices is None or len(prices) < period + 1: return None # Need enough data
+        if prices is None or len(prices) < period + 1: return None
         delta = prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        if loss.iloc[-1] == 0 : return 100 if gain.iloc[-1] > 0 else 50 # Avoid division by zero; if no loss, RSI is 100 or 50 if no gain either
+        if loss.iloc[-1] == 0 : return 100 if gain.iloc[-1] > 0 else 50
         rs = gain.iloc[-1] / loss.iloc[-1]
         rsi = 100 - (100 / (1 + rs))
         return rsi
 
-    # (Keep your existing get_watchlist, save_watchlist, get_trade_journal, add_trade_entry, analyze_portfolio_performance methods)
     def get_watchlist(self):
-        watchlist_file = self.cache_dir / "watchlist_storage.json" # Use cache_dir
+        watchlist_file = self.cache_dir / "watchlist_storage.json"
         if watchlist_file.exists():
             try:
                 with open(watchlist_file, 'r') as f: data = json.load(f)
@@ -319,7 +291,6 @@ class DataManager:
         if df.empty or 'profit_loss' not in df.columns:
              return {'total_trades': len(df), 'win_rate': 0, 'total_pnl': 0}
 
-        # Ensure profit_loss is numeric
         df['profit_loss'] = pd.to_numeric(df['profit_loss'], errors='coerce').fillna(0)
             
         total_trades = len(df)
