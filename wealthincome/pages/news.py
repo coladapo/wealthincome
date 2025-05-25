@@ -129,14 +129,26 @@ if 'news_articles' not in st.session_state:
             try:
                 with open(news_cache_file, 'r') as f:
                     cached_data = json.load(f)
-                    # Check if cache is recent (within last hour)
+                    # Don't check cache age - always load last fetched news
                     cache_time = datetime.fromisoformat(cached_data.get('timestamp', '2000-01-01'))
-                    if (datetime.now() - cache_time).seconds < 3600:  # 1 hour
-                        st.session_state['news_articles'] = cached_data.get('articles', [])
-                        st.session_state['last_fetch_time'] = cache_time
-                        st.info(f"📂 Loaded {len(st.session_state.get('news_articles', []))} cached articles from {cache_time.strftime('%H:%M:%S')}")
-            except:
-                pass
+                    st.session_state['news_articles'] = cached_data.get('articles', [])
+                    st.session_state['last_fetch_time'] = cache_time
+                    
+                    # Calculate age of cache
+                    cache_age = datetime.now() - cache_time
+                    hours = cache_age.total_seconds() / 3600
+                    
+                    if hours < 1:
+                        minutes = cache_age.total_seconds() / 60
+                        st.info(f"📂 Showing {len(st.session_state.get('news_articles', []))} cached articles from {int(minutes)} minutes ago")
+                    elif hours < 24:
+                        st.info(f"📂 Showing {len(st.session_state.get('news_articles', []))} cached articles from {int(hours)} hours ago")
+                    else:
+                        days = hours / 24
+                        st.warning(f"📂 Showing {len(st.session_state.get('news_articles', []))} cached articles from {int(days)} days ago - Consider refreshing")
+            except Exception as e:
+                if st.session_state.get('debug_mode', False):
+                    st.error(f"Failed to load cached news: {e}")
 
 # Track when articles were last viewed
 if 'last_viewed_time' not in st.session_state:
@@ -438,6 +450,34 @@ st.info("📌 **Note:** This news feed uses Yahoo Finance API which provides fre
 
 # Show cache directory location if DataManager is available
 if data_manager_instance:
+    # Auto-load cached news on first visit
+    if 'initial_load_done' not in st.session_state:
+        st.session_state['initial_load_done'] = True
+        news_cache_file = data_manager_instance.cache_dir / "news_articles_cache.json"
+        if news_cache_file.exists() and 'news_articles' not in st.session_state:
+            try:
+                with open(news_cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    if cached_data.get('articles'):
+                        st.session_state['news_articles'] = cached_data.get('articles', [])
+                        st.session_state['last_fetch_time'] = datetime.fromisoformat(cached_data.get('timestamp', datetime.now().isoformat()))
+                        
+                        # Show info about loaded cache
+                        cache_age = datetime.now() - st.session_state['last_fetch_time']
+                        hours = cache_age.total_seconds() / 3600
+                        
+                        if hours < 1:
+                            minutes = cache_age.total_seconds() / 60
+                            st.success(f"✅ Auto-loaded {len(st.session_state['news_articles'])} articles from {int(minutes)} minutes ago")
+                        elif hours < 24:
+                            st.info(f"📂 Auto-loaded {len(st.session_state['news_articles'])} articles from {int(hours)} hours ago")
+                        else:
+                            days = hours / 24
+                            st.warning(f"⚠️ Auto-loaded {len(st.session_state['news_articles'])} articles from {int(days)} days ago - Consider refreshing!")
+            except Exception as e:
+                if st.session_state.get('debug_mode', False):
+                    st.error(f"Failed to auto-load cache: {e}")
+    
     with st.expander("📁 Data Storage Info & Health Check"):
         st.write(f"**Cache Directory**: `{data_manager_instance.cache_dir}`")
         st.write(f"**Analytics File**: `{data_manager_instance.cache_dir / 'sentiment_analytics.json'}`")
@@ -706,7 +746,35 @@ if debug_mode and use_ai_sentiment:
         except Exception as e:
             st.error(f"❌ Error: {type(e).__name__}: {str(e)}")
 
-if st.button("Fetch News", key="fetch_news_button"):
+# Show last fetch time if we have cached articles
+if 'news_articles' in st.session_state and st.session_state['news_articles'] and 'last_fetch_time' in st.session_state:
+    last_fetch = st.session_state['last_fetch_time']
+    time_diff = datetime.now() - last_fetch
+    hours = time_diff.total_seconds() / 3600
+    
+    if hours < 1:
+        minutes = time_diff.total_seconds() / 60
+        fetch_status = f"📰 Last fetched: {int(minutes)} minutes ago"
+        status_type = "info"
+    elif hours < 24:
+        fetch_status = f"📰 Last fetched: {int(hours)} hours ago"
+        status_type = "warning" if hours > 4 else "info"
+    else:
+        days = hours / 24
+        fetch_status = f"📰 Last fetched: {int(days)} days ago - Data is stale!"
+        status_type = "error"
+    
+    if status_type == "info":
+        st.info(fetch_status)
+    elif status_type == "warning":
+        st.warning(fetch_status)
+    else:
+        st.error(fetch_status)
+
+if st.button("Fetch News", key="fetch_news_button") or ('news_articles' not in st.session_state and st.session_state.get('auto_load_attempted', False) == False):
+    # Set flag to prevent infinite auto-loading attempts
+    st.session_state['auto_load_attempted'] = True
+    
     if tickers_input:
         # Check if we already have recent news for these tickers
         existing_articles = st.session_state.get('news_articles', [])
@@ -729,12 +797,22 @@ if st.button("Fetch News", key="fetch_news_button"):
                     if isinstance(newest_article_date, str):
                         newest_article_date = datetime.fromisoformat(newest_article_date)
                     age_minutes = (datetime.now() - newest_article_date.replace(tzinfo=None)).seconds / 60
+                    
+                    # Create age text for display
+                    if age_minutes < 60:
+                        cache_age_text = f"{int(age_minutes)} minutes ago"
+                    elif age_minutes < 1440:  # 24 hours
+                        cache_age_text = f"{int(age_minutes/60)} hours ago"
+                    else:
+                        cache_age_text = f"{int(age_minutes/1440)} days ago"
+                    
                     if age_minutes > 60:  # Refresh if older than 1 hour
                         need_fetch = True
                         fetch_reason = f"Articles are {age_minutes:.0f} minutes old"
                 except:
                     need_fetch = True
                     fetch_reason = "Could not determine article age"
+                    cache_age_text = "unknown time"
         
         if need_fetch:
             with st.spinner(f"Fetching news articles... ({fetch_reason})"):
@@ -831,7 +909,7 @@ if st.button("Fetch News", key="fetch_news_button"):
                 if 'news_articles' in st.session_state:
                     st.session_state['news_articles'] = []
         else:
-            st.info(f"📂 Using cached articles. {fetch_reason}")
+            st.info(f"📂 Using cached articles from {cache_age_text}")
             if debug_mode:
                 st.caption(f"Cached articles: {len(existing_articles)} for {existing_tickers}")
     else:
