@@ -58,7 +58,7 @@ if OPENAI_INSTALLED:
         try:
             openai_client = openai.OpenAI(api_key=openai_api_key_from_secrets)
             try:
-                openai_client.models.list() # MODIFIED: Removed limit=1 for broader compatibility
+                openai_client.models.list() # Removed limit=1 for broader compatibility
                 st.success("✅ OpenAI API Key configured. AI Sentiment Active.")
                 use_ai_sentiment = True
             except openai.AuthenticationError as auth_err:
@@ -171,7 +171,7 @@ def fetch_ticker_news_yfinance(tickers_string):
                 avg_volume = info.get('averageVolume', 1) 
                 volume_ratio = regular_volume / avg_volume if avg_volume > 0 else 0
                 if current_price and previous_close:
-                    change_percent = ((current_price - previous_close) / previous_close) * 100
+                    change_percent = ((current_price - previous_close) / previous_close) * 100 if previous_close != 0 else 0 # Avoid division by zero
                     ticker_prices_cache[ticker_symbol_for_price] = {
                         'current_price': current_price, 'previous_close': previous_close,
                         'change_percent': change_percent, 'change_dollar': current_price - previous_close,
@@ -340,17 +340,19 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                     elif vol_ratio > 1.5: vol_status_text = "⚠️ High"
                     st.metric(label=f"{vol_status_text} Vol", value=f"{vol_ratio:.1f}x Avg", help=f"Actual: {price_data.get('volume',0):,}, Avg: {price_data.get('avg_volume',0):,}")
                 
+                # Corrected: Sentiment display below price and volume columns if price_data exists
                 st.markdown(f"Sentiment: <b style='color:{sentiment_color};'>{sentiment_label}</b> (Score: {sentiment_score:.2f})", unsafe_allow_html=True)
             
-            else: 
+            else: # No price data
                 with meta_col2: 
                     st.caption("Price data unavailable.")
+                # Corrected: Sentiment display in meta_col3 if no price_data
                 with meta_col3:
                      st.markdown(f"Sentiment: <b style='color:{sentiment_color};'>{sentiment_label}</b>", unsafe_allow_html=True)
                      st.caption(f"(Score: {sentiment_score:.2f})")
 
 
-            if summary and summary != title:
+            if summary and summary != title: # Show summary only if it's different from title
                 with st.expander("Read summary (from title)", expanded=False): st.caption(summary)
             
             if price_data:
