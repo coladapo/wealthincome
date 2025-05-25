@@ -48,7 +48,7 @@ st.title('🗞️ Market News & Sentiment Feed')
 # --- OpenAI Configuration ---
 # Check if API key is configured
 try:
-    from openai import OpenAI  # NEW IMPORT
+    from openai import OpenAI
     openai_api_key = st.secrets.get("OPENAI_API_KEY", None)
     use_ai_sentiment = openai_api_key is not None
     if openai_api_key:
@@ -59,18 +59,45 @@ except ImportError:
     use_ai_sentiment = False
     st.info("OpenAI not installed. Using basic sentiment analysis.")
 
-# --- Initialize Session State for Analytics ---
-if 'sentiment_analytics' not in st.session_state:
-    st.session_state.sentiment_analytics = {
-        'comparisons': [],  # Store AI vs Basic comparisons
+# --- Analytics Management using DataManager ---
+def load_analytics():
+    """Load analytics from DataManager cache directory"""
+    if data_manager_instance:
+        analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
+        if analytics_file.exists():
+            try:
+                with open(analytics_file, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+    return {
+        'comparisons': [],
         'api_calls': 0,
         'total_tokens': 0,
         'cache_hits': 0,
-        'ticker_performance': defaultdict(lambda: {'correct': 0, 'total': 0})
+        'session_start': datetime.now().isoformat()
     }
 
+def save_analytics(analytics):
+    """Save analytics to DataManager cache directory"""
+    if data_manager_instance:
+        analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
+        try:
+            with open(analytics_file, 'w') as f:
+                json.dump(analytics, f, indent=2)
+            return True
+        except Exception as e:
+            if st.session_state.get('debug_mode', False):
+                st.error(f"Failed to save analytics: {e}")
+            return False
+    return False
+
+# Initialize Session State for Analytics
+if 'sentiment_analytics' not in st.session_state:
+    st.session_state.sentiment_analytics = load_analytics()
+
 if 'sentiment_cache' not in st.session_state:
-    st.session_state.sentiment_cache = {}  # Cache for sentiment results
+    st.session_state.sentiment_cache = {}
 
 # --- Helper Functions ---
 
@@ -144,6 +171,9 @@ def get_ai_sentiment(title, summary, ticker):
         if hasattr(response, 'usage'):
             st.session_state.sentiment_analytics['total_tokens'] += response.usage.total_tokens
         
+        # Save analytics after each call
+        save_analytics(st.session_state.sentiment_analytics)
+        
         # Extract and clean the response
         sentiment_text = response.choices[0].message.content.strip().lower()
         
@@ -159,7 +189,7 @@ def get_ai_sentiment(title, summary, ticker):
             score = 0.0
         else:
             # Fallback if AI gives unexpected response
-            if debug_mode:
+            if st.session_state.get('debug_mode', False):
                 st.warning(f"Unexpected AI response: '{sentiment_text}' for {ticker}")
             return basic_sentiment_analysis(f"{title} {summary}")
         
@@ -175,12 +205,13 @@ def get_ai_sentiment(title, summary, ticker):
                 'title': title[:100],
                 'ai_sentiment': sentiment,
                 'basic_sentiment': basic_sentiment,
-                'timestamp': datetime.now()
+                'timestamp': datetime.now().isoformat()
             }
             st.session_state.sentiment_analytics['comparisons'].append(comparison)
+            save_analytics(st.session_state.sentiment_analytics)
         
         # Log the analysis in debug mode
-        if debug_mode:
+        if st.session_state.get('debug_mode', False):
             st.caption(f"🤖 AI Analysis for {ticker}: '{title[:50]}...' → {sentiment}")
             if sentiment != basic_sentiment:
                 st.caption(f"📊 Basic would have said: {basic_sentiment}")
@@ -188,24 +219,19 @@ def get_ai_sentiment(title, summary, ticker):
         return result
             
     except Exception as e:
-        if debug_mode:
+        if st.session_state.get('debug_mode', False):
             st.error(f"AI sentiment analysis failed: {str(e)}")
         return basic_sentiment_analysis(f"{title} {summary}")
 
 def basic_sentiment_analysis(text):
     """
-    Current basic sentiment analysis - THIS IS WHAT'S BEING USED NOW
-    Problems:
-    - Only counts keywords without context
-    - "Apple faces challenges" = negative (even if article says they'll overcome them)
-    - Doesn't understand sarcasm or nuance
+    Basic sentiment analysis using keyword matching
     """
     if not text or not isinstance(text, str):
         return "Neutral", 0.0
     
     text_lower = text.lower()
     
-    # Current keyword lists - TOO SIMPLE!
     positive_keywords = ['up', 'gain', 'profit', 'bullish', 'rally', 'strong', 'positive', 'upgrade', 
                         'outperform', 'beat', 'good', 'great', 'excellent', 'record', 'high', 'boom', 
                         'surge', 'growth', 'rise', 'expansion', 'breakthrough', 'innovation']
@@ -216,7 +242,6 @@ def basic_sentiment_analysis(text):
     positive_score = sum(1 for keyword in positive_keywords if keyword in text_lower)
     negative_score = sum(1 for keyword in negative_keywords if keyword in text_lower)
     
-    # This is the problem - just counting words!
     total_keywords = positive_score + negative_score
     if total_keywords == 0:
         return "Neutral", 0.0
@@ -278,29 +303,42 @@ def fetch_ticker_news_yfinance(tickers_string):
 
     for ticker in tickers_list:
         try:
-            # Create a yfinance Ticker object
-            stock = yf.Ticker(ticker)
+            # Alternative: Use DataManager's news method if available
+            if data_manager_instance and hasattr(data_manager_instance, 'get_latest_news_sentiment'):
+                dm_news = data_manager_instance.get_latest_news_sentiment(ticker, debug_mode=st.session_state.get('debug_mode', False))
+                if dm_news:
+                    st.caption(f"📡 Using DataManager news for {ticker}")
+                    # Convert DataManager format to our format
+                    formatted_article = {
+                        'Title': dm_news['headline'],
+                        'Link': dm_news['link'],
+                        'Date': dm_news['date'],
+                        'Source': dm_news['source'],
+                        'Ticker': ticker,
+                        'Summary': '',  # DataManager doesn't provide summary
+                        'Parsed_Date': datetime.now(),  # Approximate
+                        'Price_Data': ticker_prices.get(ticker),
+                        'DM_Sentiment': dm_news['label'],  # Store DataManager's sentiment
+                        'DM_Score': dm_news['score']
+                    }
+                    all_news.append(formatted_article)
+                    continue
             
-            # Get news - this returns a list of dictionaries
+            # Fallback to regular yfinance method
+            stock = yf.Ticker(ticker)
             news_data = stock.news
             
             if news_data:
                 for article in news_data:
-                    # The actual content is nested inside 'content' key
                     content = article.get('content', {})
-                    
-                    # Extract title and other info from the content
                     title = content.get('title', 'No Title')
                     
-                    # Extract link from canonicalUrl or clickThroughUrl
                     link_data = content.get('clickThroughUrl') or content.get('canonicalUrl') or {}
                     link = link_data.get('url', '#')
                     
-                    # Handle the date - it's in pubDate field
                     pub_date = content.get('pubDate')
                     if pub_date:
                         try:
-                            # Parse ISO format date
                             date_obj = datetime.fromisoformat(pub_date.replace('Z', '+00:00'))
                             date_str = date_obj.strftime('%Y-%m-%d %H:%M:%S')
                         except:
@@ -310,18 +348,14 @@ def fetch_ticker_news_yfinance(tickers_string):
                         date_str = 'No Date'
                         date_obj = datetime.min
                     
-                    # Get provider info
                     provider = content.get('provider', {})
                     source = provider.get('displayName', 'Unknown')
                     
-                    # Get summary
                     summary = content.get('summary', content.get('description', ''))
-                    # Clean HTML from summary
                     if summary:
                         soup = BeautifulSoup(summary, 'html.parser')
                         summary = soup.get_text()
                     
-                    # Standardize the format
                     formatted_article = {
                         'Title': title,
                         'Link': link,
@@ -339,7 +373,7 @@ def fetch_ticker_news_yfinance(tickers_string):
             continue
     
     # Sort by date (newest first)
-    all_news.sort(key=lambda x: x['Parsed_Date'], reverse=True)
+    all_news.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
     
     return all_news
 
@@ -347,7 +381,20 @@ def fetch_ticker_news_yfinance(tickers_string):
 st.header("📰 Fetch News")
 
 # Info box about the news source
-st.info("📌 **Note:** This news feed uses Yahoo Finance API which provides free, real-time market news. For more comprehensive news coverage, consider premium news services.")
+st.info("📌 **Note:** This news feed uses Yahoo Finance API which provides free, real-time market news. DataManager integration enabled for enhanced caching.")
+
+# Show cache directory location if DataManager is available
+if data_manager_instance:
+    with st.expander("📁 Data Storage Info"):
+        st.write(f"**Cache Directory**: `{data_manager_instance.cache_dir}`")
+        st.write(f"**Analytics File**: `{data_manager_instance.cache_dir / 'sentiment_analytics.json'}`")
+        if st.button("View Analytics File Content"):
+            analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
+            if analytics_file.exists():
+                with open(analytics_file, 'r') as f:
+                    st.json(json.load(f))
+            else:
+                st.info("No analytics file found yet. It will be created after first AI analysis.")
 
 default_tickers = "AAPL,TSLA,GOOGL" # Default tickers
 tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=default_tickers, key="news_tickers_input")
@@ -355,24 +402,32 @@ tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=de
 # Add a news source selector for future expansion
 news_source = st.selectbox(
     "Select News Source:",
-    ["Yahoo Finance (Free)", "Finviz (Requires API Key - Not Active)", "NewsAPI (Requires API Key - Not Active)"],
+    ["Yahoo Finance (Free)", "DataManager Enhanced", "Finviz (Requires API Key - Not Active)"],
     index=0,
-    help="Currently only Yahoo Finance is active. Other sources require API keys."
+    help="DataManager Enhanced uses caching and may include additional sources."
 )
 
 # Debug mode and analytics on a new line
 col1, col2 = st.columns(2)
 with col1:
     debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
+    st.session_state['debug_mode'] = debug_mode
 with col2:
     show_analytics = st.checkbox("Show AI Analytics", value=False, help="Track AI sentiment performance")
 
 # Analytics Dashboard
 if show_analytics and use_ai_sentiment:
     with st.expander("📊 AI Sentiment Analytics Dashboard", expanded=True):
+        # Add sync status indicator
         col1, col2, col3, col4 = st.columns(4)
         
         analytics = st.session_state.sentiment_analytics
+        
+        # Check if we need to reload from file
+        if st.button("🔄 Refresh Analytics", help="Reload analytics from file"):
+            st.session_state.sentiment_analytics = load_analytics()
+            analytics = st.session_state.sentiment_analytics
+            st.rerun()
         
         with col1:
             st.metric("API Calls", analytics['api_calls'])
@@ -394,6 +449,13 @@ if show_analytics and use_ai_sentiment:
             st.metric("AI vs Basic Disagreements", disagreements)
             if analytics['api_calls'] > 0:
                 st.caption(f"Disagreement rate: {(disagreements/analytics['api_calls']*100):.1f}%")
+        
+        # Add OpenAI sync check
+        st.info(f"💡 **Tip**: Analytics are saved to `{data_manager_instance.cache_dir if data_manager_instance else 'cache'}/sentiment_analytics.json`")
+        
+        # Session info
+        if 'session_start' in analytics:
+            st.caption(f"Tracking since: {analytics['session_start']}")
         
         # Show recent disagreements
         if analytics['comparisons']:
@@ -433,7 +495,7 @@ if debug_mode and use_ai_sentiment:
 if st.button("Fetch News", key="fetch_news_button"):
     if tickers_input:
         with st.spinner("Fetching news articles..."):
-            if news_source == "Yahoo Finance (Free)":
+            if news_source in ["Yahoo Finance (Free)", "DataManager Enhanced"]:
                 news_articles = fetch_ticker_news_yfinance(tickers_input)
                 
                 # Debug mode: show comprehensive information
@@ -451,7 +513,9 @@ if st.button("Fetch News", key="fetch_news_button"):
                             "Ticker": first_article.get('Ticker'),
                             "Link": first_article.get('Link'),
                             "Summary_Length": len(first_article.get('Summary', '')),
-                            "Price_Data": first_article.get('Price_Data')
+                            "Price_Data": first_article.get('Price_Data'),
+                            "DM_Sentiment": first_article.get('DM_Sentiment', 'N/A'),
+                            "DM_Score": first_article.get('DM_Score', 'N/A')
                         }
                         st.json(debug_data)
                         
@@ -485,7 +549,7 @@ if st.button("Fetch News", key="fetch_news_button"):
                             st.write(f"- Newest: {newest}")
                             st.write(f"- Span: {(newest - oldest).days} days")
             else:
-                st.warning(f"{news_source} is not currently active. Please use Yahoo Finance.")
+                st.warning(f"{news_source} is not currently active. Please use Yahoo Finance or DataManager Enhanced.")
                 news_articles = []
         
         if news_articles:
@@ -562,12 +626,17 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         ticker_symbol = article.get('Ticker', 'N/A')
         summary = article.get('Summary', '')
 
-        # Analyze sentiment - Use AI if available, otherwise basic
-        if use_ai_sentiment:
-            sentiment_label, sentiment_score = get_ai_sentiment(title, summary, ticker_symbol)
+        # Check if DataManager already provided sentiment
+        if 'DM_Sentiment' in article and article['DM_Sentiment']:
+            sentiment_label = article['DM_Sentiment']
+            sentiment_score = article.get('DM_Score', 0)
         else:
-            combined_text = f"{title} {summary}"
-            sentiment_label, sentiment_score = basic_sentiment_analysis(combined_text)
+            # Analyze sentiment - Use AI if available, otherwise basic
+            if use_ai_sentiment:
+                sentiment_label, sentiment_score = get_ai_sentiment(title, summary, ticker_symbol)
+            else:
+                combined_text = f"{title} {summary}"
+                sentiment_label, sentiment_score = basic_sentiment_analysis(combined_text)
         
         # Track sentiment distribution
         sentiment_distribution[sentiment_label] += 1
@@ -787,7 +856,9 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
             with col1:
                 st.caption(f"Sentiment Score: {sentiment_score:.2f}")
             with col2:
-                if use_ai_sentiment:
+                if 'DM_Sentiment' in article:
+                    st.caption("📡 DataManager Sentiment")
+                elif use_ai_sentiment:
                     st.caption("🤖 AI-Powered Analysis")
                 else:
                     st.caption("📊 Basic Keyword Analysis")
@@ -832,16 +903,17 @@ st.markdown("---")
 # Footer with additional options
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown("**Data Source:** Yahoo Finance API")
+    st.markdown("**Data Source:** Yahoo Finance API + DataManager")
     st.caption("Sentiment analysis powered by " + ("OpenAI GPT-3.5" if use_ai_sentiment else "basic keyword matching"))
+    if data_manager_instance:
+        st.caption(f"Cache location: `{data_manager_instance.cache_dir}`")
 with col2:
     if st.button("Clear News Feed", key="clear_news"):
         if 'news_articles' in st.session_state:
             del st.session_state['news_articles']
         if 'sentiment_cache' in st.session_state:
             del st.session_state['sentiment_cache']
-        if 'sentiment_analytics' in st.session_state:
-            del st.session_state['sentiment_analytics']
+        # Don't clear analytics - keep persistent tracking
         st.rerun()
 
 # Export analytics option
@@ -852,7 +924,8 @@ if use_ai_sentiment and st.session_state.sentiment_analytics['api_calls'] > 0:
             'api_calls': st.session_state.sentiment_analytics['api_calls'],
             'total_tokens': st.session_state.sentiment_analytics['total_tokens'],
             'cache_hits': st.session_state.sentiment_analytics['cache_hits'],
-            'comparisons': st.session_state.sentiment_analytics['comparisons']
+            'comparisons': st.session_state.sentiment_analytics['comparisons'],
+            'cache_directory': str(data_manager_instance.cache_dir) if data_manager_instance else 'N/A'
         }
         
         st.download_button(
