@@ -58,7 +58,7 @@ if OPENAI_INSTALLED:
         try:
             openai_client = openai.OpenAI(api_key=openai_api_key_from_secrets)
             try:
-                openai_client.models.list(limit=1) 
+                openai_client.models.list() # MODIFIED: Removed limit=1 for broader compatibility
                 st.success("✅ OpenAI API Key configured. AI Sentiment Active.")
                 use_ai_sentiment = True
             except openai.AuthenticationError as auth_err:
@@ -301,7 +301,7 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         sentiment_label = article.get('Sentiment_Label', 'Neutral')
         sentiment_score = article.get('Sentiment_Score', 0.0)
 
-        with st.container(border=True, key=f"news_article_main_v3_{ticker_symbol}_{article_idx}"): # Unique key
+        with st.container(border=True, key=f"news_article_main_v3_{ticker_symbol}_{article_idx}"): 
             st.markdown(f"### [{title}]({link})")
             if article.get('Parsed_Date') and article['Parsed_Date'] != datetime.min:
                 try:
@@ -340,10 +340,9 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                     elif vol_ratio > 1.5: vol_status_text = "⚠️ High"
                     st.metric(label=f"{vol_status_text} Vol", value=f"{vol_ratio:.1f}x Avg", help=f"Actual: {price_data.get('volume',0):,}, Avg: {price_data.get('avg_volume',0):,}")
                 
-                # Sentiment display below price and volume columns if price_data exists
                 st.markdown(f"Sentiment: <b style='color:{sentiment_color};'>{sentiment_label}</b> (Score: {sentiment_score:.2f})", unsafe_allow_html=True)
             
-            else: # No price data, put sentiment in meta_col2 (meta_col3 used by caption implicitly if no metric)
+            else: 
                 with meta_col2: 
                     st.caption("Price data unavailable.")
                 with meta_col3:
@@ -373,7 +372,7 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                                     fig.add_vline(x=news_time_for_chart, line_dash="dash", line_color="yellow", row=2, col=1)
                             fig.update_layout(title_text=None, height=400, showlegend=False, template="plotly_dark", margin=dict(l=20, r=20, t=30, b=20))
                             fig.update_xaxes(rangeslider_visible=False)
-                            st.plotly_chart(fig, use_container_width=True, key=f"chart_main_v3_{ticker_symbol}_{article_idx}") # Unique key
+                            st.plotly_chart(fig, use_container_width=True, key=f"chart_main_v3_{ticker_symbol}_{article_idx}") 
                         else: st.caption("Not enough data for 5-min chart.")
                     except Exception as e_chart:
                         if debug_mode_checkbox: st.error(f"Chart error: {e_chart}")
@@ -392,7 +391,7 @@ col_foot1, col_foot2 = st.columns(2)
 with col_foot1:
     st.markdown("**Data Source:** Yahoo Finance API. AI Sentiment via OpenAI (if configured).")
 with col_foot2:
-    if st.button("Clear News Feed", key="clear_news_button_main_v3"): # Unique key
+    if st.button("Clear News Feed", key="clear_news_button_main_v3"): 
         if 'news_articles' in st.session_state:
             del st.session_state['news_articles']
         st.rerun()
