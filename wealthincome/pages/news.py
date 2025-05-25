@@ -467,18 +467,32 @@ if show_analytics and use_ai_sentiment:
         # Add OpenAI sync check
         st.info(f"💡 **Tip**: Analytics are saved to `{data_manager_instance.cache_dir if data_manager_instance else 'cache'}/sentiment_analytics.json`")
         
-        # Manual sync option
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔧 Manual Sync", help="Manually update counts if they don't match OpenAI dashboard"):
-                manual_calls = st.number_input("Enter actual API calls from OpenAI:", value=analytics['api_calls'], key="manual_calls")
-                manual_tokens = st.number_input("Enter actual tokens from OpenAI:", value=analytics['total_tokens'], key="manual_tokens")
-                if st.button("Update Counts"):
-                    st.session_state.sentiment_analytics['api_calls'] = manual_calls
-                    st.session_state.sentiment_analytics['total_tokens'] = manual_tokens
-                    save_analytics(st.session_state.sentiment_analytics)
-                    st.success("✅ Counts updated!")
-                    st.rerun()
+        # Manual sync option with form to prevent auto-refresh
+        with st.form("manual_sync_form"):
+            st.write("🔧 **Manual Sync with OpenAI Dashboard**")
+            col1, col2 = st.columns(2)
+            with col1:
+                manual_calls = st.number_input(
+                    "API Calls (from OpenAI):", 
+                    value=analytics['api_calls'], 
+                    min_value=0,
+                    help="Enter the total requests number from OpenAI dashboard"
+                )
+            with col2:
+                manual_tokens = st.number_input(
+                    "Total Tokens (from OpenAI):", 
+                    value=analytics['total_tokens'], 
+                    min_value=0,
+                    help="Enter the total tokens number from OpenAI dashboard"
+                )
+            
+            # Submit button inside form prevents auto-refresh
+            if st.form_submit_button("Update Analytics"):
+                st.session_state.sentiment_analytics['api_calls'] = manual_calls
+                st.session_state.sentiment_analytics['total_tokens'] = manual_tokens
+                save_analytics(st.session_state.sentiment_analytics)
+                st.success("✅ Analytics synced with OpenAI dashboard!")
+                st.rerun()
         
         # Session info
         if 'session_start' in analytics:
