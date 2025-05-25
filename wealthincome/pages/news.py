@@ -7,6 +7,7 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import plotly.graph_objects as go
+import pytz
 
 # --- Start of Path Fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -389,22 +390,43 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                         # Add a vertical line at news publication time
                         if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
                             try:
-                                # Ensure the date is timezone-aware to match the chart's index
+                                # Get the news time
                                 news_time = article['Parsed_Date']
-                                if news_time.tzinfo is None:
-                                    # If naive, assume it's UTC
-                                    import pytz
-                                    news_time = pytz.UTC.localize(news_time)
                                 
-                                fig.add_vline(
-                                    x=news_time, 
-                                    line_dash="dash", 
-                                    line_color="yellow",
-                                    annotation_text="News Published"
-                                )
+                                # Check if the news time falls within the chart's date range
+                                chart_start = hist.index[0]
+                                chart_end = hist.index[-1]
+                                
+                                # Make sure we're comparing timezone-aware datetimes
+                                if news_time.tzinfo is None:
+                                    # If news_time is naive, make it timezone-aware
+                                    # Assume it's in the same timezone as the chart data
+                                    if chart_start.tzinfo is not None:
+                                        # Chart has timezone info, use it
+                                        import pytz
+                                        news_time = pytz.UTC.localize(news_time)
+                                else:
+                                    # If news_time has timezone but chart doesn't, remove timezone
+                                    if chart_start.tzinfo is None:
+                                        news_time = news_time.replace(tzinfo=None)
+                                
+                                # Only add the line if the news falls within the chart range
+                                if chart_start <= news_time <= chart_end:
+                                    fig.add_vline(
+                                        x=news_time, 
+                                        line_dash="dash", 
+                                        line_color="yellow",
+                                        annotation_text="News Published"
+                                    )
+                                elif debug_mode:
+                                    st.info(f"News published outside chart range: {news_time}")
+                                    
                             except Exception as e:
                                 if debug_mode:
                                     st.error(f"Could not add news line: {str(e)}")
+                                    st.write("News time:", article.get('Parsed_Date'))
+                                    st.write("Chart index type:", type(hist.index[0]) if len(hist.index) > 0 else "Empty")
+                                    st.write("Chart timezone:", hist.index[0].tzinfo if len(hist.index) > 0 else "N/A")
                         
                         fig.update_layout(
                             title=f"{ticker_symbol} - 5 Day Price Movement",
