@@ -399,16 +399,67 @@ st.info("📌 **Note:** This news feed uses Yahoo Finance API which provides fre
 
 # Show cache directory location if DataManager is available
 if data_manager_instance:
-    with st.expander("📁 Data Storage Info"):
+    with st.expander("📁 Data Storage Info & Health Check"):
         st.write(f"**Cache Directory**: `{data_manager_instance.cache_dir}`")
         st.write(f"**Analytics File**: `{data_manager_instance.cache_dir / 'sentiment_analytics.json'}`")
+        
+        # Check if cache directory exists
+        if data_manager_instance.cache_dir.exists():
+            st.success("✅ Cache directory exists")
+            
+            # List all files in cache directory
+            cache_files = list(data_manager_instance.cache_dir.glob("*.json"))
+            st.write(f"**Files in cache directory**: {len(cache_files)}")
+            for file in cache_files:
+                file_size = file.stat().st_size
+                modified_time = datetime.fromtimestamp(file.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                st.caption(f"📄 {file.name} - {file_size} bytes - Last modified: {modified_time}")
+        else:
+            st.error("❌ Cache directory not found")
+        
+        # View Analytics File Content
         if st.button("View Analytics File Content"):
             analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
             if analytics_file.exists():
                 with open(analytics_file, 'r') as f:
-                    st.json(json.load(f))
+                    analytics_content = json.load(f)
+                st.json(analytics_content)
+                
+                # Verify data integrity
+                st.write("**Data Integrity Check:**")
+                if 'api_calls' in analytics_content:
+                    st.success(f"✅ API Calls tracked: {analytics_content['api_calls']}")
+                if 'total_tokens' in analytics_content:
+                    st.success(f"✅ Total Tokens tracked: {analytics_content['total_tokens']}")
+                if 'session_start' in analytics_content:
+                    st.success(f"✅ Session start recorded: {analytics_content['session_start']}")
+                if 'comparisons' in analytics_content:
+                    st.success(f"✅ Comparisons tracked: {len(analytics_content['comparisons'])} entries")
             else:
                 st.info("No analytics file found yet. It will be created after first AI analysis.")
+        
+        # Test write permissions
+        if st.button("Test Write Permissions"):
+            test_file = data_manager_instance.cache_dir / "test_write.json"
+            try:
+                with open(test_file, 'w') as f:
+                    json.dump({"test": "success", "timestamp": datetime.now().isoformat()}, f)
+                st.success("✅ Write test successful")
+                # Clean up test file
+                test_file.unlink()
+            except Exception as e:
+                st.error(f"❌ Write test failed: {e}")
+        
+        # DataManager functionality check
+        st.write("**DataManager Features:**")
+        if hasattr(data_manager_instance, 'get_latest_news_sentiment'):
+            st.success("✅ News sentiment method available")
+        if hasattr(data_manager_instance, 'get_watchlist'):
+            watchlist = data_manager_instance.get_watchlist()
+            st.success(f"✅ Watchlist working - {len(watchlist)} items")
+        if hasattr(data_manager_instance, 'get_trade_journal'):
+            trades = data_manager_instance.get_trade_journal()
+            st.success(f"✅ Trade journal working - {len(trades)} trades")
 
 default_tickers = "AAPL,TSLA,GOOGL" # Default tickers
 tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=default_tickers, key="news_tickers_input")
@@ -515,6 +566,45 @@ if show_analytics and use_ai_sentiment:
                         st.info(f"AI: {comp['ai_sentiment']}")
                 with col3:
                     st.caption(f"Basic: {comp['basic_sentiment']}")
+        
+        # Real-time file monitoring
+        with st.expander("🔍 Real-Time File Monitoring"):
+            if data_manager_instance:
+                analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
+                if analytics_file.exists():
+                    file_stats = analytics_file.stat()
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("File Size", f"{file_stats.st_size} bytes")
+                    with col2:
+                        modified_time = datetime.fromtimestamp(file_stats.st_mtime)
+                        st.metric("Last Modified", modified_time.strftime('%H:%M:%S'))
+                    with col3:
+                        time_diff = datetime.now() - modified_time
+                        st.metric("Age", f"{time_diff.seconds} seconds")
+                    
+                    # Compare file content with session state
+                    with open(analytics_file, 'r') as f:
+                        file_content = json.load(f)
+                    
+                    st.write("**Session vs File Comparison:**")
+                    session_calls = st.session_state.sentiment_analytics['api_calls']
+                    file_calls = file_content.get('api_calls', 0)
+                    
+                    if session_calls == file_calls:
+                        st.success(f"✅ Synced: Both show {session_calls} API calls")
+                    else:
+                        st.warning(f"⚠️ Mismatch: Session={session_calls}, File={file_calls}")
+                    
+                    session_tokens = st.session_state.sentiment_analytics['total_tokens']
+                    file_tokens = file_content.get('total_tokens', 0)
+                    
+                    if session_tokens == file_tokens:
+                        st.success(f"✅ Synced: Both show {session_tokens} tokens")
+                    else:
+                        st.warning(f"⚠️ Mismatch: Session={session_tokens}, File={file_tokens}")
+                else:
+                    st.info("Analytics file not created yet")
 
 # Add test OpenAI button if debug mode is on
 if debug_mode and use_ai_sentiment:
