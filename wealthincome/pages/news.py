@@ -312,10 +312,10 @@ def basic_sentiment_analysis(text):
     elif score < -0.1: return "Negative", score
     else: return "Neutral", score
 
-@st.cache_data(ttl=900) # Cache for 15 minutes
-def fetch_ticker_news_yfinance(tickers_string):
+def fetch_ticker_news_yfinance(tickers_string, append_to_existing=False):
     """
     Fetches news for a list of tickers using yfinance.
+    If append_to_existing is True, it will add to existing news rather than replace.
     """
     if not tickers_string:
         return []
@@ -323,6 +323,10 @@ def fetch_ticker_news_yfinance(tickers_string):
     tickers_list = [ticker.strip().upper() for ticker in tickers_string.split(',')]
     all_news = []
     ticker_prices = {}
+    
+    # Track fetch metadata
+    fetch_timestamp = datetime.now()
+    fetch_id = fetch_timestamp.strftime("%Y%m%d_%H%M%S")
 
     # Fetch current prices and extended hours data for all tickers
     for ticker in tickers_list:
@@ -429,7 +433,10 @@ def fetch_ticker_news_yfinance(tickers_string):
                         'Ticker': ticker,
                         'Summary': summary,
                         'Parsed_Date': date_obj,
-                        'Price_Data': ticker_prices.get(ticker)
+                        'Price_Data': ticker_prices.get(ticker),
+                        'Fetch_Time': fetch_timestamp,
+                        'Fetch_ID': fetch_id,
+                        'Article_ID': f"{ticker}_{hash(title)}_{date_str}"  # Unique ID for deduplication
                     }
                     all_news.append(formatted_article)
                     
@@ -746,32 +753,57 @@ if debug_mode and use_ai_sentiment:
         except Exception as e:
             st.error(f"❌ Error: {type(e).__name__}: {str(e)}")
 
-# Show last fetch time if we have cached articles
-if 'news_articles' in st.session_state and st.session_state['news_articles'] and 'last_fetch_time' in st.session_state:
-    last_fetch = st.session_state['last_fetch_time']
-    time_diff = datetime.now() - last_fetch
-    hours = time_diff.total_seconds() / 3600
+# Show last fetch time and what tickers we have
+if 'news_articles' in st.session_state and st.session_state['news_articles']:
+    # Get unique tickers from cached news
+    cached_tickers = sorted(list(set(article.get('Ticker', 'Unknown') for article in st.session_state['news_articles'])))
     
-    if hours < 1:
-        minutes = time_diff.total_seconds() / 60
-        fetch_status = f"📰 Last fetched: {int(minutes)} minutes ago"
-        status_type = "info"
-    elif hours < 24:
-        fetch_status = f"📰 Last fetched: {int(hours)} hours ago"
-        status_type = "warning" if hours > 4 else "info"
-    else:
-        days = hours / 24
-        fetch_status = f"📰 Last fetched: {int(days)} days ago - Data is stale!"
-        status_type = "error"
+    # Group articles by fetch session
+    fetch_sessions = {}
+    for article in st.session_state['news_articles']:
+        fetch_id = article.get('Fetch_ID', 'unknown')
+        if fetch_id not in fetch_sessions:
+            fetch_sessions[fetch_id] = {
+                'tickers': set(),
+                'count': 0,
+                'timestamp': article.get('Fetch_Time', datetime.min)
+            }
+        fetch_sessions[fetch_id]['tickers'].add(article.get('Ticker', 'Unknown'))
+        fetch_sessions[fetch_id]['count'] += 1
     
-    if status_type == "info":
-        st.info(fetch_status)
-    elif status_type == "warning":
-        st.warning(fetch_status)
-    else:
-        st.error(fetch_status)
+    # Show current cache status
+    st.info(f"📊 **Cached News**: {len(st.session_state['news_articles'])} articles from {len(cached_tickers)} tickers: {', '.join(cached_tickers)}")
+    
+    # Show fetch history
+    with st.expander("📜 Fetch History", expanded=False):
+        for fetch_id, session_data in sorted(fetch_sessions.items(), key=lambda x: x[1]['timestamp'], reverse=True):
+            if session_data['timestamp'] != datetime.min:
+                age = datetime.now() - session_data['timestamp']
+                hours = age.total_seconds() / 3600
+                if hours < 1:
+                    age_text = f"{int(age.total_seconds() / 60)} minutes ago"
+                elif hours < 24:
+                    age_text = f"{int(hours)} hours ago"
+                else:
+                    age_text = f"{int(hours / 24)} days ago"
+                
+                st.caption(f"• {age_text}: Fetched {session_data['count']} articles for {', '.join(sorted(session_data['tickers']))}")
 
-if st.button("Fetch News", key="fetch_news_button") or ('news_articles' not in st.session_state and st.session_state.get('auto_load_attempted', False) == False):
+# Fetch options
+col1, col2, col3 = st.columns([2, 1, 1])
+with col1:
+    fetch_button = st.button("🔄 Fetch Fresh News", key="fetch_news_button", use_container_width=True)
+with col2:
+    append_mode = st.checkbox("Append to existing", value=True, help="Add new articles to existing cache instead of replacing")
+with col3:
+    if st.button("🗑️ Clear All", key="clear_cache_button"):
+        if 'news_articles' in st.session_state:
+            del st.session_state['news_articles']
+        if 'sentiment_cache' in st.session_state:
+            del st.session_state['sentiment_cache']
+        st.rerun()
+
+if fetch_button or ('news_articles' not in st.session_state and st.session_state.get('auto_load_attempted', False) == False):
     # Set flag to prevent infinite auto-loading attempts
     st.session_state['auto_load_attempted'] = True
     
@@ -817,7 +849,28 @@ if st.button("Fetch News", key="fetch_news_button") or ('news_articles' not in s
         if need_fetch:
             with st.spinner(f"Fetching news articles... ({fetch_reason})"):
                 if news_source in ["Yahoo Finance (Free)", "DataManager Enhanced"]:
-                    news_articles = fetch_ticker_news_yfinance(tickers_input)
+                    news_articles = fetch_ticker_news_yfinance(tickers_input, append_to_existing=append_mode)
+                
+                    # Handle append mode
+                    if append_mode and 'news_articles' in st.session_state:
+                        existing_articles = st.session_state['news_articles']
+                        # Create a set of existing article IDs to avoid duplicates
+                        existing_ids = set(article.get('Article_ID', '') for article in existing_articles if article.get('Article_ID'))
+                        
+                        # Add only new articles
+                        new_articles_to_add = []
+                        for article in news_articles:
+                            if article.get('Article_ID') and article['Article_ID'] not in existing_ids:
+                                new_articles_to_add.append(article)
+                        
+                        # Combine and sort by date
+                        all_articles = existing_articles + new_articles_to_add
+                        all_articles.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
+                        
+                        st.success(f"✅ Added {len(new_articles_to_add)} new articles to existing {len(existing_articles)} articles")
+                        news_articles = all_articles
+                    else:
+                        st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}")
                 
                     # Debug mode: show comprehensive information
                     if debug_mode and news_articles and len(news_articles) > 0:
@@ -874,22 +927,8 @@ if st.button("Fetch News", key="fetch_news_button") or ('news_articles' not in s
                     news_articles = []
             
             if news_articles:
-                # Mark new articles
-                if 'news_articles' in st.session_state:
-                    existing_titles = set(article.get('Title') for article in st.session_state['news_articles'])
-                    for article in news_articles:
-                        if article.get('Title') not in existing_titles:
-                            article['is_new'] = True
-                
                 st.session_state['news_articles'] = news_articles
                 st.session_state['last_fetch_time'] = datetime.now()
-                
-                # Count new articles
-                new_count = sum(1 for article in news_articles if article.get('is_new', False))
-                if new_count > 0:
-                    st.success(f"✅ Fetched {len(news_articles)} articles ({new_count} NEW) for {tickers_input}.")
-                else:
-                    st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}.")
                 
                 # Save news articles to cache
                 if data_manager_instance:
@@ -920,17 +959,68 @@ st.markdown("---")
 if 'news_articles' in st.session_state and st.session_state['news_articles']:
     st.header("📊 News Feed")
     
-    # Add a summary box
+    # Add a summary box with ticker breakdown
     total_articles = len(st.session_state['news_articles'])
     unique_tickers = len(set(article['Ticker'] for article in st.session_state['news_articles']))
+    
+    # Create ticker summary
+    ticker_summary = {}
+    for article in st.session_state['news_articles']:
+        ticker = article.get('Ticker', 'Unknown')
+        if ticker not in ticker_summary:
+            ticker_summary[ticker] = {
+                'count': 0,
+                'latest': article.get('Parsed_Date', datetime.min),
+                'sentiments': {'Positive': 0, 'Negative': 0, 'Neutral': 0}
+            }
+        ticker_summary[ticker]['count'] += 1
+        if article.get('Parsed_Date', datetime.min) > ticker_summary[ticker]['latest']:
+            ticker_summary[ticker]['latest'] = article.get('Parsed_Date', datetime.min)
+    
+    # Display ticker summary
     st.metric("Total Articles", total_articles, f"from {unique_tickers} ticker(s)")
+    
+    # Show ticker breakdown
+    with st.expander("📈 Ticker Summary", expanded=True):
+        ticker_cols = st.columns(min(4, len(ticker_summary)))
+        for idx, (ticker, data) in enumerate(sorted(ticker_summary.items())):
+            col_idx = idx % len(ticker_cols)
+            with ticker_cols[col_idx]:
+                # Calculate age of latest article
+                if data['latest'] != datetime.min:
+                    age = datetime.now() - data['latest'].replace(tzinfo=None) if data['latest'].tzinfo else datetime.now() - data['latest']
+                    hours = age.total_seconds() / 3600
+                    if hours < 1:
+                        age_text = f"{int(age.total_seconds() / 60)}m old"
+                        age_emoji = "🟢"
+                    elif hours < 24:
+                        age_text = f"{int(hours)}h old"
+                        age_emoji = "🟡"
+                    else:
+                        age_text = f"{int(hours / 24)}d old"
+                        age_emoji = "🔴"
+                else:
+                    age_text = "Unknown"
+                    age_emoji = "⚪"
+                
+                st.info(f"**{ticker}**\n{data['count']} articles\n{age_emoji} {age_text}")
     
     # Sorting and filtering options
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         unique_tickers_in_news = sorted(list(set(article['Ticker'] for article in st.session_state.news_articles if 'Ticker' in article)))
-        selected_ticker_filter = st.selectbox("Filter by Ticker:", ["All"] + unique_tickers_in_news, key="news_ticker_filter")
+        
+        # Add multi-select option for better filtering
+        filter_mode = st.radio("Filter mode:", ["Single", "Multiple"], horizontal=True, key="filter_mode")
+        
+        if filter_mode == "Single":
+            selected_ticker_filter = st.selectbox("Filter by Ticker:", ["All"] + unique_tickers_in_news, key="news_ticker_filter")
+            selected_tickers = [selected_ticker_filter] if selected_ticker_filter != "All" else unique_tickers_in_news
+        else:
+            selected_tickers = st.multiselect("Select Tickers:", unique_tickers_in_news, default=unique_tickers_in_news, key="news_ticker_multifilter")
+            if not selected_tickers:
+                selected_tickers = unique_tickers_in_news
     
     with col2:
         selected_sentiment_filter = st.selectbox("Filter by Sentiment:", ["All", "Positive", "Neutral", "Negative"], key="news_sentiment_filter")
@@ -1002,13 +1092,32 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         # Track sentiment distribution
         sentiment_distribution[sentiment_label] += 1
 
-        if selected_ticker_filter != "All" and ticker_symbol != selected_ticker_filter: continue
-        if selected_sentiment_filter != "All" and sentiment_label != selected_sentiment_filter: continue
+        # Apply filters
+        if filter_mode == "Single":
+            if selected_ticker_filter != "All" and ticker_symbol != selected_ticker_filter: 
+                continue
+        else:
+            if ticker_symbol not in selected_tickers:
+                continue
+                
+        if selected_sentiment_filter != "All" and sentiment_label != selected_sentiment_filter: 
+            continue
         
         with st.container(border=True):
-            # NEW ARTICLE INDICATOR
-            if article.get('is_new', False):
-                st.markdown("🆕 **NEW ARTICLE**", help="This article wasn't in your last fetch")
+            # Ticker badge and fetch session indicator
+            col_ticker, col_fetch = st.columns([3, 1])
+            with col_ticker:
+                st.markdown(f"**{ticker_symbol}** | {source}")
+            with col_fetch:
+                # Show when this article was fetched
+                if 'Fetch_Time' in article and article['Fetch_Time'] != datetime.min:
+                    fetch_age = datetime.now() - article['Fetch_Time']
+                    if fetch_age.total_seconds() < 300:  # 5 minutes
+                        st.caption("🟢 Just fetched")
+                    elif fetch_age.total_seconds() < 3600:  # 1 hour
+                        st.caption(f"🟡 {int(fetch_age.total_seconds() / 60)}m ago")
+                    else:
+                        st.caption(f"⚪ {int(fetch_age.total_seconds() / 3600)}h ago")
             
             # Title with link
             st.markdown(f"### [{title}]({link})")
