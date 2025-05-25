@@ -74,34 +74,53 @@ def get_ai_sentiment(title, summary, ticker):
         Title: {title}
         Summary: {summary[:500]}
         
-        Determine if this news is positive, negative, or neutral FOR {ticker} STOCK SPECIFICALLY.
         Consider:
-        - Does this news directly impact {ticker}?
-        - Is it good or bad for {ticker} shareholders?
-        - Ignore general market sentiment unless it specifically affects {ticker}
+        1. Does this news directly impact {ticker}?
+        2. Is it good or bad for {ticker} shareholders?
+        3. Would a trader want to buy, sell, or hold based on this news?
         
-        Respond with ONLY ONE WORD: Positive, Negative, or Neutral
+        Examples:
+        - "Apple faces new competition" = Negative
+        - "Apple expands despite warnings" = Positive
+        - "Apple stock analysis" = Neutral
+        
+        Respond with ONLY ONE of these three words: Positive, Negative, or Neutral
         """
         
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a financial analyst. Respond with only: Positive, Negative, or Neutral"},
+                {"role": "system", "content": "You are a stock sentiment analyzer. You must respond with EXACTLY one word: Positive, Negative, or Neutral. No other text."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
             max_tokens=10
         )
         
-        sentiment = response.choices[0].message.content.strip()
+        # Extract and clean the response
+        sentiment_text = response.choices[0].message.content.strip().lower()
         
-        # Calculate score based on sentiment
-        if sentiment == "Positive":
-            return sentiment, 0.7
-        elif sentiment == "Negative":
-            return sentiment, -0.7
+        # Handle various response formats
+        if "positive" in sentiment_text:
+            sentiment = "Positive"
+            score = 0.7
+        elif "negative" in sentiment_text:
+            sentiment = "Negative" 
+            score = -0.7
+        elif "neutral" in sentiment_text:
+            sentiment = "Neutral"
+            score = 0.0
         else:
-            return "Neutral", 0.0
+            # Fallback if AI gives unexpected response
+            if debug_mode:
+                st.warning(f"Unexpected AI response: '{sentiment_text}' for {ticker}")
+            return basic_sentiment_analysis(f"{title} {summary}")
+        
+        # Log the analysis in debug mode
+        if debug_mode:
+            st.caption(f"🤖 AI Analysis for {ticker}: '{title[:50]}...' → {sentiment}")
+            
+        return sentiment, score
             
     except Exception as e:
         if debug_mode:
@@ -357,17 +376,47 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
     unique_tickers = len(set(article['Ticker'] for article in st.session_state['news_articles']))
     st.metric("Total Articles", total_articles, f"from {unique_tickers} ticker(s)")
     
-    col1, col2, col3 = st.columns(3)
+    # Sorting and filtering options
+    col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
         unique_tickers_in_news = sorted(list(set(article['Ticker'] for article in st.session_state.news_articles if 'Ticker' in article)))
         selected_ticker_filter = st.selectbox("Filter by Ticker:", ["All"] + unique_tickers_in_news, key="news_ticker_filter")
+    
     with col2:
         selected_sentiment_filter = st.selectbox("Filter by Sentiment:", ["All", "Positive", "Neutral", "Negative"], key="news_sentiment_filter")
+    
     with col3:
+        sort_by = st.selectbox("Sort by:", ["Newest First", "Oldest First", "Most Positive", "Most Negative", "High Volume First"], key="news_sort")
+    
+    with col4:
         articles_to_show = st.slider("Articles to display:", min_value=10, max_value=100, value=30, step=10)
+    
+    # Apply sorting
+    articles_to_display = st.session_state.news_articles.copy()
+    
+    if sort_by == "Newest First":
+        articles_to_display.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
+    elif sort_by == "Oldest First":
+        articles_to_display.sort(key=lambda x: x.get('Parsed_Date', datetime.min))
+    elif sort_by == "Most Positive":
+        # First add sentiment scores if not present
+        for article in articles_to_display:
+            if 'Sentiment_Score' not in article:
+                _, score = basic_sentiment_analysis(f"{article.get('Title', '')} {article.get('Summary', '')}")
+                article['Sentiment_Score'] = score
+        articles_to_display.sort(key=lambda x: x.get('Sentiment_Score', 0), reverse=True)
+    elif sort_by == "Most Negative":
+        for article in articles_to_display:
+            if 'Sentiment_Score' not in article:
+                _, score = basic_sentiment_analysis(f"{article.get('Title', '')} {article.get('Summary', '')}")
+                article['Sentiment_Score'] = score
+        articles_to_display.sort(key=lambda x: x.get('Sentiment_Score', 0))
+    elif sort_by == "High Volume First":
+        articles_to_display.sort(key=lambda x: x.get('Price_Data', {}).get('volume_ratio', 0) if x.get('Price_Data') else 0, reverse=True)
 
     displayed_count = 0
-    for article in st.session_state.news_articles:
+    for article in articles_to_display:
         if displayed_count >= articles_to_show:
             st.caption(f"Showing {articles_to_show} articles. Adjust slider to see more.")
             break
