@@ -24,10 +24,7 @@ data_manager_instance = None
 try:
     from data_manager import data_manager as dm_instance 
     data_manager_instance = dm_instance 
-    if data_manager_instance:
-        st.caption("DataManager instance successfully imported.")
-    else:
-        st.warning("DataManager imported as None. Check data_manager.py structure.")
+    # Remove the success message - it's just debug clutter
 except ImportError as e:
     st.error(f"Could not import data_manager: {e}. Some features might be limited.")
 except Exception as e:
@@ -38,10 +35,8 @@ except Exception as e:
 try:
     st.set_page_config(page_title="🗞️ Market News", layout="wide")
 except st.errors.StreamlitAPIException as e:
-    if "can only be called once per app" in str(e):
-        st.caption("Note: Page config was already set.")
-    else:
-        raise e
+    # Silently handle if page config was already set
+    pass
 
 st.title('🗞️ Market News & Sentiment Feed')
 
@@ -138,7 +133,14 @@ if 'news_articles' not in st.session_state:
                     cache_time = datetime.fromisoformat(cached_data.get('timestamp', '2000-01-01'))
                     if (datetime.now() - cache_time).seconds < 3600:  # 1 hour
                         st.session_state['news_articles'] = cached_data.get('articles', [])
+                        st.session_state['last_fetch_time'] = cache_time
                         st.info(f"📂 Loaded {len(st.session_state.get('news_articles', []))} cached articles from {cache_time.strftime('%H:%M:%S')}")
+            except:
+                pass
+
+# Track when articles were last viewed
+if 'last_viewed_time' not in st.session_state:
+    st.session_state['last_viewed_time'] = datetime.now()
             except:
                 pass
 
@@ -620,6 +622,12 @@ if show_analytics and use_ai_sentiment:
                     st.write("🔢 **This Session**")
                     st.write(f"New Calls: {st.session_state.session_api_calls}")
                     st.write(f"New Tokens: {st.session_state.session_tokens}")
+                
+                # Reconciliation tip
+                if abs(analytics['api_calls'] - manual_calls) <= 10:
+                    st.info("✅ Counts are close enough! Small differences (±10) are normal due to timing.")
+                else:
+                    st.warning("⚠️ Counts differ significantly. Use Manual Sync to update.")
         
         # Session info
         if 'session_start' in analytics:
@@ -789,7 +797,22 @@ if st.button("Fetch News", key="fetch_news_button"):
                     news_articles = []
             
             if news_articles:
+                # Mark new articles
+                if 'news_articles' in st.session_state:
+                    existing_titles = set(article.get('Title') for article in st.session_state['news_articles'])
+                    for article in news_articles:
+                        if article.get('Title') not in existing_titles:
+                            article['is_new'] = True
+                
                 st.session_state['news_articles'] = news_articles
+                st.session_state['last_fetch_time'] = datetime.now()
+                
+                # Count new articles
+                new_count = sum(1 for article in news_articles if article.get('is_new', False))
+                if new_count > 0:
+                    st.success(f"✅ Fetched {len(news_articles)} articles ({new_count} NEW) for {tickers_input}.")
+                else:
+                    st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}.")
                 
                 # Save news articles to cache
                 if data_manager_instance:
@@ -804,8 +827,6 @@ if st.button("Fetch News", key="fetch_news_button"):
                     except Exception as e:
                         if debug_mode:
                             st.error(f"Failed to cache news: {e}")
-                
-                st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}.")
             else:
                 st.warning("No news articles found for the given tickers. Try different tickers or check back later.")
                 if 'news_articles' in st.session_state:
@@ -908,6 +929,10 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         if selected_sentiment_filter != "All" and sentiment_label != selected_sentiment_filter: continue
         
         with st.container(border=True):
+            # NEW ARTICLE INDICATOR
+            if article.get('is_new', False):
+                st.markdown("🆕 **NEW ARTICLE**", help="This article wasn't in your last fetch")
+            
             # Title with link
             st.markdown(f"### [{title}]({link})")
             
