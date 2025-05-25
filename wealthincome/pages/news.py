@@ -9,6 +9,8 @@ from bs4 import BeautifulSoup
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pytz
+import json
+from collections import defaultdict
 
 # --- Start of Path Fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -57,7 +59,26 @@ except ImportError:
     use_ai_sentiment = False
     st.info("OpenAI not installed. Using basic sentiment analysis.")
 
+# --- Initialize Session State for Analytics ---
+if 'sentiment_analytics' not in st.session_state:
+    st.session_state.sentiment_analytics = {
+        'comparisons': [],  # Store AI vs Basic comparisons
+        'api_calls': 0,
+        'total_tokens': 0,
+        'cache_hits': 0,
+        'ticker_performance': defaultdict(lambda: {'correct': 0, 'total': 0})
+    }
+
+if 'sentiment_cache' not in st.session_state:
+    st.session_state.sentiment_cache = {}  # Cache for sentiment results
+
 # --- Helper Functions ---
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_cached_sentiment(title, summary, ticker):
+    """Cache wrapper for sentiment analysis"""
+    cache_key = f"{ticker}:{hash(title + summary)}"
+    return cache_key
 
 def get_ai_sentiment(title, summary, ticker):
     """
@@ -66,12 +87,19 @@ def get_ai_sentiment(title, summary, ticker):
     if not use_ai_sentiment:
         return basic_sentiment_analysis(f"{title} {summary}")
     
+    # Check cache first
+    cache_key = get_cached_sentiment(title, summary, ticker)
+    if cache_key in st.session_state.sentiment_cache:
+        st.session_state.sentiment_analytics['cache_hits'] += 1
+        return st.session_state.sentiment_cache[cache_key]
+    
     try:
         from openai import OpenAI
         
         # Initialize client with API key
         client = OpenAI(api_key=openai_api_key)
         
+        # Enhanced prompt with more specific examples
         prompt = f"""
         Analyze this news article's sentiment specifically for {ticker} stock:
         
@@ -82,27 +110,41 @@ def get_ai_sentiment(title, summary, ticker):
         1. Does this news directly impact {ticker}?
         2. Is it good or bad for {ticker} shareholders?
         3. Would a trader want to buy, sell, or hold based on this news?
+        4. Consider market context - expansion news during recession might still be positive
+        5. Regulatory news - approvals are positive, investigations are negative
+        6. Competitive landscape - losing market share is negative even if revenue grows
         
-        Examples:
-        - "Apple faces new competition" = Negative
-        - "Apple expands despite warnings" = Positive
-        - "Apple stock analysis" = Neutral
+        Examples for better accuracy:
+        - "{ticker} faces supply chain challenges but secures alternative suppliers" = Neutral (problem + solution)
+        - "{ticker} CEO steps down amid scandal" = Negative (leadership instability)
+        - "{ticker} beats earnings despite market downturn" = Positive (outperformance)
+        - "Analyst maintains hold rating on {ticker}" = Neutral (no change)
+        - "{ticker} announces $10B buyback program" = Positive (shareholder value)
+        - "Industry regulation may impact {ticker}" = Negative (uncertainty)
+        - "{ticker} expands into new markets despite economic headwinds" = Positive (growth)
         
         Respond with ONLY ONE of these three words: Positive, Negative, or Neutral
         """
         
-        # NEW API FORMAT
+        # Track API call
+        st.session_state.sentiment_analytics['api_calls'] += 1
+        
+        # NEW API FORMAT with token tracking
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a stock sentiment analyzer. You must respond with EXACTLY one word: Positive, Negative, or Neutral. No other text."},
+                {"role": "system", "content": "You are a financial sentiment analyzer with deep understanding of market dynamics. You must respond with EXACTLY one word: Positive, Negative, or Neutral. Consider the specific impact on the mentioned ticker, not general market sentiment."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
             max_tokens=10
         )
         
-        # Extract and clean the response - UPDATED SYNTAX
+        # Track token usage
+        if hasattr(response, 'usage'):
+            st.session_state.sentiment_analytics['total_tokens'] += response.usage.total_tokens
+        
+        # Extract and clean the response
         sentiment_text = response.choices[0].message.content.strip().lower()
         
         # Handle various response formats
@@ -121,11 +163,29 @@ def get_ai_sentiment(title, summary, ticker):
                 st.warning(f"Unexpected AI response: '{sentiment_text}' for {ticker}")
             return basic_sentiment_analysis(f"{title} {summary}")
         
+        # Cache the result
+        result = (sentiment, score)
+        st.session_state.sentiment_cache[cache_key] = result
+        
+        # Compare with basic sentiment for analytics
+        basic_sentiment, basic_score = basic_sentiment_analysis(f"{title} {summary}")
+        if sentiment != basic_sentiment:
+            comparison = {
+                'ticker': ticker,
+                'title': title[:100],
+                'ai_sentiment': sentiment,
+                'basic_sentiment': basic_sentiment,
+                'timestamp': datetime.now()
+            }
+            st.session_state.sentiment_analytics['comparisons'].append(comparison)
+        
         # Log the analysis in debug mode
         if debug_mode:
             st.caption(f"🤖 AI Analysis for {ticker}: '{title[:50]}...' → {sentiment}")
+            if sentiment != basic_sentiment:
+                st.caption(f"📊 Basic would have said: {basic_sentiment}")
             
-        return sentiment, score
+        return result
             
     except Exception as e:
         if debug_mode:
@@ -148,10 +208,10 @@ def basic_sentiment_analysis(text):
     # Current keyword lists - TOO SIMPLE!
     positive_keywords = ['up', 'gain', 'profit', 'bullish', 'rally', 'strong', 'positive', 'upgrade', 
                         'outperform', 'beat', 'good', 'great', 'excellent', 'record', 'high', 'boom', 
-                        'surge', 'growth', 'rise']
+                        'surge', 'growth', 'rise', 'expansion', 'breakthrough', 'innovation']
     negative_keywords = ['down', 'loss', 'bearish', 'slump', 'weak', 'negative', 'downgrade', 
                         'underperform', 'miss', 'bad', 'terrible', 'poor', 'plunge', 'drop', 'crisis', 
-                        'fear', 'fall', 'decline', 'isn\'t worth', 'lost']
+                        'fear', 'fall', 'decline', 'isn\'t worth', 'lost', 'lawsuit', 'investigation']
     
     positive_score = sum(1 for keyword in positive_keywords if keyword in text_lower)
     negative_score = sum(1 for keyword in negative_keywords if keyword in text_lower)
@@ -300,8 +360,58 @@ news_source = st.selectbox(
     help="Currently only Yahoo Finance is active. Other sources require API keys."
 )
 
-# Debug mode on a new line
-debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
+# Debug mode and analytics on a new line
+col1, col2 = st.columns(2)
+with col1:
+    debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
+with col2:
+    show_analytics = st.checkbox("Show AI Analytics", value=False, help="Track AI sentiment performance")
+
+# Analytics Dashboard
+if show_analytics and use_ai_sentiment:
+    with st.expander("📊 AI Sentiment Analytics Dashboard", expanded=True):
+        col1, col2, col3, col4 = st.columns(4)
+        
+        analytics = st.session_state.sentiment_analytics
+        
+        with col1:
+            st.metric("API Calls", analytics['api_calls'])
+            avg_tokens = analytics['total_tokens'] / analytics['api_calls'] if analytics['api_calls'] > 0 else 0
+            st.caption(f"Avg tokens/call: {avg_tokens:.0f}")
+        
+        with col2:
+            st.metric("Total Tokens", f"{analytics['total_tokens']:,}")
+            cost_estimate = (analytics['total_tokens'] / 1000) * 0.002  # GPT-3.5 pricing
+            st.caption(f"Est. cost: ${cost_estimate:.4f}")
+        
+        with col3:
+            st.metric("Cache Hits", analytics['cache_hits'])
+            cache_rate = (analytics['cache_hits'] / (analytics['api_calls'] + analytics['cache_hits']) * 100) if (analytics['api_calls'] + analytics['cache_hits']) > 0 else 0
+            st.caption(f"Cache rate: {cache_rate:.1f}%")
+        
+        with col4:
+            disagreements = len(analytics['comparisons'])
+            st.metric("AI vs Basic Disagreements", disagreements)
+            if analytics['api_calls'] > 0:
+                st.caption(f"Disagreement rate: {(disagreements/analytics['api_calls']*100):.1f}%")
+        
+        # Show recent disagreements
+        if analytics['comparisons']:
+            st.subheader("Recent AI vs Basic Sentiment Disagreements")
+            recent_comparisons = analytics['comparisons'][-5:]  # Last 5
+            for comp in reversed(recent_comparisons):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.text(f"{comp['ticker']}: {comp['title']}...")
+                with col2:
+                    if comp['ai_sentiment'] == 'Positive':
+                        st.success(f"AI: {comp['ai_sentiment']}")
+                    elif comp['ai_sentiment'] == 'Negative':
+                        st.error(f"AI: {comp['ai_sentiment']}")
+                    else:
+                        st.info(f"AI: {comp['ai_sentiment']}")
+                with col3:
+                    st.caption(f"Basic: {comp['basic_sentiment']}")
 
 # Add test OpenAI button if debug mode is on
 if debug_mode and use_ai_sentiment:
@@ -438,6 +548,8 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         articles_to_display.sort(key=lambda x: x.get('Price_Data', {}).get('volume_ratio', 0) if x.get('Price_Data') else 0, reverse=True)
 
     displayed_count = 0
+    sentiment_distribution = {'Positive': 0, 'Negative': 0, 'Neutral': 0}
+    
     for article in articles_to_display:
         if displayed_count >= articles_to_show:
             st.caption(f"Showing {articles_to_show} articles. Adjust slider to see more.")
@@ -456,6 +568,9 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         else:
             combined_text = f"{title} {summary}"
             sentiment_label, sentiment_score = basic_sentiment_analysis(combined_text)
+        
+        # Track sentiment distribution
+        sentiment_distribution[sentiment_label] += 1
 
         if selected_ticker_filter != "All" and ticker_symbol != selected_ticker_filter: continue
         if selected_sentiment_filter != "All" and sentiment_label != selected_sentiment_filter: continue
@@ -530,13 +645,19 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                         st.info("Normal Volume")
                         st.caption(f"Ratio: {price_data['volume_ratio']:.1f}x avg")
                     
-                    # Sentiment
+                    # Sentiment with comparison
                     if sentiment_label == "Positive":
                         st.success(f"↑ {sentiment_label}")
                     elif sentiment_label == "Negative":
                         st.error(f"↓ {sentiment_label}")
                     else:
                         st.info(f"→ {sentiment_label}")
+                    
+                    # Show confidence indicator
+                    if use_ai_sentiment and abs(sentiment_score) > 0.5:
+                        st.caption("🎯 High confidence")
+                    elif use_ai_sentiment:
+                        st.caption("⚖️ Moderate confidence")
             else:
                 with meta_col2:
                     st.caption("Price data unavailable")
@@ -661,10 +782,42 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                 except Exception as e:
                     st.error(f"Could not load price chart: {str(e)}")
             
-            # Sentiment score
-            st.caption(f"Sentiment Score: {sentiment_score:.2f}")
+            # Sentiment score and analysis quality
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"Sentiment Score: {sentiment_score:.2f}")
+            with col2:
+                if use_ai_sentiment:
+                    st.caption("🤖 AI-Powered Analysis")
+                else:
+                    st.caption("📊 Basic Keyword Analysis")
             
         displayed_count += 1
+
+    # Show sentiment distribution summary
+    if displayed_count > 0:
+        st.markdown("---")
+        st.subheader("📊 Sentiment Distribution")
+        col1, col2, col3 = st.columns(3)
+        
+        total_analyzed = sum(sentiment_distribution.values())
+        with col1:
+            positive_pct = (sentiment_distribution['Positive'] / total_analyzed * 100) if total_analyzed > 0 else 0
+            st.metric("Positive", f"{sentiment_distribution['Positive']} ({positive_pct:.1f}%)")
+        with col2:
+            neutral_pct = (sentiment_distribution['Neutral'] / total_analyzed * 100) if total_analyzed > 0 else 0
+            st.metric("Neutral", f"{sentiment_distribution['Neutral']} ({neutral_pct:.1f}%)")
+        with col3:
+            negative_pct = (sentiment_distribution['Negative'] / total_analyzed * 100) if total_analyzed > 0 else 0
+            st.metric("Negative", f"{sentiment_distribution['Negative']} ({negative_pct:.1f}%)")
+        
+        # Market sentiment indicator
+        if positive_pct > 60:
+            st.success("🚀 Overall Market Sentiment: BULLISH")
+        elif negative_pct > 60:
+            st.error("📉 Overall Market Sentiment: BEARISH")
+        else:
+            st.info("⚖️ Overall Market Sentiment: MIXED")
 
     if displayed_count == 0 and (selected_ticker_filter != "All" or selected_sentiment_filter != "All"):
         st.info("No articles match your current filter criteria. Try adjusting the filters.")
@@ -685,5 +838,26 @@ with col2:
     if st.button("Clear News Feed", key="clear_news"):
         if 'news_articles' in st.session_state:
             del st.session_state['news_articles']
+        if 'sentiment_cache' in st.session_state:
+            del st.session_state['sentiment_cache']
+        if 'sentiment_analytics' in st.session_state:
+            del st.session_state['sentiment_analytics']
         st.rerun()
-    
+
+# Export analytics option
+if use_ai_sentiment and st.session_state.sentiment_analytics['api_calls'] > 0:
+    if st.button("Export Analytics Report", key="export_analytics"):
+        analytics_data = {
+            'timestamp': datetime.now().isoformat(),
+            'api_calls': st.session_state.sentiment_analytics['api_calls'],
+            'total_tokens': st.session_state.sentiment_analytics['total_tokens'],
+            'cache_hits': st.session_state.sentiment_analytics['cache_hits'],
+            'comparisons': st.session_state.sentiment_analytics['comparisons']
+        }
+        
+        st.download_button(
+            label="Download Analytics JSON",
+            data=json.dumps(analytics_data, indent=2, default=str),
+            file_name=f"sentiment_analytics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
