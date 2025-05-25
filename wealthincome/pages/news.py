@@ -67,14 +67,22 @@ def load_analytics():
         if analytics_file.exists():
             try:
                 with open(analytics_file, 'r') as f:
-                    return json.load(f)
+                    saved_data = json.load(f)
+                    # Ensure we have all required fields
+                    return {
+                        'comparisons': saved_data.get('comparisons', []),
+                        'api_calls': saved_data.get('api_calls', 0),
+                        'total_tokens': saved_data.get('total_tokens', 0),
+                        'cache_hits': saved_data.get('cache_hits', 0),
+                        'session_start': saved_data.get('session_start', datetime.now().isoformat())
+                    }
             except:
                 pass
-    # Return default with OpenAI starting values if you know them
+    # Return default - you can set your known OpenAI values here
     return {
         'comparisons': [],
-        'api_calls': 96,  # Start from your known OpenAI count
-        'total_tokens': 27678,  # Start from your known token count
+        'api_calls': 0,
+        'total_tokens': 0,
         'cache_hits': 0,
         'session_start': datetime.now().isoformat()
     }
@@ -826,6 +834,10 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         if 'DM_Sentiment' in article and article['DM_Sentiment']:
             sentiment_label = article['DM_Sentiment']
             sentiment_score = article.get('DM_Score', 0)
+        elif 'Cached_Sentiment' in article and article['Cached_Sentiment']:
+            # Use previously calculated sentiment
+            sentiment_label = article['Cached_Sentiment']
+            sentiment_score = article.get('Cached_Score', 0)
         else:
             # Analyze sentiment - Use AI if available, otherwise basic
             if use_ai_sentiment:
@@ -833,6 +845,10 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
             else:
                 combined_text = f"{title} {summary}"
                 sentiment_label, sentiment_score = basic_sentiment_analysis(combined_text)
+            
+            # Store sentiment in article for caching
+            article['Cached_Sentiment'] = sentiment_label
+            article['Cached_Score'] = sentiment_score
         
         # Track sentiment distribution
         sentiment_distribution[sentiment_label] += 1
@@ -1063,6 +1079,19 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
 
     # Show sentiment distribution summary
     if displayed_count > 0:
+        # Update cached articles with calculated sentiments
+        if data_manager_instance and st.session_state.get('news_articles'):
+            news_cache_file = data_manager_instance.cache_dir / "news_articles_cache.json"
+            try:
+                cache_data = {
+                    'timestamp': datetime.now().isoformat(),
+                    'articles': st.session_state['news_articles']  # Now includes Cached_Sentiment
+                }
+                with open(news_cache_file, 'w') as f:
+                    json.dump(cache_data, f, default=str)
+            except:
+                pass
+        
         st.markdown("---")
         st.subheader("📊 Sentiment Distribution")
         col1, col2, col3 = st.columns(3)
