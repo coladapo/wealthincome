@@ -46,11 +46,10 @@ st.title('🗞️ Market News & Sentiment Feed')
 # --- OpenAI Configuration ---
 # Check if API key is configured
 try:
-    import openai
+    from openai import OpenAI  # NEW IMPORT
     openai_api_key = st.secrets.get("OPENAI_API_KEY", None)
     use_ai_sentiment = openai_api_key is not None
     if openai_api_key:
-        openai.api_key = openai_api_key
         st.success("✅ AI-Powered Sentiment Analysis Active (OpenAI)")
     else:
         st.warning("⚠️ Using basic sentiment analysis. Add OPENAI_API_KEY to secrets.toml for better accuracy.")
@@ -68,6 +67,11 @@ def get_ai_sentiment(title, summary, ticker):
         return basic_sentiment_analysis(f"{title} {summary}")
     
     try:
+        from openai import OpenAI
+        
+        # Initialize client with API key
+        client = OpenAI(api_key=openai_api_key)
+        
         prompt = f"""
         Analyze this news article's sentiment specifically for {ticker} stock:
         
@@ -87,7 +91,8 @@ def get_ai_sentiment(title, summary, ticker):
         Respond with ONLY ONE of these three words: Positive, Negative, or Neutral
         """
         
-        response = openai.ChatCompletion.create(
+        # NEW API FORMAT
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a stock sentiment analyzer. You must respond with EXACTLY one word: Positive, Negative, or Neutral. No other text."},
@@ -97,7 +102,7 @@ def get_ai_sentiment(title, summary, ticker):
             max_tokens=10
         )
         
-        # Extract and clean the response
+        # Extract and clean the response - UPDATED SYNTAX
         sentiment_text = response.choices[0].message.content.strip().lower()
         
         # Handle various response formats
@@ -297,6 +302,23 @@ news_source = st.selectbox(
 
 # Debug mode on a new line
 debug_mode = st.checkbox("Debug Mode", value=False, help="Show raw data structure")
+
+# Add test OpenAI button if debug mode is on
+if debug_mode and use_ai_sentiment:
+    if st.button("Test OpenAI Connection"):
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+            
+            # Simple test
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": "Say 'API working'"}],
+                max_tokens=10
+            )
+            st.success(f"✅ API Response: {response.choices[0].message.content}")
+        except Exception as e:
+            st.error(f"❌ Error: {type(e).__name__}: {str(e)}")
 
 if st.button("Fetch News", key="fetch_news_button"):
     if tickers_input:
@@ -658,9 +680,10 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Data Source:** Yahoo Finance API")
-    st.caption("Sentiment analysis is basic and for illustrative purposes only.")
+    st.caption("Sentiment analysis powered by " + ("OpenAI GPT-3.5" if use_ai_sentiment else "basic keyword matching"))
 with col2:
     if st.button("Clear News Feed", key="clear_news"):
         if 'news_articles' in st.session_state:
             del st.session_state['news_articles']
         st.rerun()
+    
