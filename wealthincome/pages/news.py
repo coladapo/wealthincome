@@ -95,6 +95,12 @@ def save_analytics(analytics):
 # Initialize Session State for Analytics
 if 'sentiment_analytics' not in st.session_state:
     st.session_state.sentiment_analytics = load_analytics()
+else:
+    # Always reload from file to get the latest counts
+    loaded_analytics = load_analytics()
+    # Merge with current session data
+    if loaded_analytics['api_calls'] > st.session_state.sentiment_analytics['api_calls']:
+        st.session_state.sentiment_analytics = loaded_analytics
 
 if 'sentiment_cache' not in st.session_state:
     st.session_state.sentiment_cache = {}
@@ -167,11 +173,14 @@ def get_ai_sentiment(title, summary, ticker):
             max_tokens=10
         )
         
-        # Track token usage
+        # Track token usage - get actual usage from response
         if hasattr(response, 'usage'):
-            st.session_state.sentiment_analytics['total_tokens'] += response.usage.total_tokens
+            tokens_used = response.usage.total_tokens
+            st.session_state.sentiment_analytics['total_tokens'] += tokens_used
+            if st.session_state.get('debug_mode', False):
+                st.caption(f"🔢 This request used {tokens_used} tokens")
         
-        # Save analytics after each call
+        # Save analytics immediately after each call
         save_analytics(st.session_state.sentiment_analytics)
         
         # Extract and clean the response
@@ -457,6 +466,19 @@ if show_analytics and use_ai_sentiment:
         
         # Add OpenAI sync check
         st.info(f"💡 **Tip**: Analytics are saved to `{data_manager_instance.cache_dir if data_manager_instance else 'cache'}/sentiment_analytics.json`")
+        
+        # Manual sync option
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔧 Manual Sync", help="Manually update counts if they don't match OpenAI dashboard"):
+                manual_calls = st.number_input("Enter actual API calls from OpenAI:", value=analytics['api_calls'], key="manual_calls")
+                manual_tokens = st.number_input("Enter actual tokens from OpenAI:", value=analytics['total_tokens'], key="manual_tokens")
+                if st.button("Update Counts"):
+                    st.session_state.sentiment_analytics['api_calls'] = manual_calls
+                    st.session_state.sentiment_analytics['total_tokens'] = manual_tokens
+                    save_analytics(st.session_state.sentiment_analytics)
+                    st.success("✅ Counts updated!")
+                    st.rerun()
         
         # Session info
         if 'session_start' in analytics:
