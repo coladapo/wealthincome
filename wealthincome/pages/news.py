@@ -196,14 +196,54 @@ if st.button("Fetch News", key="fetch_news_button"):
             if news_source == "Yahoo Finance (Free)":
                 news_articles = fetch_ticker_news_yfinance(tickers_input)
                 
-                # Debug mode: show first article structure
+                # Debug mode: show comprehensive information
                 if debug_mode and news_articles and len(news_articles) > 0:
-                    st.write("🔍 Debug Info - First Article Structure:")
-                    first_article = news_articles[0]
-                    if 'Original' in first_article:
-                        st.json(first_article['Original'])
-                    else:
-                        st.json(first_article)
+                    with st.expander("🔍 Debug Information", expanded=True):
+                        st.write("### First Article Raw Data Structure:")
+                        first_article = news_articles[0]
+                        
+                        # Show raw article data
+                        debug_data = {
+                            "Title": first_article.get('Title'),
+                            "Date": first_article.get('Date'),
+                            "Parsed_Date": str(first_article.get('Parsed_Date')),
+                            "Source": first_article.get('Source'),
+                            "Ticker": first_article.get('Ticker'),
+                            "Link": first_article.get('Link'),
+                            "Summary_Length": len(first_article.get('Summary', '')),
+                            "Price_Data": first_article.get('Price_Data')
+                        }
+                        st.json(debug_data)
+                        
+                        # Show fetching statistics
+                        st.write("### Fetching Statistics:")
+                        tickers = [t.strip().upper() for t in tickers_input.split(',')]
+                        ticker_counts = {}
+                        for article in news_articles:
+                            ticker = article.get('Ticker', 'Unknown')
+                            ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("**Articles per Ticker:**")
+                            for ticker, count in ticker_counts.items():
+                                st.write(f"- {ticker}: {count} articles")
+                        
+                        with col2:
+                            st.write("**Price Data Status:**")
+                            price_success = sum(1 for a in news_articles if a.get('Price_Data') is not None)
+                            st.write(f"- Success: {price_success}/{len(news_articles)}")
+                            st.write(f"- Failed: {len(news_articles) - price_success}/{len(news_articles)}")
+                        
+                        # Show date range of news
+                        st.write("### News Date Range:")
+                        dates = [a['Parsed_Date'] for a in news_articles if a.get('Parsed_Date') and a['Parsed_Date'] != datetime.min]
+                        if dates:
+                            oldest = min(dates)
+                            newest = max(dates)
+                            st.write(f"- Oldest: {oldest}")
+                            st.write(f"- Newest: {newest}")
+                            st.write(f"- Span: {(newest - oldest).days} days")
             else:
                 st.warning(f"{news_source} is not currently active. Please use Yahoo Finance.")
                 news_articles = []
@@ -305,19 +345,29 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                 st.caption(summary[:200] + "..." if len(summary) > 200 else summary)
             
             # News age and potential impact
+            news_age_str = ""
             if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
-                news_age = datetime.now() - article['Parsed_Date'].replace(tzinfo=None)
-                hours_old = news_age.total_seconds() / 3600
-                
-                if hours_old < 1:
-                    st.caption(f"🔥 **Fresh news** - Published {int(hours_old * 60)} minutes ago")
-                elif hours_old < 6:
-                    st.caption(f"📍 **Recent** - Published {hours_old:.1f} hours ago")
-                elif hours_old < 24:
-                    st.caption(f"📅 Published {hours_old:.0f} hours ago")
-                else:
-                    days_old = hours_old / 24
-                    st.caption(f"📅 Published {days_old:.0f} days ago")
+                try:
+                    # Ensure both datetimes are timezone-naive for comparison
+                    article_date = article['Parsed_Date'].replace(tzinfo=None) if article['Parsed_Date'].tzinfo else article['Parsed_Date']
+                    current_time = datetime.now()
+                    news_age = current_time - article_date
+                    hours_old = news_age.total_seconds() / 3600
+                    
+                    if hours_old < 1:
+                        news_age_str = f"🔥 **Fresh news** - Published {int(hours_old * 60)} minutes ago"
+                    elif hours_old < 6:
+                        news_age_str = f"📍 **Recent** - Published {hours_old:.1f} hours ago"
+                    elif hours_old < 24:
+                        news_age_str = f"📅 Published {hours_old:.0f} hours ago"
+                    else:
+                        days_old = hours_old / 24
+                        news_age_str = f"📅 Published {days_old:.0f} days ago"
+                    
+                    st.caption(news_age_str)
+                except Exception as e:
+                    if debug_mode:
+                        st.error(f"Error calculating news age: {str(e)}")
             
             # Mini price chart (last 5 days)
             with st.expander("📊 View Price Movement"):
@@ -326,8 +376,6 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                     hist = ticker_obj.history(period="5d", interval="1h")
                     
                     if not hist.empty:
-                        import plotly.graph_objects as go
-                        
                         fig = go.Figure()
                         fig.add_trace(go.Candlestick(
                             x=hist.index,
@@ -340,12 +388,23 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                         
                         # Add a vertical line at news publication time
                         if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
-                            fig.add_vline(
-                                x=article['Parsed_Date'], 
-                                line_dash="dash", 
-                                line_color="yellow",
-                                annotation_text="News Published"
-                            )
+                            try:
+                                # Ensure the date is timezone-aware to match the chart's index
+                                news_time = article['Parsed_Date']
+                                if news_time.tzinfo is None:
+                                    # If naive, assume it's UTC
+                                    import pytz
+                                    news_time = pytz.UTC.localize(news_time)
+                                
+                                fig.add_vline(
+                                    x=news_time, 
+                                    line_dash="dash", 
+                                    line_color="yellow",
+                                    annotation_text="News Published"
+                                )
+                            except Exception as e:
+                                if debug_mode:
+                                    st.error(f"Could not add news line: {str(e)}")
                         
                         fig.update_layout(
                             title=f"{ticker_symbol} - 5 Day Price Movement",
@@ -366,6 +425,9 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                         
                 except Exception as e:
                     st.error(f"Could not load price chart: {str(e)}")
+                    if debug_mode:
+                        st.write("Debug - Full error:", e)
+                        st.write("Debug - Article date:", article.get('Parsed_Date'))
             
             # Sentiment score (smaller, less prominent)
             st.caption(f"Sentiment Score: {sentiment_score:.2f}")
