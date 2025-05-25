@@ -325,46 +325,50 @@ def fetch_ticker_news_yfinance(tickers_string, append_to_existing=False):
         except:
             ticker_prices[ticker] = None
 
-                # Handle DataManager Enhanced mode
-                if news_source == "DataManager Enhanced" and data_manager_instance:
-                    # Use DataManager's built-in news sentiment feature
-                    for ticker in tickers_list:
-                        try:
-                            dm_news = data_manager_instance.get_latest_news_sentiment(ticker, debug_mode=debug_mode)
-                            if dm_news:
-                                # Convert DataManager format to our format
-                                formatted_article = {
-                                    'Title': dm_news['headline'],
-                                    'Link': dm_news['link'],
-                                    'Date': dm_news['date'],
-                                    'Source': dm_news['source'],
-                                    'Ticker': ticker,
-                                    'Summary': '',  # DataManager doesn't provide summary
-                                    'Parsed_Date': datetime.now(),  # Use current time as approximation
-                                    'Price_Data': ticker_prices.get(ticker),
-                                    'Fetch_Time': fetch_timestamp,
-                                    'Fetch_ID': fetch_id,
-                                    'Article_ID': f"{ticker}_{hash(dm_news['headline'])}_{dm_news['date']}",
-                                    'Cached_Sentiment': dm_news['label'],  # Pre-calculated sentiment
-                                    'Cached_Score': dm_news['score']
-                                }
-                                all_news.append(formatted_article)
-                                
-                                if debug_mode:
-                                    st.caption(f"✅ DataManager fetched news for {ticker}: {dm_news['label']} ({dm_news['score']:.2f})")
-                        except Exception as e:
-                            if debug_mode:
-                                st.error(f"DataManager fetch failed for {ticker}: {e}")
-                            # Fall back to regular yfinance
-                            stock = yf.Ticker(ticker)
-                            news_data = stock.news
-                            # ... (rest of the regular fetching code)
+    # Get news_source from select box (it's set in the UI before this function is called)
+    news_source = st.session_state.get('news_source', 'Yahoo Finance (Free)')
+    debug_mode = st.session_state.get('debug_mode', False)
+
+    # Handle DataManager Enhanced mode
+    if news_source == "DataManager Enhanced" and data_manager_instance:
+        # Use DataManager's built-in news sentiment feature
+        for ticker in tickers_list:
+            try:
+                dm_news = data_manager_instance.get_latest_news_sentiment(ticker, debug_mode=debug_mode)
+                if dm_news:
+                    # Convert DataManager format to our format
+                    formatted_article = {
+                        'Title': dm_news['headline'],
+                        'Link': dm_news['link'],
+                        'Date': dm_news['date'],
+                        'Source': dm_news['source'],
+                        'Ticker': ticker,
+                        'Summary': '',  # DataManager doesn't provide summary
+                        'Parsed_Date': datetime.now(),  # Use current time as approximation
+                        'Price_Data': ticker_prices.get(ticker),
+                        'Fetch_Time': fetch_timestamp,
+                        'Fetch_ID': fetch_id,
+                        'Article_ID': f"{ticker}_{hash(dm_news['headline'])}_{dm_news['date']}",
+                        'Cached_Sentiment': dm_news['label'],  # Pre-calculated sentiment
+                        'Cached_Score': dm_news['score']
+                    }
+                    all_news.append(formatted_article)
                     
-                    all_news.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
-                    return all_news
-                
-                # Regular Yahoo Finance fetching (existing code)
-                for ticker in tickers_list:
+                    if debug_mode:
+                        st.caption(f"✅ DataManager fetched news for {ticker}: {dm_news['label']} ({dm_news['score']:.2f})")
+            except Exception as e:
+                if debug_mode:
+                    st.error(f"DataManager fetch failed for {ticker}: {e}")
+                # Fall back to regular yfinance will happen below
+        
+        # If we got news from DataManager, sort and return
+        if all_news:
+            all_news.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
+            return all_news
+        # Otherwise fall through to Yahoo Finance
+    
+    # Regular Yahoo Finance fetching
+    for ticker in tickers_list:
         try:
             stock = yf.Ticker(ticker)
             news_data = stock.news
@@ -434,6 +438,7 @@ news_source = st.selectbox(
     index=0,
     help="DataManager Enhanced uses caching and may include additional sources."
 )
+st.session_state['news_source'] = news_source
 
 # Debug mode and analytics
 col1, col2 = st.columns(2)
@@ -705,6 +710,48 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
 
     if displayed_count == 0 and (selected_ticker_filter != "All" or selected_sentiment_filter != "All"):
         st.info("No articles match your current filter criteria. Try adjusting the filters.")
+
+    # Show AI Analytics if enabled
+    if show_analytics and use_ai_sentiment:
+        st.markdown("---")
+        st.subheader("🤖 AI Sentiment Analytics")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # Session stats
+        with col1:
+            st.metric("Session API Calls", st.session_state.session_api_calls)
+        with col2:
+            st.metric("Session Tokens", st.session_state.session_tokens)
+        with col3:
+            total_calls = st.session_state.sentiment_analytics.get('api_calls', 0)
+            st.metric("Total API Calls", total_calls)
+        with col4:
+            cache_hits = st.session_state.sentiment_analytics.get('cache_hits', 0)
+            st.metric("Cache Hits", cache_hits)
+        
+        # Cost estimation
+        if st.session_state.sentiment_analytics.get('total_tokens', 0) > 0:
+            total_tokens = st.session_state.sentiment_analytics.get('total_tokens', 0)
+            # GPT-3.5-turbo pricing (approximate)
+            cost_per_1k_tokens = 0.002  # $0.002 per 1K tokens
+            estimated_cost = (total_tokens / 1000) * cost_per_1k_tokens
+            st.info(f"💰 Estimated Total Cost: ${estimated_cost:.4f} ({total_tokens:,} tokens)")
+        
+        # Comparison insights
+        comparisons = st.session_state.sentiment_analytics.get('comparisons', [])
+        if comparisons:
+            st.subheader("🔍 AI vs Basic Sentiment Comparisons")
+            recent_comparisons = comparisons[-5:]  # Show last 5
+            
+            for comp in recent_comparisons:
+                with st.expander(f"{comp['ticker']} - {comp['title'][:50]}..."):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**AI Sentiment:** {comp['ai_sentiment']}")
+                    with col2:
+                        st.write(f"**Basic Sentiment:** {comp['basic_sentiment']}")
+                    st.caption(f"Time: {comp['timestamp']}")
         
 else:
     st.info("👆 Enter tickers and click 'Fetch Fresh News' to get started.")
