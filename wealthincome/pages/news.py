@@ -70,10 +70,11 @@ def load_analytics():
                     return json.load(f)
             except:
                 pass
+    # Return default with OpenAI starting values if you know them
     return {
         'comparisons': [],
-        'api_calls': 0,
-        'total_tokens': 0,
+        'api_calls': 96,  # Start from your known OpenAI count
+        'total_tokens': 27678,  # Start from your known token count
         'cache_hits': 0,
         'session_start': datetime.now().isoformat()
     }
@@ -98,12 +99,28 @@ if 'sentiment_analytics' not in st.session_state:
 else:
     # Always reload from file to get the latest counts
     loaded_analytics = load_analytics()
-    # Merge with current session data
-    if loaded_analytics['api_calls'] > st.session_state.sentiment_analytics['api_calls']:
+    # Update session state with file data if file has more recent data
+    if loaded_analytics.get('api_calls', 0) > st.session_state.sentiment_analytics.get('api_calls', 0):
         st.session_state.sentiment_analytics = loaded_analytics
 
 if 'sentiment_cache' not in st.session_state:
     st.session_state.sentiment_cache = {}
+
+# Initialize news articles from cache if available
+if 'news_articles' not in st.session_state:
+    if data_manager_instance:
+        news_cache_file = data_manager_instance.cache_dir / "news_articles_cache.json"
+        if news_cache_file.exists():
+            try:
+                with open(news_cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    # Check if cache is recent (within last hour)
+                    cache_time = datetime.fromisoformat(cached_data.get('timestamp', '2000-01-01'))
+                    if (datetime.now() - cache_time).seconds < 3600:  # 1 hour
+                        st.session_state['news_articles'] = cached_data.get('articles', [])
+                        st.info(f"📂 Loaded {len(st.session_state.get('news_articles', []))} cached articles from {cache_time.strftime('%H:%M:%S')}")
+            except:
+                pass
 
 # --- Helper Functions ---
 
@@ -685,6 +702,21 @@ if st.button("Fetch News", key="fetch_news_button"):
         
         if news_articles:
             st.session_state['news_articles'] = news_articles
+            
+            # Save news articles to cache
+            if data_manager_instance:
+                news_cache_file = data_manager_instance.cache_dir / "news_articles_cache.json"
+                try:
+                    cache_data = {
+                        'timestamp': datetime.now().isoformat(),
+                        'articles': news_articles
+                    }
+                    with open(news_cache_file, 'w') as f:
+                        json.dump(cache_data, f, default=str)  # default=str handles datetime objects
+                except Exception as e:
+                    if debug_mode:
+                        st.error(f"Failed to cache news: {e}")
+            
             st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}.")
         else:
             st.warning("No news articles found for the given tickers. Try different tickers or check back later.")
