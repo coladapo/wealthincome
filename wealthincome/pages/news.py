@@ -104,12 +104,24 @@ def save_analytics(analytics):
 # Initialize Session State for Analytics
 if 'sentiment_analytics' not in st.session_state:
     st.session_state.sentiment_analytics = load_analytics()
-else:
-    # Always reload from file to get the latest counts
-    loaded_analytics = load_analytics()
-    # Update session state with file data if file has more recent data
-    if loaded_analytics.get('api_calls', 0) > st.session_state.sentiment_analytics.get('api_calls', 0):
-        st.session_state.sentiment_analytics = loaded_analytics
+
+# Auto-reconciliation system
+if 'last_known_openai' not in st.session_state:
+    st.session_state.last_known_openai = {
+        'api_calls': st.session_state.sentiment_analytics.get('api_calls', 0),
+        'total_tokens': st.session_state.sentiment_analytics.get('total_tokens', 0)
+    }
+
+# Track if we've done any API calls this session
+if 'session_api_calls' not in st.session_state:
+    st.session_state.session_api_calls = 0
+    st.session_state.session_tokens = 0
+
+# Always reload from file to get the latest counts
+loaded_analytics = load_analytics()
+# Update session state with file data if file has more recent data
+if loaded_analytics.get('api_calls', 0) > st.session_state.sentiment_analytics.get('api_calls', 0):
+    st.session_state.sentiment_analytics = loaded_analytics
 
 if 'sentiment_cache' not in st.session_state:
     st.session_state.sentiment_cache = {}
@@ -186,6 +198,7 @@ def get_ai_sentiment(title, summary, ticker):
         
         # Track API call
         st.session_state.sentiment_analytics['api_calls'] += 1
+        st.session_state.session_api_calls += 1
         
         # NEW API FORMAT with token tracking
         response = client.chat.completions.create(
@@ -202,6 +215,7 @@ def get_ai_sentiment(title, summary, ticker):
         if hasattr(response, 'usage'):
             tokens_used = response.usage.total_tokens
             st.session_state.sentiment_analytics['total_tokens'] += tokens_used
+            st.session_state.session_tokens += tokens_used
             if st.session_state.get('debug_mode', False):
                 st.caption(f"🔢 This request used {tokens_used} tokens")
         
@@ -546,6 +560,13 @@ if show_analytics and use_ai_sentiment:
         # Manual sync option with form to prevent auto-refresh
         with st.form("manual_sync_form"):
             st.write("🔧 **Manual Sync with OpenAI Dashboard**")
+            
+            # Show expected values based on session activity
+            if st.session_state.session_api_calls > 0:
+                expected_calls = st.session_state.last_known_openai['api_calls'] + st.session_state.session_api_calls
+                expected_tokens = st.session_state.last_known_openai['total_tokens'] + st.session_state.session_tokens
+                st.info(f"📊 Expected OpenAI values based on this session: {expected_calls} calls, {expected_tokens} tokens")
+            
             col1, col2 = st.columns(2)
             with col1:
                 manual_calls = st.number_input(
@@ -566,9 +587,39 @@ if show_analytics and use_ai_sentiment:
             if st.form_submit_button("Update Analytics"):
                 st.session_state.sentiment_analytics['api_calls'] = manual_calls
                 st.session_state.sentiment_analytics['total_tokens'] = manual_tokens
+                # Update last known OpenAI values
+                st.session_state.last_known_openai = {
+                    'api_calls': manual_calls,
+                    'total_tokens': manual_tokens
+                }
+                # Reset session counters
+                st.session_state.session_api_calls = 0
+                st.session_state.session_tokens = 0
                 save_analytics(st.session_state.sentiment_analytics)
                 st.success("✅ Analytics synced with OpenAI dashboard!")
                 st.rerun()
+        
+        # Add auto-reconciliation check
+        if st.button("🔄 Check Sync Status"):
+            analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json" if data_manager_instance else None
+            if analytics_file and analytics_file.exists():
+                with open(analytics_file, 'r') as f:
+                    file_data = json.load(f)
+                
+                st.write("**Sync Status Check:**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.write("📋 **Session State**")
+                    st.write(f"Calls: {analytics['api_calls']}")
+                    st.write(f"Tokens: {analytics['total_tokens']}")
+                with col2:
+                    st.write("💾 **File Data**")
+                    st.write(f"Calls: {file_data.get('api_calls', 0)}")
+                    st.write(f"Tokens: {file_data.get('total_tokens', 0)}")
+                with col3:
+                    st.write("🔢 **This Session**")
+                    st.write(f"New Calls: {st.session_state.session_api_calls}")
+                    st.write(f"New Tokens: {st.session_state.session_tokens}")
         
         # Session info
         if 'session_start' in analytics:
