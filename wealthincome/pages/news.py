@@ -505,7 +505,7 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         selected_sentiment_filter = st.selectbox("Filter by Sentiment:", ["All", "Positive", "Neutral", "Negative"], key="news_sentiment_filter")
     
     with col3:
-        sort_by = st.selectbox("Sort by:", ["Newest First", "Oldest First", "Most Positive", "Most Negative"], key="news_sort")
+        sort_by = st.selectbox("Sort by:", ["Fetch Time (Recent First)", "Newest First", "Oldest First", "Most Positive", "Most Negative"], key="news_sort", index=0)
     
     with col4:
         articles_to_show = st.slider("Articles to display:", min_value=10, max_value=100, value=30, step=10)
@@ -513,7 +513,14 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
     # Apply sorting
     articles_to_display = st.session_state.news_articles.copy()
     
-    if sort_by == "Newest First":
+    if sort_by == "Fetch Time (Recent First)":
+        # Sort by fetch time - most recently fetched first (green at top, yellow middle, gray/red at bottom)
+        def get_fetch_time_for_sort(article):
+            fetch_time = article.get('Fetch_Time', datetime.min)
+            return ensure_datetime(fetch_time)
+        
+        articles_to_display.sort(key=get_fetch_time_for_sort, reverse=True)
+    elif sort_by == "Newest First":
         articles_to_display.sort(key=lambda x: ensure_datetime(x.get('Parsed_Date', datetime.min)), reverse=True)
     elif sort_by == "Oldest First":
         articles_to_display.sort(key=lambda x: ensure_datetime(x.get('Parsed_Date', datetime.min)))
@@ -577,12 +584,17 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                         
                         if fetch_time != datetime.min:
                             fetch_age = datetime.now() - fetch_time
-                            if fetch_age.total_seconds() < 300:
+                            hours = fetch_age.total_seconds() / 3600
+                            
+                            if fetch_age.total_seconds() < 300:  # Less than 5 minutes
                                 st.caption("🟢 Just fetched")
-                            elif fetch_age.total_seconds() < 3600:
+                            elif hours < 1:  # Less than 1 hour
                                 st.caption(f"🟡 {int(fetch_age.total_seconds() / 60)}m ago")
-                            else:
-                                st.caption(f"⚪ {int(fetch_age.total_seconds() / 3600)}h ago")
+                            elif hours < 24:  # Less than 24 hours
+                                st.caption(f"🟠 {int(hours)}h ago")
+                            else:  # More than 24 hours
+                                days = int(hours / 24)
+                                st.caption(f"🔴 {days}d ago")
                     except:
                         st.caption("⚪ Fetched")
             
