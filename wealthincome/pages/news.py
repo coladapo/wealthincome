@@ -141,8 +141,6 @@ if 'news_articles' not in st.session_state:
 # Track when articles were last viewed
 if 'last_viewed_time' not in st.session_state:
     st.session_state['last_viewed_time'] = datetime.now()
-            except:
-                pass
 
 # --- Helper Functions ---
 
@@ -624,10 +622,11 @@ if show_analytics and use_ai_sentiment:
                     st.write(f"New Tokens: {st.session_state.session_tokens}")
                 
                 # Reconciliation tip
-                if abs(analytics['api_calls'] - manual_calls) <= 10:
-                    st.info("✅ Counts are close enough! Small differences (±10) are normal due to timing.")
-                else:
-                    st.warning("⚠️ Counts differ significantly. Use Manual Sync to update.")
+                if st.session_state.session_api_calls > 0:
+                    if abs(analytics['api_calls'] - file_data.get('api_calls', 0)) <= 10:
+                        st.info("✅ Counts are close enough! Small differences (±10) are normal due to timing.")
+                    else:
+                        st.warning("⚠️ Counts differ significantly. Use Manual Sync to update.")
         
         # Session info
         if 'session_start' in analytics:
