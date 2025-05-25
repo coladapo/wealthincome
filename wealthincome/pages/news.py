@@ -305,24 +305,29 @@ def fetch_ticker_news_yfinance(tickers_string):
         try:
             # Alternative: Use DataManager's news method if available
             if data_manager_instance and hasattr(data_manager_instance, 'get_latest_news_sentiment'):
-                dm_news = data_manager_instance.get_latest_news_sentiment(ticker, debug_mode=st.session_state.get('debug_mode', False))
-                if dm_news:
-                    st.caption(f"📡 Using DataManager news for {ticker}")
-                    # Convert DataManager format to our format
-                    formatted_article = {
-                        'Title': dm_news['headline'],
-                        'Link': dm_news['link'],
-                        'Date': dm_news['date'],
-                        'Source': dm_news['source'],
-                        'Ticker': ticker,
-                        'Summary': '',  # DataManager doesn't provide summary
-                        'Parsed_Date': datetime.now(),  # Approximate
-                        'Price_Data': ticker_prices.get(ticker),
-                        'DM_Sentiment': dm_news['label'],  # Store DataManager's sentiment
-                        'DM_Score': dm_news['score']
-                    }
-                    all_news.append(formatted_article)
-                    continue
+                try:
+                    dm_news = data_manager_instance.get_latest_news_sentiment(ticker, debug_mode=st.session_state.get('debug_mode', False))
+                    if dm_news:
+                        st.caption(f"📡 Using DataManager news for {ticker}")
+                        # Convert DataManager format to our format
+                        formatted_article = {
+                            'Title': dm_news['headline'],
+                            'Link': dm_news['link'],
+                            'Date': dm_news['date'],
+                            'Source': dm_news['source'],
+                            'Ticker': ticker,
+                            'Summary': '',  # DataManager doesn't provide summary
+                            'Parsed_Date': datetime.now(),  # Approximate
+                            'Price_Data': ticker_prices.get(ticker),
+                            'DM_Sentiment': dm_news['label'],  # Store DataManager's sentiment
+                            'DM_Score': dm_news['score']
+                        }
+                        all_news.append(formatted_article)
+                        continue
+                except Exception as e:
+                    if st.session_state.get('debug_mode', False):
+                        st.warning(f"DataManager news fetch failed for {ticker}: {str(e)}. Using regular yfinance.")
+                    # Continue to regular yfinance method below
             
             # Fallback to regular yfinance method
             stock = yf.Ticker(ticker)
