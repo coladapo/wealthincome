@@ -986,10 +986,10 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
         for idx, (ticker, data) in enumerate(sorted(ticker_summary.items())):
             col_idx = idx % len(ticker_cols)
             with ticker_cols[col_idx]:
-                # Calculate age of latest article
-                if data['latest'] != datetime.min:
-                    age = datetime.now() - data['latest'].replace(tzinfo=None) if data['latest'].tzinfo else datetime.now() - data['latest']
-                    hours = age.total_seconds() / 3600
+File "/mount/src/wealthincome/wealthincome/pages/news.py", line 991, in <module>
+    age = datetime.now() - datetime.now() if data['latest'].tzinfo else datetime.now() - data['latest']
+                         ^^^^^^^^^^^^^^^
+AttributeError: 'str' object has no attribute 'tzinfo'
                     if hours < 1:
                         age_text = f"{int(age.total_seconds() / 60)}m old"
                         age_emoji = "🟢"
