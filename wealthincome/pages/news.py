@@ -492,19 +492,22 @@ if data_manager_instance:
         st.write(f"**Cache Directory**: `{data_manager_instance.cache_dir}`")
         st.write(f"**Analytics File**: `{data_manager_instance.cache_dir / 'sentiment_analytics.json'}`")
         
-        # Check if cache directory exists
-        if data_manager_instance.cache_dir.exists():
-            st.success("✅ Cache directory exists")
-            
-            # List all files in cache directory
+    # Check if cache directory exists
+    if data_manager_instance.cache_dir.exists():
+        st.success("✅ Cache directory exists")
+        
+        # List all files in cache directory
+        try:
             cache_files = list(data_manager_instance.cache_dir.glob("*.json"))
             st.write(f"**Files in cache directory**: {len(cache_files)}")
             for file in cache_files:
                 file_size = file.stat().st_size
                 modified_time = datetime.fromtimestamp(file.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
                 st.caption(f"📄 {file.name} - {file_size} bytes - Last modified: {modified_time}")
-        else:
-            st.error("❌ Cache directory not found")
+        except Exception as e:
+            st.error(f"Error listing cache files: {e}")
+    else:
+        st.error("❌ Cache directory not found")
         
         # View Analytics File Content
         if st.button("View Analytics File Content"):
@@ -541,14 +544,17 @@ if data_manager_instance:
         
         # DataManager functionality check
         st.write("**DataManager Features:**")
-        if hasattr(data_manager_instance, 'get_latest_news_sentiment'):
-            st.success("✅ News sentiment method available")
-        if hasattr(data_manager_instance, 'get_watchlist'):
-            watchlist = data_manager_instance.get_watchlist()
-            st.success(f"✅ Watchlist working - {len(watchlist)} items")
-        if hasattr(data_manager_instance, 'get_trade_journal'):
-            trades = data_manager_instance.get_trade_journal()
-            st.success(f"✅ Trade journal working - {len(trades)} trades")
+        try:
+            if hasattr(data_manager_instance, 'get_latest_news_sentiment'):
+                st.success("✅ News sentiment method available")
+            if hasattr(data_manager_instance, 'get_watchlist'):
+                watchlist = data_manager_instance.get_watchlist()
+                st.success(f"✅ Watchlist working - {len(watchlist)} items")
+            if hasattr(data_manager_instance, 'get_trade_journal'):
+                trades = data_manager_instance.get_trade_journal()
+                st.success(f"✅ Trade journal working - {len(trades)} trades")
+        except Exception as e:
+            st.error(f"Error checking DataManager features: {e}")
 
 default_tickers = "AAPL,TSLA,GOOGL" # Default tickers
 tickers_input = st.text_input("Enter stock tickers (comma-separated):", value=default_tickers, key="news_tickers_input")
@@ -653,30 +659,33 @@ if show_analytics and use_ai_sentiment:
         if st.button("🔄 Check Sync Status"):
             analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json" if data_manager_instance else None
             if analytics_file and analytics_file.exists():
-                with open(analytics_file, 'r') as f:
-                    file_data = json.load(f)
-                
-                st.write("**Sync Status Check:**")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.write("📋 **Session State**")
-                    st.write(f"Calls: {analytics['api_calls']}")
-                    st.write(f"Tokens: {analytics['total_tokens']}")
-                with col2:
-                    st.write("💾 **File Data**")
-                    st.write(f"Calls: {file_data.get('api_calls', 0)}")
-                    st.write(f"Tokens: {file_data.get('total_tokens', 0)}")
-                with col3:
-                    st.write("🔢 **This Session**")
-                    st.write(f"New Calls: {st.session_state.session_api_calls}")
-                    st.write(f"New Tokens: {st.session_state.session_tokens}")
-                
-                # Reconciliation tip
-                if st.session_state.session_api_calls > 0:
-                    if abs(analytics['api_calls'] - file_data.get('api_calls', 0)) <= 10:
-                        st.info("✅ Counts are close enough! Small differences (±10) are normal due to timing.")
-                    else:
-                        st.warning("⚠️ Counts differ significantly. Use Manual Sync to update.")
+                try:
+                    with open(analytics_file, 'r') as f:
+                        file_data = json.load(f)
+                    
+                    st.write("**Sync Status Check:**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.write("📋 **Session State**")
+                        st.write(f"Calls: {analytics['api_calls']}")
+                        st.write(f"Tokens: {analytics['total_tokens']}")
+                    with col2:
+                        st.write("💾 **File Data**")
+                        st.write(f"Calls: {file_data.get('api_calls', 0)}")
+                        st.write(f"Tokens: {file_data.get('total_tokens', 0)}")
+                    with col3:
+                        st.write("🔢 **This Session**")
+                        st.write(f"New Calls: {st.session_state.session_api_calls}")
+                        st.write(f"New Tokens: {st.session_state.session_tokens}")
+                    
+                    # Reconciliation tip
+                    if st.session_state.session_api_calls > 0:
+                        if abs(analytics['api_calls'] - file_data.get('api_calls', 0)) <= 10:
+                            st.info("✅ Counts are close enough! Small differences (±10) are normal due to timing.")
+                        else:
+                            st.warning("⚠️ Counts differ significantly. Use Manual Sync to update.")
+                except Exception as e:
+                    st.error(f"Error checking sync status: {e}")
         
         # Session info
         if 'session_start' in analytics:
@@ -701,41 +710,44 @@ if show_analytics and use_ai_sentiment:
                     st.caption(f"Basic: {comp['basic_sentiment']}")
     
     # Real-time file monitoring (moved outside the main expander)
-    if show_analytics and use_ai_sentiment and data_manager_instance:
+    if data_manager_instance:
         with st.expander("🔍 Real-Time File Monitoring", expanded=False):
             analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
             if analytics_file.exists():
-                file_stats = analytics_file.stat()
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("File Size", f"{file_stats.st_size} bytes")
-                with col2:
-                    modified_time = datetime.fromtimestamp(file_stats.st_mtime)
-                    st.metric("Last Modified", modified_time.strftime('%H:%M:%S'))
-                with col3:
-                    time_diff = datetime.now() - modified_time
-                    st.metric("Age", f"{time_diff.seconds} seconds")
-                
-                # Compare file content with session state
-                with open(analytics_file, 'r') as f:
-                    file_content = json.load(f)
-                
-                st.write("**Session vs File Comparison:**")
-                session_calls = st.session_state.sentiment_analytics['api_calls']
-                file_calls = file_content.get('api_calls', 0)
-                
-                if session_calls == file_calls:
-                    st.success(f"✅ Synced: Both show {session_calls} API calls")
-                else:
-                    st.warning(f"⚠️ Mismatch: Session={session_calls}, File={file_calls}")
-                
-                session_tokens = st.session_state.sentiment_analytics['total_tokens']
-                file_tokens = file_content.get('total_tokens', 0)
-                
-                if session_tokens == file_tokens:
-                    st.success(f"✅ Synced: Both show {session_tokens} tokens")
-                else:
-                    st.warning(f"⚠️ Mismatch: Session={session_tokens}, File={file_tokens}")
+                try:
+                    file_stats = analytics_file.stat()
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("File Size", f"{file_stats.st_size} bytes")
+                    with col2:
+                        modified_time = datetime.fromtimestamp(file_stats.st_mtime)
+                        st.metric("Last Modified", modified_time.strftime('%H:%M:%S'))
+                    with col3:
+                        time_diff = datetime.now() - modified_time
+                        st.metric("Age", f"{time_diff.seconds} seconds")
+                    
+                    # Compare file content with session state
+                    with open(analytics_file, 'r') as f:
+                        file_content = json.load(f)
+                    
+                    st.write("**Session vs File Comparison:**")
+                    session_calls = st.session_state.sentiment_analytics['api_calls']
+                    file_calls = file_content.get('api_calls', 0)
+                    
+                    if session_calls == file_calls:
+                        st.success(f"✅ Synced: Both show {session_calls} API calls")
+                    else:
+                        st.warning(f"⚠️ Mismatch: Session={session_calls}, File={file_calls}")
+                    
+                    session_tokens = st.session_state.sentiment_analytics['total_tokens']
+                    file_tokens = file_content.get('total_tokens', 0)
+                    
+                    if session_tokens == file_tokens:
+                        st.success(f"✅ Synced: Both show {session_tokens} tokens")
+                    else:
+                        st.warning(f"⚠️ Mismatch: Session={session_tokens}, File={file_tokens}")
+                except Exception as e:
+                    st.error(f"Error monitoring file: {e}")
             else:
                 st.info("Analytics file not created yet")
 
@@ -794,6 +806,8 @@ if 'news_articles' in st.session_state and st.session_state.get('news_articles')
                     st.caption(f"• {age_text}: Fetched {session_data['count']} articles for {', '.join(sorted(session_data['tickers']))}")
         else:
             st.info("No fetch history available")
+else:
+    st.info("👆 Enter tickers and click 'Fetch Fresh News' to get started")
 
 # Fetch options
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -810,6 +824,8 @@ with col3:
         st.rerun()
 
 # Store append_mode in session state to make it accessible later
+if 'append_mode' not in st.session_state:
+    st.session_state['append_mode'] = True
 st.session_state['append_mode'] = append_mode
 
 if fetch_button or ('news_articles' not in st.session_state and st.session_state.get('auto_load_attempted', False) == False):
@@ -1399,7 +1415,7 @@ AttributeError: 'str' object has no attribute 'tzinfo'
     if displayed_count == 0 and (selected_ticker_filter != "All" or selected_sentiment_filter != "All"):
         st.info("No articles match your current filter criteria. Try adjusting the filters.")
         
-elif 'news_articles' in st.session_state and not st.session_state.news_articles:
+elif 'news_articles' in st.session_state and not st.session_state.get('news_articles'):
     st.info("No news articles were found for the specified tickers in the last fetch.")
 else:
     st.info("👆 Enter tickers and click 'Fetch News' to see the latest market updates.")
