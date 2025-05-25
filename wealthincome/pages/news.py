@@ -7,6 +7,7 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pytz
 
 # --- Start of Path Fix ---
@@ -84,7 +85,7 @@ def fetch_ticker_news_yfinance(tickers_string):
     all_news = []
     ticker_prices = {}
 
-    # Fetch current prices for all tickers
+    # Fetch current prices and extended hours data for all tickers
     for ticker in tickers_list:
         try:
             stock = yf.Ticker(ticker)
@@ -93,13 +94,30 @@ def fetch_ticker_news_yfinance(tickers_string):
             current_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
             previous_close = info.get('previousClose') or info.get('regularMarketPreviousClose', 0)
             
+            # Get pre/post market data
+            pre_market_price = info.get('preMarketPrice', None)
+            post_market_price = info.get('postMarketPrice', None)
+            
+            # Get volume data
+            regular_volume = info.get('regularMarketVolume', 0)
+            avg_volume = info.get('averageVolume', 0)
+            volume_ratio = regular_volume / avg_volume if avg_volume > 0 else 0
+            
             if current_price and previous_close:
                 change_percent = ((current_price - previous_close) / previous_close) * 100
                 ticker_prices[ticker] = {
                     'current_price': current_price,
                     'previous_close': previous_close,
                     'change_percent': change_percent,
-                    'change_dollar': current_price - previous_close
+                    'change_dollar': current_price - previous_close,
+                    'pre_market_price': pre_market_price,
+                    'post_market_price': post_market_price,
+                    'pre_market_change': ((pre_market_price - previous_close) / previous_close * 100) if pre_market_price else None,
+                    'post_market_change': ((post_market_price - current_price) / current_price * 100) if post_market_price else None,
+                    'volume': regular_volume,
+                    'avg_volume': avg_volume,
+                    'volume_ratio': volume_ratio,
+                    'unusual_volume': volume_ratio > 2.0  # Flag if volume is 2x normal
                 }
         except:
             ticker_prices[ticker] = None
@@ -302,82 +320,106 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
             # Title with link
             st.markdown(f"### [{title}]({link})")
             
-            # Price and metadata row
-            meta_col1, meta_col2, meta_col3, meta_col4, price_col = st.columns([2, 2, 1, 1, 2])
+            # OPPORTUNITY WINDOW indicator
+            if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
+                try:
+                    article_date = article['Parsed_Date'].replace(tzinfo=None) if article['Parsed_Date'].tzinfo else article['Parsed_Date']
+                    current_time = datetime.now()
+                    news_age = current_time - article_date
+                    minutes_old = news_age.total_seconds() / 60
+                    
+                    if minutes_old < 15:
+                        st.success("🟢 **OPPORTUNITY WINDOW OPEN** - News is fresh! Potential trading opportunity.")
+                    elif minutes_old < 30:
+                        st.warning("🟡 **OPPORTUNITY CLOSING** - News is 15-30 min old. Move fast if trading.")
+                    elif minutes_old < 60:
+                        st.info("🔵 **LIKELY PRICED IN** - News is 30-60 min old. Check volume for confirmation.")
+                    else:
+                        st.error("🔴 **OPPORTUNITY PASSED** - News is over 1 hour old. Already priced in.")
+                except:
+                    pass
             
-            meta_col1.caption(f"🗓️ {date_str}")
-            meta_col2.caption(f"📰 {source}")
-            meta_col3.caption(f"💹 {ticker_symbol}")
+            # Price and metadata row with extended hours
+            meta_col1, meta_col2, meta_col3 = st.columns([1, 1, 1])
             
-            # Sentiment indicator
-            if sentiment_label == "Positive":
-                meta_col4.success(f"↑ {sentiment_label}")
-            elif sentiment_label == "Negative":
-                meta_col4.error(f"↓ {sentiment_label}")
-            else:
-                meta_col4.info(f"→ {sentiment_label}")
+            with meta_col1:
+                st.caption(f"🗓️ {date_str}")
+                st.caption(f"📰 {source}")
+                st.caption(f"💹 {ticker_symbol}")
             
-            # Price information
+            # Price and volume information
             price_data = article.get('Price_Data')
             if price_data:
-                price = price_data['current_price']
-                change_pct = price_data['change_percent']
-                change_dollar = price_data['change_dollar']
+                with meta_col2:
+                    price = price_data['current_price']
+                    change_pct = price_data['change_percent']
+                    change_dollar = price_data['change_dollar']
+                    
+                    # Regular market hours
+                    if change_pct >= 0:
+                        st.metric(
+                            label="Regular Hours",
+                            value=f"${price:.2f}",
+                            delta=f"{change_pct:.2f}% (${change_dollar:.2f})"
+                        )
+                    else:
+                        st.metric(
+                            label="Regular Hours",
+                            value=f"${price:.2f}",
+                            delta=f"{change_pct:.2f}% (${change_dollar:.2f})"
+                        )
+                    
+                    # Pre/Post market data
+                    if price_data['pre_market_price']:
+                        st.caption(f"🌅 Pre-Market: ${price_data['pre_market_price']:.2f} ({price_data['pre_market_change']:+.2f}%)")
+                    if price_data['post_market_price']:
+                        st.caption(f"🌙 Post-Market: ${price_data['post_market_price']:.2f} ({price_data['post_market_change']:+.2f}%)")
                 
-                if change_pct >= 0:
-                    price_col.metric(
-                        label="Price",
-                        value=f"${price:.2f}",
-                        delta=f"{change_pct:.2f}% (${change_dollar:.2f})",
-                        delta_color="normal"
-                    )
-                else:
-                    price_col.metric(
-                        label="Price",
-                        value=f"${price:.2f}",
-                        delta=f"{change_pct:.2f}% (${change_dollar:.2f})",
-                        delta_color="normal"
-                    )
+                with meta_col3:
+                    # Volume analysis
+                    if price_data['unusual_volume']:
+                        st.error("🔥 UNUSUAL VOLUME")
+                        st.caption(f"Volume: {price_data['volume']:,.0f}")
+                        st.caption(f"Avg: {price_data['avg_volume']:,.0f}")
+                        st.caption(f"Ratio: {price_data['volume_ratio']:.1f}x")
+                    else:
+                        st.info("Normal Volume")
+                        st.caption(f"Ratio: {price_data['volume_ratio']:.1f}x avg")
+                    
+                    # Sentiment
+                    if sentiment_label == "Positive":
+                        st.success(f"↑ {sentiment_label}")
+                    elif sentiment_label == "Negative":
+                        st.error(f"↓ {sentiment_label}")
+                    else:
+                        st.info(f"→ {sentiment_label}")
             else:
-                price_col.caption("Price data unavailable")
+                with meta_col2:
+                    st.caption("Price data unavailable")
+                with meta_col3:
+                    st.caption("Volume data unavailable")
             
             # Summary if available
             if summary:
                 st.caption(summary[:200] + "..." if len(summary) > 200 else summary)
             
-            # News age and potential impact
-            news_age_str = ""
-            if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
-                try:
-                    # Ensure both datetimes are timezone-naive for comparison
-                    article_date = article['Parsed_Date'].replace(tzinfo=None) if article['Parsed_Date'].tzinfo else article['Parsed_Date']
-                    current_time = datetime.now()
-                    news_age = current_time - article_date
-                    hours_old = news_age.total_seconds() / 3600
-                    
-                    if hours_old < 1:
-                        news_age_str = f"🔥 **Fresh news** - Published {int(hours_old * 60)} minutes ago"
-                    elif hours_old < 6:
-                        news_age_str = f"📍 **Recent** - Published {hours_old:.1f} hours ago"
-                    elif hours_old < 24:
-                        news_age_str = f"📅 Published {hours_old:.0f} hours ago"
-                    else:
-                        days_old = hours_old / 24
-                        news_age_str = f"📅 Published {days_old:.0f} days ago"
-                    
-                    st.caption(news_age_str)
-                except Exception as e:
-                    if debug_mode:
-                        st.error(f"Error calculating news age: {str(e)}")
-            
-            # Mini price chart (last 5 days)
-            with st.expander("📊 View Price Movement"):
+            # Enhanced price chart with volume
+            with st.expander("📊 View Price Action & Volume"):
                 try:
                     ticker_obj = yf.Ticker(ticker_symbol)
-                    hist = ticker_obj.history(period="5d", interval="1h")
+                    # Get more granular data for news trading
+                    hist = ticker_obj.history(period="2d", interval="5m")
                     
                     if not hist.empty:
-                        fig = go.Figure()
+                        # Create subplots for price and volume
+                        from plotly.subplots import make_subplots
+                        
+                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                          vertical_spacing=0.03,
+                                          row_heights=[0.7, 0.3],
+                                          subplot_titles=('Price Action', 'Volume'))
+                        
+                        # Add candlestick chart
                         fig.add_trace(go.Candlestick(
                             x=hist.index,
                             open=hist['Open'],
@@ -385,73 +427,97 @@ if 'news_articles' in st.session_state and st.session_state['news_articles']:
                             low=hist['Low'],
                             close=hist['Close'],
                             name='Price'
-                        ))
+                        ), row=1, col=1)
                         
-                        # Add a vertical line at news publication time
+                        # Add volume bars
+                        colors = ['red' if hist['Close'].iloc[i] < hist['Open'].iloc[i] else 'green' 
+                                 for i in range(len(hist))]
+                        fig.add_trace(go.Bar(
+                            x=hist.index,
+                            y=hist['Volume'],
+                            name='Volume',
+                            marker_color=colors
+                        ), row=2, col=1)
+                        
+                        # Add average volume line
+                        avg_vol = hist['Volume'].rolling(window=20).mean()
+                        fig.add_trace(go.Scatter(
+                            x=hist.index,
+                            y=avg_vol,
+                            name='Avg Volume',
+                            line=dict(color='yellow', width=2, dash='dash')
+                        ), row=2, col=1)
+                        
+                        # Add news publication line
                         if 'Parsed_Date' in article and article['Parsed_Date'] != datetime.min:
                             try:
-                                # Get the news time
                                 news_time = article['Parsed_Date']
-                                
-                                # Check if the news time falls within the chart's date range
-                                chart_start = hist.index[0]
-                                chart_end = hist.index[-1]
-                                
-                                # Make sure we're comparing timezone-aware datetimes
                                 if news_time.tzinfo is None:
-                                    # If news_time is naive, make it timezone-aware
-                                    # Assume it's in the same timezone as the chart data
-                                    if chart_start.tzinfo is not None:
-                                        # Chart has timezone info, use it
-                                        import pytz
+                                    if hist.index[0].tzinfo is not None:
                                         news_time = pytz.UTC.localize(news_time)
                                 else:
-                                    # If news_time has timezone but chart doesn't, remove timezone
-                                    if chart_start.tzinfo is None:
+                                    if hist.index[0].tzinfo is None:
                                         news_time = news_time.replace(tzinfo=None)
                                 
-                                # Only add the line if the news falls within the chart range
-                                if chart_start <= news_time <= chart_end:
+                                if hist.index[0] <= news_time <= hist.index[-1]:
                                     fig.add_vline(
                                         x=news_time, 
                                         line_dash="dash", 
                                         line_color="yellow",
-                                        annotation_text="News Published"
+                                        annotation_text="News Published",
+                                        row=1, col=1
                                     )
-                                elif debug_mode:
-                                    st.info(f"News published outside chart range: {news_time}")
-                                    
-                            except Exception as e:
-                                if debug_mode:
-                                    st.error(f"Could not add news line: {str(e)}")
-                                    st.write("News time:", article.get('Parsed_Date'))
-                                    st.write("Chart index type:", type(hist.index[0]) if len(hist.index) > 0 else "Empty")
-                                    st.write("Chart timezone:", hist.index[0].tzinfo if len(hist.index) > 0 else "N/A")
+                                    fig.add_vline(
+                                        x=news_time,
+                                        line_dash="dash",
+                                        line_color="yellow",
+                                        row=2, col=1
+                                    )
+                            except:
+                                pass
                         
                         fig.update_layout(
-                            title=f"{ticker_symbol} - 5 Day Price Movement",
-                            yaxis_title="Price ($)",
-                            xaxis_title="Date",
-                            height=300,
+                            title=f"{ticker_symbol} - 2 Day Price Action (5-min candles)",
+                            height=500,
                             showlegend=False,
                             template="plotly_dark"
                         )
+                        fig.update_xaxes(title_text="Time", row=2, col=1)
+                        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+                        fig.update_yaxes(title_text="Volume", row=2, col=1)
                         
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Price statistics
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("5-Day High", f"${hist['High'].max():.2f}")
-                        col2.metric("5-Day Low", f"${hist['Low'].min():.2f}")
-                        col3.metric("Avg Volume", f"{hist['Volume'].mean():,.0f}")
+                        # Trading statistics
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        # Calculate key levels
+                        recent_high = hist['High'].tail(20).max()
+                        recent_low = hist['Low'].tail(20).min()
+                        current_price = hist['Close'].iloc[-1]
+                        
+                        col1.metric("Current", f"${current_price:.2f}")
+                        col2.metric("Recent High", f"${recent_high:.2f}", 
+                                   delta=f"{((current_price - recent_high) / recent_high * 100):.2f}%")
+                        col3.metric("Recent Low", f"${recent_low:.2f}",
+                                   delta=f"{((current_price - recent_low) / recent_low * 100):.2f}%")
+                        
+                        # Volume spike detection
+                        recent_avg_vol = hist['Volume'].tail(20).mean()
+                        last_vol = hist['Volume'].iloc[-1]
+                        vol_spike = last_vol / recent_avg_vol if recent_avg_vol > 0 else 0
+                        
+                        if vol_spike > 3:
+                            col4.error(f"🚨 Volume Spike: {vol_spike:.1f}x")
+                        elif vol_spike > 2:
+                            col4.warning(f"⚠️ High Volume: {vol_spike:.1f}x")
+                        else:
+                            col4.info(f"Normal Vol: {vol_spike:.1f}x")
                         
                 except Exception as e:
                     st.error(f"Could not load price chart: {str(e)}")
-                    if debug_mode:
-                        st.write("Debug - Full error:", e)
-                        st.write("Debug - Article date:", article.get('Parsed_Date'))
             
-            # Sentiment score (smaller, less prominent)
+            # Sentiment score
             st.caption(f"Sentiment Score: {sentiment_score:.2f}")
             
         displayed_count += 1
