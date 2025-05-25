@@ -642,86 +642,119 @@ if debug_mode and use_ai_sentiment:
 
 if st.button("Fetch News", key="fetch_news_button"):
     if tickers_input:
-        with st.spinner("Fetching news articles..."):
-            if news_source in ["Yahoo Finance (Free)", "DataManager Enhanced"]:
-                news_articles = fetch_ticker_news_yfinance(tickers_input)
-                
-                # Debug mode: show comprehensive information
-                if debug_mode and news_articles and len(news_articles) > 0:
-                    with st.expander("🔍 Debug Information", expanded=True):
-                        st.write("### First Article Raw Data Structure:")
-                        first_article = news_articles[0]
-                        
-                        # Show raw article data
-                        debug_data = {
-                            "Title": first_article.get('Title'),
-                            "Date": first_article.get('Date'),
-                            "Parsed_Date": str(first_article.get('Parsed_Date')),
-                            "Source": first_article.get('Source'),
-                            "Ticker": first_article.get('Ticker'),
-                            "Link": first_article.get('Link'),
-                            "Summary_Length": len(first_article.get('Summary', '')),
-                            "Price_Data": first_article.get('Price_Data'),
-                            "DM_Sentiment": first_article.get('DM_Sentiment', 'N/A'),
-                            "DM_Score": first_article.get('DM_Score', 'N/A')
-                        }
-                        st.json(debug_data)
-                        
-                        # Show fetching statistics
-                        st.write("### Fetching Statistics:")
-                        tickers = [t.strip().upper() for t in tickers_input.split(',')]
-                        ticker_counts = {}
-                        for article in news_articles:
-                            ticker = article.get('Ticker', 'Unknown')
-                            ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write("**Articles per Ticker:**")
-                            for ticker, count in ticker_counts.items():
-                                st.write(f"- {ticker}: {count} articles")
-                        
-                        with col2:
-                            st.write("**Price Data Status:**")
-                            price_success = sum(1 for a in news_articles if a.get('Price_Data') is not None)
-                            st.write(f"- Success: {price_success}/{len(news_articles)}")
-                            st.write(f"- Failed: {len(news_articles) - price_success}/{len(news_articles)}")
-                        
-                        # Show date range of news
-                        st.write("### News Date Range:")
-                        dates = [a['Parsed_Date'] for a in news_articles if a.get('Parsed_Date') and a['Parsed_Date'] != datetime.min]
-                        if dates:
-                            oldest = min(dates)
-                            newest = max(dates)
-                            st.write(f"- Oldest: {oldest}")
-                            st.write(f"- Newest: {newest}")
-                            st.write(f"- Span: {(newest - oldest).days} days")
-            else:
-                st.warning(f"{news_source} is not currently active. Please use Yahoo Finance or DataManager Enhanced.")
-                news_articles = []
+        # Check if we already have recent news for these tickers
+        existing_articles = st.session_state.get('news_articles', [])
+        existing_tickers = set(article.get('Ticker') for article in existing_articles) if existing_articles else set()
+        requested_tickers = set(ticker.strip().upper() for ticker in tickers_input.split(','))
         
-        if news_articles:
-            st.session_state['news_articles'] = news_articles
-            
-            # Save news articles to cache
-            if data_manager_instance:
-                news_cache_file = data_manager_instance.cache_dir / "news_articles_cache.json"
-                try:
-                    cache_data = {
-                        'timestamp': datetime.now().isoformat(),
-                        'articles': news_articles
-                    }
-                    with open(news_cache_file, 'w') as f:
-                        json.dump(cache_data, f, default=str)  # default=str handles datetime objects
-                except Exception as e:
-                    if debug_mode:
-                        st.error(f"Failed to cache news: {e}")
-            
-            st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}.")
+        # Check if we need to fetch new data
+        need_fetch = False
+        if not existing_articles:
+            need_fetch = True
+            fetch_reason = "No cached articles"
+        elif requested_tickers != existing_tickers:
+            need_fetch = True
+            fetch_reason = f"Different tickers requested. Cached: {existing_tickers}, Requested: {requested_tickers}"
         else:
-            st.warning("No news articles found for the given tickers. Try different tickers or check back later.")
-            if 'news_articles' in st.session_state:
-                st.session_state['news_articles'] = []
+            # Check age of cached articles
+            if existing_articles and 'Parsed_Date' in existing_articles[0]:
+                try:
+                    newest_article_date = max(article.get('Parsed_Date', datetime.min) for article in existing_articles)
+                    if isinstance(newest_article_date, str):
+                        newest_article_date = datetime.fromisoformat(newest_article_date)
+                    age_minutes = (datetime.now() - newest_article_date.replace(tzinfo=None)).seconds / 60
+                    if age_minutes > 60:  # Refresh if older than 1 hour
+                        need_fetch = True
+                        fetch_reason = f"Articles are {age_minutes:.0f} minutes old"
+                except:
+                    need_fetch = True
+                    fetch_reason = "Could not determine article age"
+        
+        if need_fetch:
+            with st.spinner(f"Fetching news articles... ({fetch_reason})"):
+                if news_source in ["Yahoo Finance (Free)", "DataManager Enhanced"]:
+                    news_articles = fetch_ticker_news_yfinance(tickers_input)
+                
+                    # Debug mode: show comprehensive information
+                    if debug_mode and news_articles and len(news_articles) > 0:
+                        with st.expander("🔍 Debug Information", expanded=True):
+                            st.write("### First Article Raw Data Structure:")
+                            first_article = news_articles[0]
+                            
+                            # Show raw article data
+                            debug_data = {
+                                "Title": first_article.get('Title'),
+                                "Date": first_article.get('Date'),
+                                "Parsed_Date": str(first_article.get('Parsed_Date')),
+                                "Source": first_article.get('Source'),
+                                "Ticker": first_article.get('Ticker'),
+                                "Link": first_article.get('Link'),
+                                "Summary_Length": len(first_article.get('Summary', '')),
+                                "Price_Data": first_article.get('Price_Data'),
+                                "DM_Sentiment": first_article.get('DM_Sentiment', 'N/A'),
+                                "DM_Score": first_article.get('DM_Score', 'N/A')
+                            }
+                            st.json(debug_data)
+                            
+                            # Show fetching statistics
+                            st.write("### Fetching Statistics:")
+                            tickers = [t.strip().upper() for t in tickers_input.split(',')]
+                            ticker_counts = {}
+                            for article in news_articles:
+                                ticker = article.get('Ticker', 'Unknown')
+                                ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Articles per Ticker:**")
+                                for ticker, count in ticker_counts.items():
+                                    st.write(f"- {ticker}: {count} articles")
+                            
+                            with col2:
+                                st.write("**Price Data Status:**")
+                                price_success = sum(1 for a in news_articles if a.get('Price_Data') is not None)
+                                st.write(f"- Success: {price_success}/{len(news_articles)}")
+                                st.write(f"- Failed: {len(news_articles) - price_success}/{len(news_articles)}")
+                            
+                            # Show date range of news
+                            st.write("### News Date Range:")
+                            dates = [a['Parsed_Date'] for a in news_articles if a.get('Parsed_Date') and a['Parsed_Date'] != datetime.min]
+                            if dates:
+                                oldest = min(dates)
+                                newest = max(dates)
+                                st.write(f"- Oldest: {oldest}")
+                                st.write(f"- Newest: {newest}")
+                                st.write(f"- Span: {(newest - oldest).days} days")
+                else:
+                    st.warning(f"{news_source} is not currently active. Please use Yahoo Finance or DataManager Enhanced.")
+                    news_articles = []
+            
+            if news_articles:
+                st.session_state['news_articles'] = news_articles
+                
+                # Save news articles to cache
+                if data_manager_instance:
+                    news_cache_file = data_manager_instance.cache_dir / "news_articles_cache.json"
+                    try:
+                        cache_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'articles': news_articles
+                        }
+                        with open(news_cache_file, 'w') as f:
+                            json.dump(cache_data, f, default=str)  # default=str handles datetime objects
+                    except Exception as e:
+                        if debug_mode:
+                            st.error(f"Failed to cache news: {e}")
+                
+                st.success(f"✅ Fetched {len(news_articles)} articles for {tickers_input}.")
+            else:
+                st.warning("No news articles found for the given tickers. Try different tickers or check back later.")
+                if 'news_articles' in st.session_state:
+                    st.session_state['news_articles'] = []
+        else:
+            st.info(f"📂 Using cached articles. {fetch_reason}")
+            if debug_mode:
+                st.caption(f"Cached articles: {len(existing_articles)} for {existing_tickers}")
     else:
         st.warning("Please enter at least one ticker.")
 
