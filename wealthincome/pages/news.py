@@ -325,8 +325,46 @@ def fetch_ticker_news_yfinance(tickers_string, append_to_existing=False):
         except:
             ticker_prices[ticker] = None
 
-    # Fetch news for each ticker
-    for ticker in tickers_list:
+                # Handle DataManager Enhanced mode
+                if news_source == "DataManager Enhanced" and data_manager_instance:
+                    # Use DataManager's built-in news sentiment feature
+                    for ticker in tickers_list:
+                        try:
+                            dm_news = data_manager_instance.get_latest_news_sentiment(ticker, debug_mode=debug_mode)
+                            if dm_news:
+                                # Convert DataManager format to our format
+                                formatted_article = {
+                                    'Title': dm_news['headline'],
+                                    'Link': dm_news['link'],
+                                    'Date': dm_news['date'],
+                                    'Source': dm_news['source'],
+                                    'Ticker': ticker,
+                                    'Summary': '',  # DataManager doesn't provide summary
+                                    'Parsed_Date': datetime.now(),  # Use current time as approximation
+                                    'Price_Data': ticker_prices.get(ticker),
+                                    'Fetch_Time': fetch_timestamp,
+                                    'Fetch_ID': fetch_id,
+                                    'Article_ID': f"{ticker}_{hash(dm_news['headline'])}_{dm_news['date']}",
+                                    'Cached_Sentiment': dm_news['label'],  # Pre-calculated sentiment
+                                    'Cached_Score': dm_news['score']
+                                }
+                                all_news.append(formatted_article)
+                                
+                                if debug_mode:
+                                    st.caption(f"✅ DataManager fetched news for {ticker}: {dm_news['label']} ({dm_news['score']:.2f})")
+                        except Exception as e:
+                            if debug_mode:
+                                st.error(f"DataManager fetch failed for {ticker}: {e}")
+                            # Fall back to regular yfinance
+                            stock = yf.Ticker(ticker)
+                            news_data = stock.news
+                            # ... (rest of the regular fetching code)
+                    
+                    all_news.sort(key=lambda x: x.get('Parsed_Date', datetime.min), reverse=True)
+                    return all_news
+                
+                # Regular Yahoo Finance fetching (existing code)
+                for ticker in tickers_list:
         try:
             stock = yf.Ticker(ticker)
             news_data = stock.news
