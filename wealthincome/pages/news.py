@@ -566,45 +566,45 @@ if show_analytics and use_ai_sentiment:
                         st.info(f"AI: {comp['ai_sentiment']}")
                 with col3:
                     st.caption(f"Basic: {comp['basic_sentiment']}")
-        
-        # Real-time file monitoring
-        with st.expander("🔍 Real-Time File Monitoring"):
-            if data_manager_instance:
-                analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
-                if analytics_file.exists():
-                    file_stats = analytics_file.stat()
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("File Size", f"{file_stats.st_size} bytes")
-                    with col2:
-                        modified_time = datetime.fromtimestamp(file_stats.st_mtime)
-                        st.metric("Last Modified", modified_time.strftime('%H:%M:%S'))
-                    with col3:
-                        time_diff = datetime.now() - modified_time
-                        st.metric("Age", f"{time_diff.seconds} seconds")
-                    
-                    # Compare file content with session state
-                    with open(analytics_file, 'r') as f:
-                        file_content = json.load(f)
-                    
-                    st.write("**Session vs File Comparison:**")
-                    session_calls = st.session_state.sentiment_analytics['api_calls']
-                    file_calls = file_content.get('api_calls', 0)
-                    
-                    if session_calls == file_calls:
-                        st.success(f"✅ Synced: Both show {session_calls} API calls")
-                    else:
-                        st.warning(f"⚠️ Mismatch: Session={session_calls}, File={file_calls}")
-                    
-                    session_tokens = st.session_state.sentiment_analytics['total_tokens']
-                    file_tokens = file_content.get('total_tokens', 0)
-                    
-                    if session_tokens == file_tokens:
-                        st.success(f"✅ Synced: Both show {session_tokens} tokens")
-                    else:
-                        st.warning(f"⚠️ Mismatch: Session={session_tokens}, File={file_tokens}")
+    
+    # Real-time file monitoring (moved outside the main expander)
+    if show_analytics and use_ai_sentiment and data_manager_instance:
+        with st.expander("🔍 Real-Time File Monitoring", expanded=False):
+            analytics_file = data_manager_instance.cache_dir / "sentiment_analytics.json"
+            if analytics_file.exists():
+                file_stats = analytics_file.stat()
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("File Size", f"{file_stats.st_size} bytes")
+                with col2:
+                    modified_time = datetime.fromtimestamp(file_stats.st_mtime)
+                    st.metric("Last Modified", modified_time.strftime('%H:%M:%S'))
+                with col3:
+                    time_diff = datetime.now() - modified_time
+                    st.metric("Age", f"{time_diff.seconds} seconds")
+                
+                # Compare file content with session state
+                with open(analytics_file, 'r') as f:
+                    file_content = json.load(f)
+                
+                st.write("**Session vs File Comparison:**")
+                session_calls = st.session_state.sentiment_analytics['api_calls']
+                file_calls = file_content.get('api_calls', 0)
+                
+                if session_calls == file_calls:
+                    st.success(f"✅ Synced: Both show {session_calls} API calls")
                 else:
-                    st.info("Analytics file not created yet")
+                    st.warning(f"⚠️ Mismatch: Session={session_calls}, File={file_calls}")
+                
+                session_tokens = st.session_state.sentiment_analytics['total_tokens']
+                file_tokens = file_content.get('total_tokens', 0)
+                
+                if session_tokens == file_tokens:
+                    st.success(f"✅ Synced: Both show {session_tokens} tokens")
+                else:
+                    st.warning(f"⚠️ Mismatch: Session={session_tokens}, File={file_tokens}")
+            else:
+                st.info("Analytics file not created yet")
 
 # Add test OpenAI button if debug mode is on
 if debug_mode and use_ai_sentiment:
