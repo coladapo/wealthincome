@@ -191,19 +191,17 @@ def calculate_ai_scores(ticker_data):
     scores['overall'] = round((scores.get('day_trade',0) + scores.get('swing_trade',0) + scores.get('position_trade',0)) / 3, 2)
     return scores
 
+# In AISignals.py, update the analyze_stock function:
+
 def analyze_stock(ticker_symbol):
     try:
-        # This is where you would use data_manager_instance if it's ready
-        # For example:
-        # stock_data_from_manager = data_manager_instance.get_stock_data([ticker_symbol])
-        # if not stock_data_from_manager or ticker_symbol not in stock_data_from_manager:
-        #     return None
-        # info = stock_data_from_manager[ticker_symbol].get('info')
-        # hist_df = stock_data_from_manager[ticker_symbol].get('history')
-        # intraday_df = stock_data_from_manager[ticker_symbol].get('intraday')
-        # if info is None or hist_df is None: return None
-
-        # Current implementation (direct yfinance)
+        # Use data_manager if available
+        if data_manager_instance and use_news_sentiment:
+            # Get news sentiment from DataManager
+            news_sentiment = data_manager_instance.get_latest_news_sentiment(ticker_symbol)
+        else:
+            news_sentiment = None
+            
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
         if not info or info.get('regularMarketPrice') is None and info.get('currentPrice') is None:
@@ -216,26 +214,36 @@ def analyze_stock(ticker_symbol):
                 'avg_volume': info.get('averageDailyVolume10Day', info.get('averageVolume', 1)),
                 'market_cap': info.get('marketCap', 0),
                 'short_pct': info.get('shortPercentOfFloat', 0) * 100 if info.get('shortPercentOfFloat') else 0}
+        
         data['rvol'] = (data['volume'] / data['avg_volume']) if data['avg_volume'] and data['avg_volume'] > 0 else 0
+        
+        # Add news sentiment to data
+        data['news_sentiment'] = news_sentiment
         
         data['fundamentals'] = {'pe_ratio': info.get('trailingPE'), 'peg_ratio': info.get('pegRatio'),
                                 'revenue_growth': info.get('revenueGrowth'), 'profit_margins': info.get('profitMargins'),
                                 'debt_to_equity': info.get('debtToEquity')}
         
-        # These would also use data from data_manager_instance if refactored
         data['technicals'] = calculate_technical_indicators(ticker_symbol) 
         data['intraday'] = get_intraday_momentum(ticker_symbol)
         
         if data['technicals'] is None or data['intraday'] is None:
              data['scores'] = {'day_trade': 0, 'swing_trade': 0, 'position_trade': 0, 'overall': 0}
         else:
-            # This would use data_manager_instance.calculate_signals if refactored
             data['scores'] = calculate_ai_scores(data) 
 
         signals = []
         if data['scores'].get('day_trade', 0) > 60: signals.append("⚡ DAY")
         if data['scores'].get('swing_trade', 0) > 70: signals.append("📊 SWING")
         if data['scores'].get('position_trade', 0) > 75: signals.append("💎 POSITION")
+        
+        # Add news signal if sentiment is strong
+        if news_sentiment:
+            if news_sentiment['label'] == 'Positive' and news_sentiment['score'] > 0.5:
+                signals.append("📰 NEWS+")
+            elif news_sentiment['label'] == 'Negative' and news_sentiment['score'] < -0.5:
+                signals.append("📰 NEWS-")
+                
         data['signals'] = signals
         return data
     except Exception as e:
