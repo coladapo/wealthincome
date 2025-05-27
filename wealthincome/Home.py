@@ -13,7 +13,7 @@ if parent_dir not in sys.path:
 
 # Import data_manager
 try:
-    from data_manager import data_manager
+   from core.data_manager import data_manager
     st.set_page_config(page_title="Trading Dashboard Hub", page_icon="🏠", layout="wide")
 except ImportError:
     st.error("Failed to import data_manager")
