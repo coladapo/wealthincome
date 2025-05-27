@@ -5,17 +5,18 @@ import os
 from datetime import datetime
 import pandas as pd
 
-# Path setup
+# Path setup - Fixed to work with data_manager in same directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
-# Import data_manager
+# Import data_manager from same directory
 try:
     from data_manager import data_manager
-except ImportError:
-    st.error("Failed to import data_manager. Make sure data_manager.py is in the wealthincome directory.")
+except ImportError as e:
+    st.error(f"Failed to import data_manager: {e}")
+    st.error(f"Current directory: {current_dir}")
+    st.error(f"Files in directory: {os.listdir(current_dir)}")
     st.stop()
 
 # Page config
@@ -27,38 +28,59 @@ st.caption(f"Welcome! Choose a module from the sidebar to begin. {datetime.now()
 # Dashboard Metrics
 col1, col2, col3, col4 = st.columns(4)
 
-# Get portfolio performance
-portfolio_stats = data_manager.analyze_portfolio_performance()
-if portfolio_stats and portfolio_stats.get('total_trades', 0) > 0:
+# Get portfolio performance with error handling
+try:
+    portfolio_stats = data_manager.analyze_portfolio_performance()
+    if portfolio_stats and portfolio_stats.get('total_trades', 0) > 0:
+        with col1:
+            total_pnl = portfolio_stats.get('total_pnl', 0)
+            pnl_pct = (total_pnl / 10000 * 100) if total_pnl != 0 else 0
+            st.metric("Total P&L", 
+                      f"${total_pnl:,.2f}", 
+                      f"{pnl_pct:.1f}%")
+        with col2:
+            win_rate = portfolio_stats.get('win_rate', 0)
+            st.metric("Win Rate", 
+                      f"{win_rate*100:.0f}%",
+                      "+5%" if win_rate > 0.5 else "-5%")
+    else:
+        with col1:
+            st.metric("Total P&L", "$0.00", "0%")
+        with col2:
+            st.metric("Win Rate", "0%", "0%")
+except Exception as e:
     with col1:
-        st.metric("Total P&L", 
-                  f"${portfolio_stats.get('total_pnl', 0):,.2f}", 
-                  f"{portfolio_stats.get('total_pnl', 0)/10000*100:.1f}%" if portfolio_stats.get('total_pnl', 0) != 0 else "0%")
+        st.metric("Total P&L", "Error", "Check logs")
     with col2:
-        st.metric("Win Rate", 
-                  f"{portfolio_stats.get('win_rate', 0)*100:.0f}%",
-                  "+5%" if portfolio_stats.get('win_rate', 0) > 0.5 else "-5%")
-else:
-    with col1:
-        st.metric("Total P&L", "$0.00", "0%")
-    with col2:
-        st.metric("Win Rate", "0%", "0%")
+        st.metric("Win Rate", "Error", "Check logs")
+    if st.checkbox("Show error details", key="portfolio_error"):
+        st.error(f"Portfolio stats error: {e}")
 
-# Get watchlist
-watchlist = data_manager.get_watchlist()
-with col3:
-    st.metric("Watchlist Size", f"{len(watchlist)} stocks", 
-              "📈 View in Watchlist page")
+# Get watchlist with error handling
+try:
+    watchlist = data_manager.get_watchlist()
+    with col3:
+        st.metric("Watchlist Size", f"{len(watchlist)} stocks", 
+                  "📈 View in Watchlist page")
+except Exception as e:
+    with col3:
+        st.metric("Watchlist Size", "Error", "Check data_manager")
+    if st.checkbox("Show error details", key="watchlist_error"):
+        st.error(f"Watchlist error: {e}")
 
 # Get recent signals from news
 with col4:
     if 'news_articles' in st.session_state:
-        recent_count = len([a for a in st.session_state.get('news_articles', [])
-                           if 'Cached_Sentiment' in a and a['Cached_Sentiment'] == 'Positive'])
-        st.metric("Positive News", f"{recent_count} articles", 
-                  "🧠 Check News page")
+        try:
+            positive_articles = [a for a in st.session_state.get('news_articles', [])
+                               if a.get('Cached_Sentiment') == 'Positive']
+            recent_count = len(positive_articles)
+            st.metric("Positive News", f"{recent_count} articles", 
+                      "📰 Check News page")
+        except Exception as e:
+            st.metric("News Signals", "Error", str(e))
     else:
-        st.metric("News Signals", "0 articles", "🧠 Fetch news first")
+        st.metric("News Signals", "0 articles", "📰 Fetch news first")
 
 st.markdown("---")
 
@@ -92,59 +114,124 @@ market_data = []
 
 with st.spinner("Loading market data..."):
     for symbol in indices:
-        stock_data = data_manager.get_stock_data([symbol], period="1d")
-        if stock_data and symbol in stock_data:
-            info = stock_data[symbol].get('info', {})
-            market_data.append({
-                'Index': symbol,
-                'Price': f"${info.get('regularMarketPrice', 0):.2f}",
-                'Change': f"{info.get('regularMarketChangePercent', 0):.2f}%",
-                'Volume': f"{info.get('regularMarketVolume', 0)/1e6:.1f}M"
-            })
+        try:
+            stock_data = data_manager.get_stock_data([symbol], period="1d")
+            if stock_data and symbol in stock_data:
+                info = stock_data[symbol].get('info', {})
+                price = info.get('regularMarketPrice', 0)
+                change = info.get('regularMarketChangePercent', 0)
+                volume = info.get('regularMarketVolume', 0)
+                
+                market_data.append({
+                    'Index': symbol,
+                    'Price': f"${price:.2f}",
+                    'Change': f"{change:.2f}%",
+                    'Volume': f"{volume/1e6:.1f}M" if volume > 0 else "0M"
+                })
+        except Exception as e:
+            st.warning(f"Could not fetch data for {symbol}: {str(e)[:50]}")
 
 if market_data:
     df = pd.DataFrame(market_data)
     st.dataframe(df, use_container_width=True, hide_index=True)
+else:
+    st.info("Market data unavailable. Check your internet connection or try again later.")
 
-# Recent Activity
-if watchlist:
+# Watchlist Overview - only show if we have a watchlist
+if watchlist and len(watchlist) > 0:
     st.markdown("---")
     st.header("👀 Watchlist Overview")
     
+    # Limit to 5 stocks for performance
+    display_watchlist = watchlist[:5]
+    st.caption(f"Showing top {len(display_watchlist)} of {len(watchlist)} stocks")
+    
     watchlist_data = []
-    for ticker in watchlist[:5]:  # Show top 5
-        # Get latest news sentiment
-        news = data_manager.get_latest_news_sentiment(ticker)
-        
-        stock_data = data_manager.get_stock_data([ticker], period="1d")
-        if stock_data and ticker in stock_data:
-            info = stock_data[ticker].get('info', {})
-            
-            # Calculate signals
-            signals = data_manager.calculate_signals(stock_data[ticker])
-            
-            watchlist_data.append({
-                'Ticker': ticker,
-                'Price': f"${info.get('regularMarketPrice', 0):.2f}",
-                'Change': f"{info.get('regularMarketChangePercent', 0):.2f}%",
-                'Day Score': f"{signals.get('day_score', 0):.0f}",
-                'Swing Score': f"{signals.get('swing_score', 0):.0f}",
-                'News': news['label'] if news else 'N/A'
-            })
+    errors = []
+    
+    for ticker in display_watchlist:
+        try:
+            # Get stock data
+            stock_data = data_manager.get_stock_data([ticker], period="1d")
+            if stock_data and ticker in stock_data:
+                info = stock_data[ticker].get('info', {})
+                
+                # Get news sentiment with error handling
+                news = None
+                try:
+                    news = data_manager.get_latest_news_sentiment(ticker)
+                except Exception:
+                    pass  # Silently fail for news
+                
+                # Calculate signals with error handling
+                signals = {}
+                try:
+                    signals = data_manager.calculate_signals(stock_data[ticker])
+                except Exception:
+                    pass  # Silently fail for signals
+                
+                price = info.get('regularMarketPrice', 0)
+                change = info.get('regularMarketChangePercent', 0)
+                
+                watchlist_data.append({
+                    'Ticker': ticker,
+                    'Price': f"${price:.2f}" if price > 0 else "N/A",
+                    'Change': f"{change:.2f}%" if price > 0 else "N/A",
+                    'Day Score': f"{signals.get('day_score', 0):.0f}",
+                    'Swing Score': f"{signals.get('swing_score', 0):.0f}",
+                    'News': news.get('label', 'N/A') if news else 'N/A'
+                })
+        except Exception as e:
+            errors.append(f"{ticker}: {str(e)[:30]}")
     
     if watchlist_data:
         df = pd.DataFrame(watchlist_data)
         st.dataframe(df, use_container_width=True, hide_index=True)
+    
+    if errors and st.checkbox("Show watchlist errors"):
+        for error in errors:
+            st.error(error)
 
 # Trading Tips
 with st.expander("💡 Today's Trading Tips"):
     st.markdown("""
+    ### Risk Management First! 
     - 🎯 **Pre-Market Prep**: Check news sentiment before market open
     - 📊 **Volume Matters**: Look for stocks with RVOL > 2.0
     - 🛡️ **Risk Management**: Never risk more than 2% per trade
     - 📈 **Trend is Friend**: Trade with the overall market direction
     - 🔍 **AI Advantage**: Use sentiment + technicals for better entries
+    
+    ### Quick Debug Tips
+    - If data isn't loading, check your internet connection
+    - Clear cache with: `st.cache_data.clear()` in Python console
+    - Check if market is open (9:30 AM - 4:00 PM ET)
     """)
 
+# Debug section
+with st.expander("🔧 Debug Information"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**System Info:**")
+        st.write(f"- Current directory: {current_dir}")
+        st.write(f"- Python path: {sys.path[0]}")
+        st.write(f"- Market open: {data_manager.is_market_open()}")
+        st.write(f"- Cache directory: {data_manager.cache_dir}")
+    
+    with col2:
+        st.write("**Session State Keys:**")
+        st.write(f"- Total keys: {len(st.session_state)}")
+        important_keys = ['news_articles', 'trade_signals', 'screener_results']
+        for key in important_keys:
+            if key in st.session_state:
+                st.write(f"- {key}: ✅ ({len(st.session_state[key])} items)")
+            else:
+                st.write(f"- {key}: ❌")
+    
+    if st.button("Clear All Caches"):
+        st.cache_data.clear()
+        st.success("All caches cleared! Please refresh the page.")
+
 st.markdown("---")
-st.caption("Remember: Risk management is key. Never risk more than 2% per trade.")
+st.caption("⚠️ **Disclaimer**: This is for educational purposes only. Always do your own research and manage risk appropriately.")
