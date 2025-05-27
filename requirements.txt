@@ -1,30 +1,27 @@
 # Core Framework
-streamlit==1.32.0
+streamlit>=1.32.0
 
 # Data Analysis
-pandas==2.0.3
-numpy==1.24.3
+pandas>=2.0.0
+numpy>=1.24.0
 
 # Financial Data
-yfinance==0.2.37
+yfinance>=0.2.35
 finvizfinance==0.14.3
-ta==0.10.2
+ta>=0.10.0
 
 # Visualization
-plotly==5.18.0
-matplotlib==3.7.2
+plotly>=5.18.0
+matplotlib>=3.7.0
 
 # AI/ML
 openai>=1.0.0
 vaderSentiment==3.3.2
 
 # Web Scraping (used in news.py)
-beautifulsoup4==4.12.2
-requests==2.31.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
 
 # Utilities
-pytz==2023.3
-python-dateutil==2.8.2
-
-# Optional but recommended
-lxml==4.9.3  # For faster BeautifulSoup parsing
+pytz>=2023.3
+python-dateutil>=2.8.0
