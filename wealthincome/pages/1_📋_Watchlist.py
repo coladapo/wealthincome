@@ -14,9 +14,9 @@ if parent_dir not in sys.path:
 
 # Import data_manager
 try:
-   from core.data_manager import data_manager
+    from data_manager import data_manager
 except ImportError:
-    st.error("🚨 Failed to import 'data_manager'. Please ensure 'data_manager.py' exists in the root directory.")
+    st.error("🚨 Failed to import 'data_manager'. Please ensure 'data_manager.py' exists in the parent directory.")
     st.stop()
 
 # Page config
@@ -160,14 +160,14 @@ if st.session_state.temp_watchlist:
         # Create DataFrame
         df = pd.DataFrame(watchlist_data)
         
+        # Calculate RVOL before formatting
+        df['RVOL'] = df.apply(lambda row: row['Volume'] / row['Avg Volume'] if row['Avg Volume'] > 0 else 0, axis=1)
+        
         # Format columns
         df['Price'] = df['Price'].apply(lambda x: f"${x:.2f}")
         df['Change %'] = df['Change %'].apply(lambda x: f"{x:.2f}%")
         df['Volume'] = df['Volume'].apply(lambda x: f"{x/1e6:.1f}M" if x > 0 else "0")
-        df['RVOL'] = (watchlist_data[i]['Volume'] / watchlist_data[i]['Avg Volume'] 
-                      if watchlist_data[i]['Avg Volume'] > 0 else 0 
-                      for i in range(len(watchlist_data)))
-        df['RVOL'] = [f"{rvol:.2f}" for rvol in df['RVOL']]
+        df['RVOL'] = df['RVOL'].apply(lambda x: f"{x:.2f}")
         df['Day Score'] = df['Day Score'].apply(lambda x: f"{x:.0f}")
         df['Swing Score'] = df['Swing Score'].apply(lambda x: f"{x:.0f}")
         
@@ -217,9 +217,12 @@ if st.session_state.temp_watchlist:
         # Remove selected
         col_rem1, col_rem2, col_rem3 = st.columns([1, 1, 2])
         with col_rem1:
-            if st.button("🗑️ Remove Selected", use_container_width=True):
-                # Note: In real implementation, you'd need to track which rows were checked
-                st.info("Select tickers using checkboxes first")
+            # Simple remove by ticker selection
+            ticker_to_remove = st.selectbox("Remove ticker:", [""] + st.session_state.temp_watchlist)
+            if st.button("🗑️ Remove", use_container_width=True) and ticker_to_remove:
+                st.session_state.temp_watchlist.remove(ticker_to_remove)
+                st.success(f"Removed {ticker_to_remove}")
+                st.rerun()
         
         with col_rem2:
             if st.button("🔄 Refresh Data", use_container_width=True):
@@ -239,22 +242,22 @@ if st.session_state.temp_watchlist:
             with col_act1:
                 if st.button("📊 View Patterns", use_container_width=True):
                     st.session_state['analyze_ticker'] = selected_ticker
-                    st.switch_page("pages/patterns.py")
+                    st.switch_page("pages/4_📊_Patterns.py")
             
             with col_act2:
                 if st.button("📰 Check News", use_container_width=True):
                     st.session_state['news_ticker_filter'] = selected_ticker
-                    st.switch_page("pages/news.py")
+                    st.switch_page("pages/3_📰_News.py")
             
             with col_act3:
                 if st.button("🤖 AI Analysis", use_container_width=True):
                     st.session_state['analyze_ticker'] = selected_ticker
-                    st.switch_page("pages/AISignals.py")
+                    st.switch_page("pages/2_🧠_AI_Signals.py")
             
             with col_act4:
                 if st.button("📓 Add to Journal", use_container_width=True):
                     st.session_state['journal_ticker'] = selected_ticker
-                    st.switch_page("pages/journal.py")
+                    st.switch_page("pages/5_📓_Journal.py")
 
 else:
     st.info("👆 Your watchlist is empty. Add some tickers to get started!")
