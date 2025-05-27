@@ -4,9 +4,9 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
 import yfinance as yf
 import ta
-from datetime import datetime, timedelta
 import numpy as np
 
 # --- Start of Path Fix ---
@@ -23,547 +23,554 @@ except ImportError:
     st.error("🚨 Failed to import 'data_manager'. Please ensure 'data_manager.py' exists in the root directory.")
     st.stop()
 
-# Page config
+# Page configuration
 try:
     st.set_page_config(page_title="📈 Chart Pattern Recognition", layout="wide")
 except st.errors.StreamlitAPIException:
     pass
 
-st.title('📈 Chart Pattern Recognition & Technical Analysis')
+st.title('📈 Chart Pattern Recognition')
+st.caption("Identify key technical patterns and trading opportunities")
 
-# Check if coming from another page with a ticker
-default_ticker = ""
-if 'analyze_ticker' in st.session_state and st.session_state.analyze_ticker:
-    default_ticker = st.session_state.analyze_ticker
-    del st.session_state.analyze_ticker
+# Initialize session state
+if 'pattern_results' not in st.session_state:
+    st.session_state.pattern_results = {}
 
-# Sidebar controls
+# Sidebar configuration
 with st.sidebar:
-    st.header("📊 Chart Settings")
+    st.header("⚙️ Pattern Settings")
     
-    ticker = st.text_input("Ticker Symbol", value=default_ticker or "AAPL", placeholder="AAPL").upper()
+    # Pattern types to detect
+    st.subheader("🔍 Pattern Types")
+    detect_support_resistance = st.checkbox("Support/Resistance Levels", value=True)
+    detect_trend_lines = st.checkbox("Trend Lines", value=True)
+    detect_channels = st.checkbox("Price Channels", value=True)
+    detect_triangles = st.checkbox("Triangle Patterns", value=True)
+    detect_flags = st.checkbox("Bull/Bear Flags", value=True)
+    detect_double_tops = st.checkbox("Double Tops/Bottoms", value=True)
     
-    period = st.selectbox(
-        "Time Period",
-        ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y"],
-        index=2
-    )
+    # Timeframe settings
+    st.subheader("⏱️ Timeframe")
+    period = st.selectbox("Analysis Period", ["1mo", "3mo", "6mo", "1y"], index=1)
     
-    interval = st.selectbox(
-        "Interval",
-        ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"],
-        index=5
-    )
-    
-    # Validate interval based on period
-    if period in ["1d", "5d"] and interval in ["1d", "1wk"]:
-        st.warning("Short periods work better with intraday intervals")
-    
-    st.markdown("---")
-    
-    # Technical indicators
-    st.subheader("📈 Technical Indicators")
-    show_ma = st.checkbox("Moving Averages", value=True)
-    ma_periods = st.multiselect("MA Periods", [20, 50, 200], default=[20, 50])
-    
-    show_bb = st.checkbox("Bollinger Bands", value=True)
-    show_rsi = st.checkbox("RSI", value=True)
-    show_macd = st.checkbox("MACD", value=False)
-    show_volume = st.checkbox("Volume", value=True)
-    
-    st.markdown("---")
-    
-    # Pattern detection
-    st.subheader("🔍 Pattern Detection")
-    detect_patterns = st.checkbox("Auto-detect Patterns", value=True)
-    show_support_resistance = st.checkbox("Support/Resistance", value=True)
-    show_trendlines = st.checkbox("Trendlines", value=False)
+    # Pattern sensitivity
+    st.subheader("🎚️ Sensitivity")
+    sensitivity = st.slider("Pattern Detection Sensitivity", 1, 10, 5)
 
-# Main content area
-if st.button("🔄 Analyze", type="primary", use_container_width=True):
-    with st.spinner(f"Analyzing {ticker}..."):
-        # Get comprehensive data
-        data = data_manager.get_comprehensive_data(ticker)
+# Pattern detection functions
+def find_support_resistance(df, sensitivity=5):
+    """Find support and resistance levels"""
+    levels = []
+    
+    # Use rolling windows to find local extrema
+    window = max(5, 20 - sensitivity * 2)
+    
+    # Find peaks (resistance)
+    highs = df['High'].rolling(window=window, center=True).max()
+    resistance_points = df[df['High'] == highs]['High'].unique()
+    
+    # Find troughs (support)
+    lows = df['Low'].rolling(window=window, center=True).min()
+    support_points = df[df['Low'] == lows]['Low'].unique()
+    
+    # Cluster nearby levels
+    for level in resistance_points[-10:]:  # Last 10 resistance levels
+        levels.append({'price': level, 'type': 'resistance', 'strength': 1})
+    
+    for level in support_points[-10:]:  # Last 10 support levels
+        levels.append({'price': level, 'type': 'support', 'strength': 1})
+    
+    return levels
+
+def find_trend_lines(df, sensitivity=5):
+    """Find trend lines using linear regression on pivots"""
+    trend_lines = []
+    
+    # Find pivot points
+    window = max(5, 20 - sensitivity * 2)
+    
+    # Uptrend line (connecting lows)
+    lows = df['Low'].rolling(window=window, center=True).min()
+    pivot_lows = df[df['Low'] == lows].reset_index()
+    
+    if len(pivot_lows) >= 2:
+        # Fit line through pivot lows
+        x = np.arange(len(pivot_lows))
+        y = pivot_lows['Low'].values
         
-        if 'error' in data:
-            st.error(f"Failed to fetch data: {data['error']}")
+        if len(x) > 1:
+            z = np.polyfit(x, y, 1)
+            slope = z[0]
+            intercept = z[1]
+            
+            # Project to current
+            current_support = slope * len(pivot_lows) + intercept
+            
+            trend_lines.append({
+                'type': 'uptrend',
+                'slope': slope,
+                'current_price': current_support,
+                'strength': abs(slope)
+            })
+    
+    # Downtrend line (connecting highs)
+    highs = df['High'].rolling(window=window, center=True).max()
+    pivot_highs = df[df['High'] == highs].reset_index()
+    
+    if len(pivot_highs) >= 2:
+        x = np.arange(len(pivot_highs))
+        y = pivot_highs['High'].values
+        
+        if len(x) > 1:
+            z = np.polyfit(x, y, 1)
+            slope = z[0]
+            intercept = z[1]
+            
+            current_resistance = slope * len(pivot_highs) + intercept
+            
+            trend_lines.append({
+                'type': 'downtrend',
+                'slope': slope,
+                'current_price': current_resistance,
+                'strength': abs(slope)
+            })
+    
+    return trend_lines
+
+def find_price_channels(df, sensitivity=5):
+    """Find price channels (parallel trend lines)"""
+    channels = []
+    
+    # Simple channel detection using rolling highs/lows
+    window = max(20, 50 - sensitivity * 5)
+    
+    upper_channel = df['High'].rolling(window=window).max()
+    lower_channel = df['Low'].rolling(window=window).min()
+    mid_channel = (upper_channel + lower_channel) / 2
+    
+    # Current channel info
+    current_upper = upper_channel.iloc[-1]
+    current_lower = lower_channel.iloc[-1]
+    current_mid = mid_channel.iloc[-1]
+    channel_width = current_upper - current_lower
+    
+    # Position in channel
+    current_price = df['Close'].iloc[-1]
+    position_in_channel = (current_price - current_lower) / channel_width if channel_width > 0 else 0.5
+    
+    channels.append({
+        'upper': current_upper,
+        'lower': current_lower,
+        'middle': current_mid,
+        'width': channel_width,
+        'position': position_in_channel,
+        'type': 'horizontal' if abs(upper_channel.diff().mean()) < 0.01 else 'trending'
+    })
+    
+    return channels
+
+def find_triangle_patterns(df, min_points=5):
+    """Find triangle patterns (ascending, descending, symmetrical)"""
+    triangles = []
+    
+    # Get recent price action (last 50 bars)
+    recent_df = df.tail(50)
+    
+    # Find converging trend lines
+    highs = recent_df['High'].values
+    lows = recent_df['Low'].values
+    x = np.arange(len(highs))
+    
+    # Fit lines to highs and lows
+    if len(x) >= min_points:
+        high_slope = np.polyfit(x, highs, 1)[0]
+        low_slope = np.polyfit(x, lows, 1)[0]
+        
+        # Classify triangle type
+        if high_slope < -0.001 and low_slope > 0.001:
+            triangle_type = "symmetrical"
+        elif abs(high_slope) < 0.001 and low_slope > 0.001:
+            triangle_type = "ascending"
+        elif high_slope < -0.001 and abs(low_slope) < 0.001:
+            triangle_type = "descending"
         else:
-            # Store in session state for access across the page
-            st.session_state['current_analysis'] = data
-
-# Display analysis if available
-if 'current_analysis' in st.session_state:
-    data = st.session_state['current_analysis']
+            triangle_type = None
+        
+        if triangle_type:
+            triangles.append({
+                'type': triangle_type,
+                'high_slope': high_slope,
+                'low_slope': low_slope,
+                'apex_distance': len(recent_df),  # Bars until apex
+                'current_width': highs[-1] - lows[-1]
+            })
     
-    # Get the stock data
-    if data['basic'] and ticker in data['basic']:
-        stock_data = data['basic'][ticker]
-        hist = stock_data['history']
-        info = stock_data['info']
+    return triangles
+
+def find_flag_patterns(df, min_flagpole=0.10):
+    """Find bull and bear flag patterns"""
+    flags = []
+    
+    # Look for strong moves followed by consolidation
+    for i in range(20, len(df) - 10):
+        # Check for flagpole (strong move)
+        flagpole_start = i - 20
+        flagpole_end = i
         
-        # Display current price info
-        col1, col2, col3, col4, col5 = st.columns(5)
+        price_change = (df['Close'].iloc[flagpole_end] - df['Close'].iloc[flagpole_start]) / df['Close'].iloc[flagpole_start]
         
-        with col1:
-            current_price = info.get('regularMarketPrice', 0)
-            st.metric("Price", f"${current_price:.2f}")
+        if abs(price_change) >= min_flagpole:
+            # Check for consolidation after flagpole
+            consolidation = df.iloc[flagpole_end:flagpole_end + 10]
+            consolidation_range = consolidation['High'].max() - consolidation['Low'].min()
+            flagpole_range = abs(df['High'].iloc[flagpole_start:flagpole_end].max() - df['Low'].iloc[flagpole_start:flagpole_end].min())
+            
+            # Flag should be smaller range than flagpole
+            if consolidation_range < flagpole_range * 0.5:
+                flag_type = "bull_flag" if price_change > 0 else "bear_flag"
+                
+                # Only add if it's recent
+                if i >= len(df) - 30:
+                    flags.append({
+                        'type': flag_type,
+                        'flagpole_change': price_change,
+                        'consolidation_range': consolidation_range,
+                        'start_index': flagpole_start,
+                        'flag_index': flagpole_end
+                    })
+    
+    return flags
+
+def find_double_patterns(df, tolerance=0.02):
+    """Find double tops and bottoms"""
+    patterns = []
+    
+    # Look for two similar peaks or troughs
+    window = 10
+    
+    # Find local maxima and minima
+    for i in range(window, len(df) - window):
+        # Check for local maximum (potential double top)
+        if df['High'].iloc[i] == df['High'].iloc[i-window:i+window+1].max():
+            # Look for another similar peak
+            for j in range(max(0, i-50), i-window):
+                if df['High'].iloc[j] == df['High'].iloc[j-window:j+window+1].max():
+                    # Check if peaks are similar height
+                    if abs(df['High'].iloc[i] - df['High'].iloc[j]) / df['High'].iloc[i] < tolerance:
+                        # Check for valley between peaks
+                        valley = df['Low'].iloc[j:i].min()
+                        if valley < min(df['High'].iloc[i], df['High'].iloc[j]) * 0.95:
+                            if i >= len(df) - 30:  # Recent pattern
+                                patterns.append({
+                                    'type': 'double_top',
+                                    'first_peak': df['High'].iloc[j],
+                                    'second_peak': df['High'].iloc[i],
+                                    'valley': valley,
+                                    'neckline': valley
+                                })
         
-        with col2:
-            change_pct = info.get('regularMarketChangePercent', 0)
-            change_dollar = info.get('regularMarketChange', 0)
-            st.metric("Change", f"{change_pct:.2f}%", f"${change_dollar:.2f}")
-        
-        with col3:
-            volume = info.get('regularMarketVolume', 0)
-            st.metric("Volume", f"{volume/1e6:.1f}M")
-        
-        with col4:
-            day_high = info.get('dayHigh', 0)
-            day_low = info.get('dayLow', 0)
-            st.metric("Day Range", f"${day_low:.2f} - ${day_high:.2f}")
-        
-        with col5:
-            market_cap = info.get('marketCap', 0)
-            st.metric("Market Cap", f"${market_cap/1e9:.1f}B" if market_cap > 1e9 else f"${market_cap/1e6:.1f}M")
-        
-        # Create the main chart
+        # Check for local minimum (potential double bottom)
+        if df['Low'].iloc[i] == df['Low'].iloc[i-window:i+window+1].min():
+            for j in range(max(0, i-50), i-window):
+                if df['Low'].iloc[j] == df['Low'].iloc[j-window:j+window+1].min():
+                    if abs(df['Low'].iloc[i] - df['Low'].iloc[j]) / df['Low'].iloc[i] < tolerance:
+                        peak = df['High'].iloc[j:i].max()
+                        if peak > max(df['Low'].iloc[i], df['Low'].iloc[j]) * 1.05:
+                            if i >= len(df) - 30:
+                                patterns.append({
+                                    'type': 'double_bottom',
+                                    'first_trough': df['Low'].iloc[j],
+                                    'second_trough': df['Low'].iloc[i],
+                                    'peak': peak,
+                                    'neckline': peak
+                                })
+    
+    return patterns
+
+# Main interface
+col1, col2 = st.columns([1, 3])
+
+with col1:
+    st.header("📊 Stock Selection")
+    
+    # Get watchlist from data_manager
+    watchlist = data_manager.get_watchlist()
+    
+    # Ticker input
+    ticker_source = st.radio("Select source:", ["Manual Input", "Watchlist"])
+    
+    if ticker_source == "Manual Input":
+        ticker = st.text_input("Enter ticker symbol:", value="AAPL").upper()
+    else:
+        if watchlist:
+            ticker = st.selectbox("Select from watchlist:", watchlist)
+        else:
+            st.warning("Watchlist is empty!")
+            ticker = st.text_input("Enter ticker symbol:", value="AAPL").upper()
+    
+    # Analyze button
+    if st.button("🔄 Analyze", type="primary", use_container_width=True):
+        with st.spinner(f"Analyzing {ticker}..."):
+            # Get stock data using data_manager
+            stock_data = data_manager.get_stock_data([ticker], period=period)
+            
+            if stock_data and ticker in stock_data:
+                hist_data = stock_data[ticker].get('history')
+                
+                if hist_data is not None and not hist_data.empty:
+                    # Store results in session state
+                    st.session_state.pattern_results[ticker] = {
+                        'data': hist_data,
+                        'info': stock_data[ticker].get('info', {}),
+                        'patterns': {},
+                        'timestamp': datetime.now()
+                    }
+                    
+                    # Detect patterns based on settings
+                    if detect_support_resistance:
+                        st.session_state.pattern_results[ticker]['patterns']['support_resistance'] = find_support_resistance(hist_data, sensitivity)
+                    
+                    if detect_trend_lines:
+                        st.session_state.pattern_results[ticker]['patterns']['trend_lines'] = find_trend_lines(hist_data, sensitivity)
+                    
+                    if detect_channels:
+                        st.session_state.pattern_results[ticker]['patterns']['channels'] = find_price_channels(hist_data, sensitivity)
+                    
+                    if detect_triangles:
+                        st.session_state.pattern_results[ticker]['patterns']['triangles'] = find_triangle_patterns(hist_data)
+                    
+                    if detect_flags:
+                        st.session_state.pattern_results[ticker]['patterns']['flags'] = find_flag_patterns(hist_data)
+                    
+                    if detect_double_tops:
+                        st.session_state.pattern_results[ticker]['patterns']['double_patterns'] = find_double_patterns(hist_data)
+                    
+                    st.success(f"✅ Analysis complete for {ticker}")
+                else:
+                    st.error(f"No historical data available for {ticker}")
+            else:
+                st.error(f"Failed to fetch data for {ticker}")
+    
+    # Pattern summary
+    if ticker in st.session_state.pattern_results:
         st.markdown("---")
+        st.subheader("🎯 Patterns Found")
         
-        # Initialize subplots based on selected indicators
-        n_subplots = 1 + (1 if show_volume else 0) + (1 if show_rsi else 0) + (1 if show_macd else 0)
-        row_heights = [0.6] + [0.13] * (n_subplots - 1)
+        patterns = st.session_state.pattern_results[ticker]['patterns']
+        total_patterns = sum(len(p) if isinstance(p, list) else 1 for p in patterns.values())
         
-        subplot_titles = ["Price"]
-        if show_volume:
-            subplot_titles.append("Volume")
-        if show_rsi:
-            subplot_titles.append("RSI")
-        if show_macd:
-            subplot_titles.append("MACD")
+        st.metric("Total Patterns", total_patterns)
         
-        fig = make_subplots(
-            rows=n_subplots,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.03,
-            subplot_titles=subplot_titles,
-            row_heights=row_heights
-        )
+        # List pattern types found
+        for pattern_type, pattern_data in patterns.items():
+            if pattern_data:
+                count = len(pattern_data) if isinstance(pattern_data, list) else 1
+                st.caption(f"• {pattern_type.replace('_', ' ').title()}: {count}")
+
+with col2:
+    st.header("📈 Chart & Analysis")
+    
+    if ticker in st.session_state.pattern_results:
+        results = st.session_state.pattern_results[ticker]
+        df = results['data']
+        info = results['info']
+        patterns = results['patterns']
+        
+        # Create candlestick chart
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                           vertical_spacing=0.03,
+                           row_heights=[0.7, 0.3])
         
         # Candlestick chart
-        fig.add_trace(
-            go.Candlestick(
-                x=hist.index,
-                open=hist['Open'],
-                high=hist['High'],
-                low=hist['Low'],
-                close=hist['Close'],
-                name="OHLC"
-            ),
-            row=1, col=1
-        )
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df['Open'],
+            high=df['High'],
+            low=df['Low'],
+            close=df['Close'],
+            name='Price',
+            increasing=dict(line=dict(color='#26a69a')),
+            decreasing=dict(line=dict(color='#ef5350'))
+        ), row=1, col=1)
         
-        # Add moving averages
-        if show_ma:
-            for period in ma_periods:
-                if len(hist) >= period:
-                    ma = hist['Close'].rolling(window=period).mean()
-                    fig.add_trace(
-                        go.Scatter(
-                            x=hist.index,
-                            y=ma,
-                            mode='lines',
-                            name=f'MA{period}',
-                            line=dict(width=1)
-                        ),
-                        row=1, col=1
-                    )
+        # Add patterns to chart
         
-        # Add Bollinger Bands
-        if show_bb and len(hist) >= 20:
-            bb = ta.volatility.BollingerBands(hist['Close'])
-            fig.add_trace(
-                go.Scatter(
-                    x=hist.index,
-                    y=bb.bollinger_hband(),
-                    mode='lines',
-                    name='BB Upper',
-                    line=dict(color='gray', width=1, dash='dash')
-                ),
-                row=1, col=1
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=hist.index,
-                    y=bb.bollinger_lband(),
-                    mode='lines',
-                    name='BB Lower',
-                    line=dict(color='gray', width=1, dash='dash'),
-                    fill='tonexty',
-                    fillcolor='rgba(128, 128, 128, 0.1)'
-                ),
-                row=1, col=1
-            )
+        # Support/Resistance levels
+        if 'support_resistance' in patterns:
+            for level in patterns['support_resistance']:
+                color = '#FF6B6B' if level['type'] == 'resistance' else '#4ECDC4'
+                fig.add_hline(y=level['price'], line_dash="dash", 
+                             line_color=color, opacity=0.6,
+                             annotation_text=f"{level['type'].upper()} ${level['price']:.2f}",
+                             annotation_position="right", row=1, col=1)
         
-        # Add pattern detection results
-        if detect_patterns and 'patterns' in data and data['patterns']:
-            patterns = data['patterns']
-            
-            # Add support/resistance lines
-            if show_support_resistance and 'support_resistance' in patterns:
-                for level in patterns['support_resistance']:
-                    color = 'red' if level['type'] == 'resistance' else 'green'
-                    fig.add_hline(
-                        y=level['level'],
-                        line_dash="dash",
-                        line_color=color,
-                        annotation_text=f"{level['description']}: ${level['level']:.2f}",
-                        annotation_position="right",
-                        row=1, col=1
-                    )
-            
-            # Add pattern annotations
-            pattern_text = []
-            if patterns.get('bull_flag'):
-                pattern_text.append("🚩 Bull Flag Detected")
-            if patterns.get('bear_flag'):
-                pattern_text.append("🏴 Bear Flag Detected")
-            if patterns.get('ascending_triangle'):
-                pattern_text.append("📐 Ascending Triangle")
-            if patterns.get('descending_triangle'):
-                pattern_text.append("📐 Descending Triangle")
-            
-            if pattern_text:
-                fig.add_annotation(
-                    text="<br>".join(pattern_text),
-                    xref="paper", yref="paper",
-                    x=0.02, y=0.98,
-                    showarrow=False,
-                    bgcolor="rgba(255, 255, 255, 0.8)",
-                    bordercolor="black",
-                    borderwidth=1
-                )
+        # Channels
+        if 'channels' in patterns and patterns['channels']:
+            channel = patterns['channels'][0]
+            fig.add_hline(y=channel['upper'], line_dash="solid", line_color="purple", 
+                         opacity=0.5, annotation_text=f"Channel Top ${channel['upper']:.2f}", row=1, col=1)
+            fig.add_hline(y=channel['lower'], line_dash="solid", line_color="purple", 
+                         opacity=0.5, annotation_text=f"Channel Bottom ${channel['lower']:.2f}", row=1, col=1)
+            fig.add_hline(y=channel['middle'], line_dash="dot", line_color="purple", 
+                         opacity=0.3, row=1, col=1)
         
-        # Current row for additional indicators
-        current_row = 2
+        # Volume
+        colors = ['red' if df['Close'].iloc[i] < df['Open'].iloc[i] else 'green' 
+                 for i in range(len(df))]
         
-        # Add volume
-        if show_volume:
-            colors = ['red' if hist['Close'].iloc[i] < hist['Open'].iloc[i] else 'green' 
-                     for i in range(len(hist))]
-            
-            fig.add_trace(
-                go.Bar(
-                    x=hist.index,
-                    y=hist['Volume'],
-                    name='Volume',
-                    marker_color=colors
-                ),
-                row=current_row, col=1
-            )
-            current_row += 1
-        
-        # Add RSI
-        if show_rsi and len(hist) >= 14:
-            rsi = ta.momentum.RSIIndicator(hist['Close']).rsi()
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=hist.index,
-                    y=rsi,
-                    mode='lines',
-                    name='RSI',
-                    line=dict(color='purple')
-                ),
-                row=current_row, col=1
-            )
-            
-            # Add RSI levels
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
-            current_row += 1
-        
-        # Add MACD
-        if show_macd and len(hist) >= 26:
-            macd = ta.trend.MACD(hist['Close'])
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=hist.index,
-                    y=macd.macd(),
-                    mode='lines',
-                    name='MACD',
-                    line=dict(color='blue')
-                ),
-                row=current_row, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=hist.index,
-                    y=macd.macd_signal(),
-                    mode='lines',
-                    name='Signal',
-                    line=dict(color='red')
-                ),
-                row=current_row, col=1
-            )
-            
-            fig.add_trace(
-                go.Bar(
-                    x=hist.index,
-                    y=macd.macd_diff(),
-                    name='Histogram',
-                    marker_color='gray'
-                ),
-                row=current_row, col=1
-            )
+        fig.add_trace(go.Bar(
+            x=df.index,
+            y=df['Volume'],
+            name='Volume',
+            marker_color=colors,
+            opacity=0.7
+        ), row=2, col=1)
         
         # Update layout
         fig.update_layout(
-            title=f"{ticker} - {period} Chart",
+            title=f"{ticker} - Pattern Analysis",
+            xaxis_title="Date",
             yaxis_title="Price",
-            xaxis_rangeslider_visible=False,
-            height=800,
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
+            template="plotly_dark",
+            height=700,
+            showlegend=False
         )
         
-        # Update x-axis
-        fig.update_xaxes(title_text="Date", row=n_subplots, col=1)
+        fig.update_xaxes(rangeslider_visible=False)
         
-        # Display the chart
+        # Display chart
         st.plotly_chart(fig, use_container_width=True)
         
-        # Pattern Details and Trading Signals
+        # Pattern details
         st.markdown("---")
+        st.subheader("🔍 Pattern Details")
         
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            st.subheader("🔍 Pattern Analysis")
+        # Create tabs for different pattern types
+        if patterns:
+            pattern_tabs = st.tabs([k.replace('_', ' ').title() for k in patterns.keys() if patterns[k]])
             
-            if 'patterns' in data and data['patterns']:
-                patterns = data['patterns']
-                
-                # Pattern status
-                pattern_found = False
-                
-                if patterns.get('bull_flag'):
-                    st.success("🚩 **Bull Flag Pattern**")
-                    st.write("Bullish continuation pattern. Look for breakout above flag resistance.")
-                    pattern_found = True
-                
-                if patterns.get('bear_flag'):
-                    st.error("🏴 **Bear Flag Pattern**")
-                    st.write("Bearish continuation pattern. Watch for breakdown below flag support.")
-                    pattern_found = True
-                
-                if patterns.get('channel'):
-                    channel = patterns['channel']
-                    st.info(f"📊 **{channel['trend'].title()} Channel** ({channel['strength']})")
-                    st.write(f"Price moving in a {channel['type']} channel")
-                    pattern_found = True
-                
-                if not pattern_found:
-                    st.info("No significant patterns detected in current timeframe")
-                
-                # Support/Resistance levels
-                if show_support_resistance and patterns.get('support_resistance'):
-                    st.markdown("### 📏 Key Levels")
+            tab_index = 0
+            for pattern_type, pattern_data in patterns.items():
+                if pattern_data:
+                    with pattern_tabs[tab_index]:
+                        if pattern_type == 'support_resistance':
+                            resistance_levels = [p for p in pattern_data if p['type'] == 'resistance']
+                            support_levels = [p for p in pattern_data if p['type'] == 'support']
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Resistance Levels:**")
+                                for level in sorted(resistance_levels, key=lambda x: x['price'], reverse=True)[:5]:
+                                    st.write(f"• ${level['price']:.2f}")
+                            
+                            with col2:
+                                st.write("**Support Levels:**")
+                                for level in sorted(support_levels, key=lambda x: x['price'], reverse=True)[:5]:
+                                    st.write(f"• ${level['price']:.2f}")
+                        
+                        elif pattern_type == 'channels':
+                            for channel in pattern_data:
+                                st.write(f"**Channel Type:** {channel['type'].title()}")
+                                st.write(f"**Upper:** ${channel['upper']:.2f}")
+                                st.write(f"**Lower:** ${channel['lower']:.2f}")
+                                st.write(f"**Width:** ${channel['width']:.2f}")
+                                st.write(f"**Current Position:** {channel['position']:.1%} from bottom")
+                        
+                        elif pattern_type == 'triangles':
+                            for triangle in pattern_data:
+                                st.write(f"**Pattern:** {triangle['type'].replace('_', ' ').title()} Triangle")
+                                st.write(f"**High Slope:** {triangle['high_slope']:.4f}")
+                                st.write(f"**Low Slope:** {triangle['low_slope']:.4f}")
+                                st.write(f"**Current Width:** ${triangle['current_width']:.2f}")
+                        
+                        elif pattern_type == 'flags':
+                            for flag in pattern_data:
+                                st.write(f"**Pattern:** {flag['type'].replace('_', ' ').title()}")
+                                st.write(f"**Flagpole Move:** {flag['flagpole_change']:.1%}")
+                                st.write(f"**Consolidation Range:** ${flag['consolidation_range']:.2f}")
+                        
+                        elif pattern_type == 'double_patterns':
+                            for pattern in pattern_data:
+                                st.write(f"**Pattern:** {pattern['type'].replace('_', ' ').title()}")
+                                st.write(f"**Neckline:** ${pattern['neckline']:.2f}")
+                                if 'peak' in pattern:
+                                    st.write(f"**Peak Between:** ${pattern['peak']:.2f}")
+                                if 'valley' in pattern:
+                                    st.write(f"**Valley Between:** ${pattern['valley']:.2f}")
+                        
+                        elif pattern_type == 'trend_lines':
+                            for trend in pattern_data:
+                                st.write(f"**Trend:** {trend['type'].title()}")
+                                st.write(f"**Current Level:** ${trend['current_price']:.2f}")
+                                st.write(f"**Slope:** {trend['slope']:.4f}")
+                                st.write(f"**Strength:** {trend['strength']:.4f}")
                     
-                    levels_df = pd.DataFrame(patterns['support_resistance'])
-                    if not levels_df.empty:
-                        levels_df['level'] = levels_df['level'].apply(lambda x: f"${x:.2f}")
-                        st.dataframe(
-                            levels_df[['type', 'level', 'description']],
-                            use_container_width=True,
-                            hide_index=True
-                        )
+                    tab_index += 1
+        
+        # Trading recommendations
+        st.markdown("---")
+        st.subheader("💡 Trading Insights")
+        
+        current_price = df['Close'].iloc[-1]
+        
+        # Generate insights based on patterns
+        insights = []
+        
+        if 'channels' in patterns and patterns['channels']:
+            channel = patterns['channels'][0]
+            if channel['position'] < 0.3:
+                insights.append("📈 Near channel bottom - potential bounce play")
+            elif channel['position'] > 0.7:
+                insights.append("📉 Near channel top - consider taking profits")
+        
+        if 'flags' in patterns and patterns['flags']:
+            flag = patterns['flags'][-1]  # Most recent
+            if flag['type'] == 'bull_flag':
+                insights.append("🚀 Bull flag detected - continuation pattern")
             else:
-                st.info("Run pattern detection to see results")
+                insights.append("🐻 Bear flag detected - potential further decline")
         
-        with col_right:
-            st.subheader("📊 Trading Signals")
-            
-            if 'signals' in data and data['signals']:
-                signals = data['signals']
-                
-                # Display scores
-                st.markdown("### 📈 Signal Scores")
-                
-                score_col1, score_col2, score_col3 = st.columns(3)
-                
-                with score_col1:
-                    day_score = signals.get('day_score', 0)
-                    st.metric("Day Trade", f"{day_score:.0f}/100",
-                             delta="BUY" if day_score > 70 else "WAIT")
-                
-                with score_col2:
-                    swing_score = signals.get('swing_score', 0)
-                    st.metric("Swing Trade", f"{swing_score:.0f}/100",
-                             delta="BUY" if swing_score > 75 else "WAIT")
-                
-                with score_col3:
-                    momentum = signals.get('momentum', 0)
-                    st.metric("Momentum", f"{momentum:.0f}/100")
-                
-                # Trade setups
-                st.markdown("### 🎯 Trade Setup")
-                
-                if 'patterns' in data and data['patterns'].get('support_resistance'):
-                    levels = data['patterns']['support_resistance']
-                    
-                    # Find nearest support and resistance
-                    supports = [l for l in levels if l['type'] == 'support']
-                    resistances = [l for l in levels if l['type'] == 'resistance']
-                    
-                    if supports and resistances:
-                        nearest_support = min(supports, key=lambda x: abs(x['level'] - current_price))
-                        nearest_resistance = min(resistances, key=lambda x: abs(x['level'] - current_price))
-                        
-                        entry = current_price
-                        stop = nearest_support['level'] * 0.99  # 1% below support
-                        target = nearest_resistance['level'] * 0.99  # 1% below resistance
-                        
-                        risk = entry - stop
-                        reward = target - entry
-                        rr_ratio = reward / risk if risk > 0 else 0
-                        
-                        setup_data = {
-                            'Entry': f"${entry:.2f}",
-                            'Stop Loss': f"${stop:.2f}",
-                            'Target': f"${target:.2f}",
-                            'Risk': f"${risk:.2f}",
-                            'Reward': f"${reward:.2f}",
-                            'R:R Ratio': f"{rr_ratio:.2f}:1"
-                        }
-                        
-                        setup_df = pd.DataFrame([setup_data]).T
-                        setup_df.columns = ['Value']
-                        st.dataframe(setup_df, use_container_width=True)
-                        
-                        # Position sizing
-                        st.markdown("### 💰 Position Sizing")
-                        
-                        account_size = st.number_input("Account Size", value=10000, step=1000)
-                        risk_pct = st.slider("Risk %", 1, 5, 2)
-                        
-                        risk_amount = account_size * (risk_pct / 100)
-                        shares = int(risk_amount / risk) if risk > 0 else 0
-                        position_size = shares * entry
-                        
-                        pos_col1, pos_col2 = st.columns(2)
-                        
-                        with pos_col1:
-                            st.metric("Shares", shares)
-                            st.metric("Position Size", f"${position_size:.2f}")
-                        
-                        with pos_col2:
-                            st.metric("Risk Amount", f"${risk_amount:.2f}")
-                            st.metric("Potential Profit", f"${reward * shares:.2f}")
+        if 'double_patterns' in patterns and patterns['double_patterns']:
+            pattern = patterns['double_patterns'][-1]
+            if pattern['type'] == 'double_top':
+                insights.append("⚠️ Double top pattern - potential reversal")
+            else:
+                insights.append("✅ Double bottom pattern - potential reversal up")
         
-        # Intraday analysis if available
-        if data.get('intraday') and show_trendlines:
-            st.markdown("---")
-            st.subheader("📈 Intraday Analysis")
-            
-            intraday = data['intraday']
-            
-            col_i1, col_i2, col_i3, col_i4 = st.columns(4)
-            
-            with col_i1:
-                pa = intraday.get('price_action', {})
-                st.metric("Intraday Trend", pa.get('trend', 'N/A').upper())
-            
-            with col_i2:
-                momentum = intraday.get('momentum', {})
-                st.metric("Price Change", f"{momentum.get('price_change', 0):.2f}%")
-            
-            with col_i3:
-                levels = intraday.get('levels', {})
-                st.metric("VWAP", f"${levels.get('vwap', 0):.2f}")
-            
-            with col_i4:
-                vol = intraday.get('volume_profile', {})
-                st.metric("Volume vs Avg", 
-                         f"{vol.get('total_volume', 0) / vol.get('avg_volume', 1):.2f}x")
+        if insights:
+            for insight in insights:
+                st.info(insight)
+        else:
+            st.info("No clear trading signals from current patterns")
         
-        # Action buttons
+        # Risk levels
         st.markdown("---")
+        col1, col2, col3 = st.columns(3)
         
-        action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+        with col1:
+            nearest_support = None
+            if 'support_resistance' in patterns:
+                supports = [p['price'] for p in patterns['support_resistance'] if p['type'] == 'support' and p['price'] < current_price]
+                if supports:
+                    nearest_support = max(supports)
+                    st.metric("Nearest Support", f"${nearest_support:.2f}", 
+                             f"{((current_price - nearest_support) / current_price * 100):.1f}% below")
         
-        with action_col1:
-            if st.button("📋 Add to Watchlist", use_container_width=True):
-                reason = "Pattern detected" if pattern_found else "Manual addition"
-                if data_manager.add_to_watchlist_with_reason(ticker, reason, "Pattern Analysis"):
-                    st.success("Added to watchlist!")
-                else:
-                    st.info("Already in watchlist")
+        with col2:
+            st.metric("Current Price", f"${current_price:.2f}")
         
-        with action_col2:
-            if st.button("📓 Log Trade", use_container_width=True):
-                st.session_state['journal_ticker'] = ticker
-                st.switch_page("pages/journal.py")
-        
-        with action_col3:
-            if st.button("📰 Check News", use_container_width=True):
-                st.session_state['news_ticker_filter'] = ticker
-                st.switch_page("pages/news.py")
-        
-        with action_col4:
-            if st.button("🤖 AI Analysis", use_container_width=True):
-                st.switch_page("pages/AISignals.py")
+        with col3:
+            nearest_resistance = None
+            if 'support_resistance' in patterns:
+                resistances = [p['price'] for p in patterns['support_resistance'] if p['type'] == 'resistance' and p['price'] > current_price]
+                if resistances:
+                    nearest_resistance = min(resistances)
+                    st.metric("Nearest Resistance", f"${nearest_resistance:.2f}",
+                             f"{((nearest_resistance - current_price) / current_price * 100):.1f}% above")
+    
     else:
-        st.info("Enter a ticker and click Analyze to see patterns")
+        st.info("👈 Select a ticker and click 'Analyze' to see patterns")
 
-# Educational content
+# Footer
 st.markdown("---")
-with st.expander("📚 Pattern Recognition Guide"):
-    st.markdown("""
-    ### Common Chart Patterns
-    
-    **🚩 Bull Flag**
-    - Sharp move up (flagpole) followed by consolidation
-    - Bullish continuation pattern
-    - Entry: Break above flag resistance
-    
-    **🏴 Bear Flag**
-    - Sharp move down followed by consolidation
-    - Bearish continuation pattern
-    - Entry: Break below flag support
-    
-    **📐 Triangles**
-    - Ascending: Higher lows, flat top (bullish)
-    - Descending: Lower highs, flat bottom (bearish)
-    - Symmetrical: Could break either way
-    
-    **📊 Channels**
-    - Parallel support and resistance lines
-    - Trade the range or breakouts
-    - Stronger in the direction of the trend
-    
-    ### Key Technical Indicators
-    
-    **Moving Averages**
-    - 20 MA: Short-term trend
-    - 50 MA: Medium-term trend
-    - 200 MA: Long-term trend
-    
-    **RSI (Relative Strength Index)**
-    - Above 70: Overbought
-    - Below 30: Oversold
-    - Divergences signal potential reversals
-    
-    **MACD**
-    - Signal line crossovers
-    - Histogram shows momentum
-    - Divergences are powerful signals
-    """)
+st.caption("Pattern recognition is probabilistic - always use proper risk management and confirm with other indicators.")
