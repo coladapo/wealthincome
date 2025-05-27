@@ -1,4 +1,4 @@
-# Home.py - CORRECT FORMAT (lines 1-25)
+# Home.py
 import streamlit as st
 import sys
 import os
@@ -14,10 +14,12 @@ if parent_dir not in sys.path:
 # Import data_manager
 try:
     from core.data_manager import data_manager
-    st.set_page_config(...)  ← Same level as line above
 except ImportError:
     st.error("Failed to import data_manager")
     st.stop()
+
+# Page config
+st.set_page_config(page_title="Trading Dashboard Hub", page_icon="🏠", layout="wide")
 
 st.title("🏠 Trading Dashboard Hub")
 st.caption(f"Welcome! Choose a module from the sidebar to begin. {datetime.now().strftime('%A, %B %d, %Y')}")
@@ -66,19 +68,19 @@ col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     if st.button("🔍 Run AI Scanner", use_container_width=True):
-        st.switch_page("pages/AISignals.py")
+        st.switch_page("pages/2_🧠_AI_Signals.py")
         
 with col2:
     if st.button("📊 View Patterns", use_container_width=True):
-        st.switch_page("pages/patterns.py")
+        st.switch_page("pages/4_📊_Patterns.py")
         
 with col3:
     if st.button("📰 Check News", use_container_width=True):
-        st.switch_page("pages/news.py")
+        st.switch_page("pages/3_📰_News.py")
         
 with col4:
     if st.button("📓 Trade Journal", use_container_width=True):
-        st.switch_page("pages/journal.py")
+        st.switch_page("pages/5_📓_Journal.py")
 
 # Market Overview
 st.markdown("---")
