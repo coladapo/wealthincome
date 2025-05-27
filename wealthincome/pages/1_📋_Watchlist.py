@@ -14,7 +14,7 @@ if parent_dir not in sys.path:
 
 # Import data_manager
 try:
-    from data_manager import data_manager
+   from core.data_manager import data_manager
 except ImportError:
     st.error("🚨 Failed to import 'data_manager'. Please ensure 'data_manager.py' exists in the root directory.")
     st.stop()
