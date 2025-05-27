@@ -1,9 +1,0 @@
-plotly
-finvizfinance==0.14.3
-streamlit
-pandas
-yfinance
-ta
-matplotlib
-openai>=1.0.0
-vaderSentiment==3.3.2
