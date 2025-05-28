@@ -24,6 +24,14 @@ except ImportError:
     ANALYTICS_AVAILABLE = False
     PaperTradingPortfolio = None
 
+# Import the AI agent
+try:
+    from paper_trading_agent import PaperTradingAgent, display_agent_dashboard
+    AGENT_AVAILABLE = True
+except ImportError:
+    AGENT_AVAILABLE = False
+    PaperTradingAgent = None
+
 # Page config
 st.set_page_config(
     page_title="Paper Trading - WealthIncome",
@@ -57,6 +65,13 @@ else:
             st.session_state.portfolio_type = 'advanced'
         else:
             st.session_state.portfolio_type = 'basic'
+
+# Initialize AI agent (add after portfolio initialization)
+if 'ai_agent' not in st.session_state:
+    if AGENT_AVAILABLE and PaperTradingAgent and st.session_state.portfolio_type == 'advanced':
+        st.session_state.ai_agent = PaperTradingAgent(st.session_state.paper_portfolio)
+    else:
+        st.session_state.ai_agent = None
 
 # Helper functions that work with both portfolio types
 def get_portfolio_value():
@@ -162,7 +177,7 @@ with st.sidebar:
     st.markdown(f"{mode_color} Mode: {st.session_state.portfolio_type.title()}")
 
 # Main content area
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Trade", "💼 Portfolio", "📊 Analytics", "📜 History"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Trade", "💼 Portfolio", "📊 Analytics", "📜 History", "🤖 AI Agent"])
 
 # Tab 1: Trading Interface
 with tab1:
@@ -512,6 +527,82 @@ with tab4:
             )
     else:
         st.info("No trades yet. Start trading to build your history!")
+
+# Tab 5: AI Agent
+with tab5:
+    if st.session_state.ai_agent:
+        display_agent_dashboard(st.session_state.ai_agent)
+        
+        st.markdown("---")
+        st.subheader("📡 Available Signals")
+        
+        # Get signals from session state if available
+        if 'trade_signals' in st.session_state and st.session_state.trade_signals:
+            # Convert display format to agent format
+            available_signals = []
+            for signal in st.session_state.trade_signals[:10]:  # Limit to top 10
+                # Get full data from screener results
+                ticker = signal.get('Ticker')
+                full_data = next((r for r in st.session_state.get('screener_results', []) 
+                                if r and r.get('ticker') == ticker), None)
+                
+                if full_data:
+                    available_signals.append(full_data)
+            
+            if available_signals:
+                # Display available signals
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    signals_df = pd.DataFrame([
+                        {
+                            'Ticker': s['ticker'],
+                            'AI Score': s['scores']['overall'],
+                            'Price': f"${s['price']:.2f}",
+                            'Status': '✅ In Portfolio' if s['ticker'] in get_positions() else '🔄 Available'
+                        }
+                        for s in available_signals
+                    ])
+                    st.dataframe(signals_df, use_container_width=True, hide_index=True)
+                
+                with col2:
+                    if st.button("🚀 Run Agent Cycle", type="primary", use_container_width=True):
+                        with st.spinner("Agent analyzing signals..."):
+                            # Run one cycle of the agent
+                            st.session_state.ai_agent.run_cycle(available_signals)
+                            st.success("Agent cycle complete!")
+                            st.rerun()
+            else:
+                st.info("No signals available. Run the AI Scanner to generate signals.")
+        else:
+            st.info("No signals available. Run the AI Scanner to generate signals.")
+        
+        # Auto-trading settings
+        with st.expander("⚙️ Auto-Trading Settings"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                auto_interval = st.selectbox(
+                    "Auto-run interval",
+                    ["Disabled", "Every 5 minutes", "Every 15 minutes", "Every hour"],
+                    help="Agent will automatically check signals at this interval"
+                )
+            
+            with col2:
+                max_positions = st.number_input(
+                    "Max simultaneous positions",
+                    min_value=1,
+                    max_value=20,
+                    value=5,
+                    help="Maximum number of positions agent can hold"
+                )
+            
+            st.info("⚠️ Auto-trading intervals require keeping the app open. For production use, "
+                   "consider running the agent as a separate process.")
+    
+    else:
+        st.warning("AI Agent requires the paper_trading_agent module and advanced portfolio mode.")
+        st.info("To enable: 1) Save paper_trading_agent.py to your project, 2) Reset portfolio in advanced mode")
 
 # Footer
 st.markdown("---")
