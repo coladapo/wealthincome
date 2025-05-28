@@ -2,11 +2,11 @@
 """
 Advanced analytics module for Paper Trading Pro
 Provides institutional-grade performance metrics and analysis
+NO SCIPY VERSION - Works without scipy dependency
 """
 
 import pandas as pd
 import numpy as np
-from scipy import stats
 import json
 from datetime import datetime, timedelta
 
@@ -50,7 +50,7 @@ class TradingAnalytics:
             # Statistical analysis
             'edge_ratio': self.calculate_edge_ratio(),
             'monte_carlo_95': self.run_monte_carlo_simulation(confidence=0.95),
-            't_statistic': self.calculate_t_statistic(),
+            't_statistic': self.calculate_t_statistic_simple(),  # Simplified version
             
             # Behavioral metrics
             'avg_winner_holding': self.calculate_avg_holding_time('Win'),
@@ -290,15 +290,47 @@ class TradingAnalytics:
             'probability_of_profit': sum(1 for v in final_values if v > self.initial_capital) / num_simulations
         }
     
-    def calculate_t_statistic(self):
-        """Calculate t-statistic to determine if edge is statistically significant"""
+    def calculate_t_statistic_simple(self):
+        """Calculate t-statistic without scipy - simplified version"""
         if len(self.closed_trades) < 30:  # Need sufficient sample size
             return {'t_stat': 0, 'p_value': 1, 'significant': False}
             
         returns = self.closed_trades['PnL_Dollar'].values
         
-        # Test if mean return is significantly different from 0
-        t_stat, p_value = stats.ttest_1samp(returns, 0)
+        # Calculate t-statistic manually
+        mean_return = np.mean(returns)
+        std_return = np.std(returns, ddof=1)  # Sample standard deviation
+        n = len(returns)
+        
+        if std_return == 0:
+            return {'t_stat': 0, 'p_value': 1, 'significant': False}
+        
+        # t-statistic = (mean - 0) / (std / sqrt(n))
+        t_stat = mean_return / (std_return / np.sqrt(n))
+        
+        # Simplified p-value estimation using normal approximation
+        # For large samples (n > 30), t-distribution approximates normal
+        # Using 2-tailed test
+        z_score = abs(t_stat)
+        
+        # Approximate p-value using normal CDF
+        # This is a rough approximation without scipy
+        if z_score > 3.5:
+            p_value = 0.0005
+        elif z_score > 3:
+            p_value = 0.003
+        elif z_score > 2.5:
+            p_value = 0.012
+        elif z_score > 2:
+            p_value = 0.046
+        elif z_score > 1.96:
+            p_value = 0.05
+        elif z_score > 1.5:
+            p_value = 0.134
+        elif z_score > 1:
+            p_value = 0.317
+        else:
+            p_value = 1.0
         
         return {
             't_stat': t_stat,
@@ -407,7 +439,7 @@ class TradingAnalytics:
         
         RISK METRICS
         ------------
-        Maximum Drawdown: {metrics['max_drawdown']:.2f} ({metrics['max_drawdown']:.1f}%)
+        Maximum Drawdown: ${metrics['max_drawdown']['max_drawdown']:.2f} ({metrics['max_drawdown']['max_drawdown_pct']:.1f}%)
         95% VaR: ${metrics['var_95']:.2f}
         99% VaR: ${metrics['var_99']:.2f}
         Kelly Criterion: {metrics['kelly_criterion']*100:.1f}%
@@ -421,7 +453,8 @@ class TradingAnalytics:
         
         STATISTICAL SIGNIFICANCE
         ------------------------
-        T-Statistic: {metrics['t_statistic']:.2f}
+        T-Statistic: {metrics['t_statistic']['t_stat']:.2f}
+        Confidence: {metrics['t_statistic']['confidence']}
         Monte Carlo 95% CI: ${metrics['monte_carlo_95']['lower_bound']:.2f} - ${metrics['monte_carlo_95']['upper_bound']:.2f}
         
         BEHAVIORAL ANALYSIS
