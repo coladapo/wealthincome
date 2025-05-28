@@ -4,7 +4,7 @@ import datetime
 import os
 
 # ---- Setup ----
-TRADE_LOG = "wealthincome/data/persistent/paper_trades.csv"  # Use your persistent folder
+TRADE_LOG = "paper_trades.csv"  # Save at root for Streamlit Cloud compatibility
 
 # ---- Load or Create Trade Log ----
 if os.path.exists(TRADE_LOG):
@@ -26,7 +26,7 @@ notes = st.text_area("Notes", "Triggered by dashboard signal")
 
 if st.button("💾 Add Trade"):
     new_trade = {
-        "Date": datetime.datetime.now(),
+        "Date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Ticker": ticker.upper(),
         "Entry Price": entry,
         "Exit Price": exit_,
