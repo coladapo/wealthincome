@@ -25,3 +25,6 @@ requests>=2.31.0
 # Utilities
 pytz>=2023.3
 python-dateutil>=2.8.0
+
+
+scipy>=1.10.0
