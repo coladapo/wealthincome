@@ -1,446 +1,412 @@
-# paper_trading_analytics.py
-"""
-Advanced analytics module for Paper Trading Pro
-Provides institutional-grade performance metrics and analysis
-"""
-
+import streamlit as st
 import pandas as pd
-import numpy as np
-from scipy import stats
-import json
+import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime, timedelta
+import yfinance as yf
+import sys
+import os
 
-class TradingAnalytics:
-    """Professional trading performance analytics"""
-    
-    def __init__(self, trades_df, initial_capital=100000):
-        self.trades = trades_df
-        self.initial_capital = initial_capital
-        self.closed_trades = trades_df[trades_df['Status'] == 'Closed'].copy()
-        
-    def calculate_advanced_metrics(self):
-        """Calculate institutional-grade metrics"""
-        if self.closed_trades.empty:
-            return {}
-        
-        metrics = {
-            # Basic metrics
-            'total_trades': len(self.closed_trades),
-            'winning_trades': len(self.closed_trades[self.closed_trades['PnL_Dollar'] > 0]),
-            'losing_trades': len(self.closed_trades[self.closed_trades['PnL_Dollar'] <= 0]),
-            
-            # Returns analysis
-            'total_return': self.calculate_total_return(),
-            'cagr': self.calculate_cagr(),
-            'sharpe_ratio': self.calculate_sharpe_ratio(),
-            'sortino_ratio': self.calculate_sortino_ratio(),
-            'calmar_ratio': self.calculate_calmar_ratio(),
-            
-            # Risk metrics
-            'max_drawdown': self.calculate_max_drawdown(),
-            'var_95': self.calculate_var(0.95),
-            'var_99': self.calculate_var(0.99),
-            'kelly_criterion': self.calculate_kelly_criterion(),
-            
-            # Performance metrics
-            'profit_factor': self.calculate_profit_factor(),
-            'expectancy': self.calculate_expectancy(),
-            'sqn': self.calculate_sqn(),  # System Quality Number
-            
-            # Statistical analysis
-            'edge_ratio': self.calculate_edge_ratio(),
-            'monte_carlo_95': self.run_monte_carlo_simulation(confidence=0.95),
-            't_statistic': self.calculate_t_statistic(),
-            
-            # Behavioral metrics
-            'avg_winner_holding': self.calculate_avg_holding_time('Win'),
-            'avg_loser_holding': self.calculate_avg_holding_time('Loss'),
-            'win_loss_ratio': self.calculate_win_loss_ratio(),
-            'largest_winner': self.closed_trades['PnL_Dollar'].max(),
-            'largest_loser': self.closed_trades['PnL_Dollar'].min(),
-            
-            # Time-based analysis
-            'best_day': self.find_best_trading_day(),
-            'worst_day': self.find_worst_trading_day(),
-            'best_hour': self.find_best_trading_hour(),
-            'performance_by_month': self.calculate_monthly_returns()
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import our analytics module
+try:
+    from paper_trading_analytics import (
+        PaperTradingPortfolio,
+        calculate_portfolio_metrics,
+        get_performance_chart,
+        get_holdings_pie_chart
+    )
+except ImportError:
+    st.error("⚠️ Could not import paper_trading_analytics module. Please ensure it exists.")
+    PaperTradingPortfolio = None
+
+# Page config
+st.set_page_config(
+    page_title="Paper Trading - WealthIncome",
+    page_icon="🧾",
+    layout="wide"
+)
+
+st.title("🧾 Paper Trading")
+st.markdown("Practice trading strategies with virtual money before risking real capital")
+
+# Initialize portfolio in session state
+if 'paper_portfolio' not in st.session_state:
+    if PaperTradingPortfolio:
+        st.session_state.paper_portfolio = PaperTradingPortfolio()
+    else:
+        # Fallback if analytics module is missing
+        st.session_state.paper_portfolio = {
+            'cash': 100000.0,
+            'positions': {},
+            'trades': [],
+            'portfolio_history': []
         }
-        
-        return metrics
+
+# Sidebar configuration
+with st.sidebar:
+    st.markdown("### ⚙️ Paper Trading Settings")
     
-    def calculate_total_return(self):
-        """Calculate total return percentage"""
-        total_pnl = self.closed_trades['PnL_Dollar'].sum()
-        return (total_pnl / self.initial_capital) * 100
+    starting_capital = st.number_input(
+        "Starting Capital ($)",
+        min_value=1000,
+        max_value=1000000,
+        value=100000,
+        step=1000
+    )
     
-    def calculate_cagr(self):
-        """Calculate Compound Annual Growth Rate"""
-        if self.closed_trades.empty:
-            return 0
-            
-        first_trade = pd.to_datetime(self.closed_trades['Date_Opened'].min())
-        last_trade = pd.to_datetime(self.closed_trades['Date_Closed'].max())
-        years = (last_trade - first_trade).days / 365.25
-        
-        if years <= 0:
-            return 0
-            
-        ending_value = self.initial_capital + self.closed_trades['PnL_Dollar'].sum()
-        cagr = (pow(ending_value / self.initial_capital, 1 / years) - 1) * 100
-        
-        return cagr
-    
-    def calculate_sharpe_ratio(self, risk_free_rate=0.02):
-        """Calculate Sharpe Ratio (annualized)"""
-        if len(self.closed_trades) < 2:
-            return 0
-            
-        returns = self.closed_trades['PnL_Percent'].values / 100
-        
-        # Assuming daily returns, annualize
-        excess_returns = returns - (risk_free_rate / 252)
-        
-        if np.std(excess_returns) == 0:
-            return 0
-            
-        sharpe = np.sqrt(252) * (np.mean(excess_returns) / np.std(excess_returns))
-        return sharpe
-    
-    def calculate_sortino_ratio(self, risk_free_rate=0.02):
-        """Calculate Sortino Ratio (downside deviation)"""
-        if len(self.closed_trades) < 2:
-            return 0
-            
-        returns = self.closed_trades['PnL_Percent'].values / 100
-        excess_returns = returns - (risk_free_rate / 252)
-        
-        # Only consider negative returns for downside deviation
-        downside_returns = excess_returns[excess_returns < 0]
-        
-        if len(downside_returns) == 0 or np.std(downside_returns) == 0:
-            return float('inf') if np.mean(excess_returns) > 0 else 0
-            
-        sortino = np.sqrt(252) * (np.mean(excess_returns) / np.std(downside_returns))
-        return sortino
-    
-    def calculate_calmar_ratio(self):
-        """Calculate Calmar Ratio (CAGR / Max Drawdown)"""
-        cagr = self.calculate_cagr()
-        max_dd = abs(self.calculate_max_drawdown()['max_drawdown_pct'])
-        
-        if max_dd == 0:
-            return float('inf') if cagr > 0 else 0
-            
-        return cagr / max_dd
-    
-    def calculate_max_drawdown(self):
-        """Calculate maximum drawdown with details"""
-        if self.closed_trades.empty:
-            return {'max_drawdown': 0, 'max_drawdown_pct': 0, 'recovery_time': 0}
-            
-        # Calculate cumulative returns
-        self.closed_trades = self.closed_trades.sort_values('Date_Closed')
-        cumulative_pnl = self.closed_trades['PnL_Dollar'].cumsum()
-        cumulative_value = self.initial_capital + cumulative_pnl
-        
-        # Calculate running maximum
-        running_max = cumulative_value.expanding().max()
-        
-        # Calculate drawdown
-        drawdown = cumulative_value - running_max
-        drawdown_pct = (drawdown / running_max) * 100
-        
-        # Find maximum drawdown
-        max_dd_idx = drawdown.idxmin()
-        max_dd = drawdown.min()
-        max_dd_pct = drawdown_pct.min()
-        
-        # Calculate recovery time (if recovered)
-        if max_dd < 0:
-            peak_idx = running_max[:max_dd_idx].idxmax()
-            recovery_mask = cumulative_value[max_dd_idx:] >= running_max[peak_idx]
-            
-            if recovery_mask.any():
-                recovery_idx = recovery_mask.idxmax()
-                recovery_time = (pd.to_datetime(self.closed_trades.loc[recovery_idx, 'Date_Closed']) - 
-                               pd.to_datetime(self.closed_trades.loc[max_dd_idx, 'Date_Closed'])).days
-            else:
-                recovery_time = None  # Still in drawdown
+    if st.button("🔄 Reset Portfolio", type="secondary", use_container_width=True):
+        if PaperTradingPortfolio:
+            st.session_state.paper_portfolio = PaperTradingPortfolio(starting_capital)
         else:
-            recovery_time = 0
-            
-        return {
-            'max_drawdown': max_dd,
-            'max_drawdown_pct': max_dd_pct,
-            'recovery_time': recovery_time
-        }
+            st.session_state.paper_portfolio = {
+                'cash': starting_capital,
+                'positions': {},
+                'trades': [],
+                'portfolio_history': []
+            }
+        st.success("Portfolio reset!")
+        st.rerun()
     
-    def calculate_var(self, confidence_level=0.95):
-        """Calculate Value at Risk"""
-        if self.closed_trades.empty:
-            return 0
-            
-        returns = self.closed_trades['PnL_Dollar'].values
-        var = np.percentile(returns, (1 - confidence_level) * 100)
-        return var
+    st.markdown("---")
+    st.markdown("### 📊 Quick Stats")
     
-    def calculate_kelly_criterion(self):
-        """Calculate optimal position sizing using Kelly Criterion"""
-        if self.closed_trades.empty:
-            return 0
-            
-        wins = self.closed_trades[self.closed_trades['PnL_Dollar'] > 0]
-        losses = self.closed_trades[self.closed_trades['PnL_Dollar'] <= 0]
-        
-        if wins.empty or losses.empty:
-            return 0
-            
-        win_rate = len(wins) / len(self.closed_trades)
-        avg_win = wins['PnL_Dollar'].mean()
-        avg_loss = abs(losses['PnL_Dollar'].mean())
-        
-        if avg_loss == 0:
-            return 1.0  # Maximum position size
-            
-        # Kelly % = (p * b - q) / b
-        # where p = win rate, q = loss rate, b = avg win / avg loss
-        b = avg_win / avg_loss
-        kelly_pct = (win_rate * b - (1 - win_rate)) / b
-        
-        # Cap at 25% for safety
-        return min(max(kelly_pct, 0), 0.25)
+    # Calculate quick stats
+    if hasattr(st.session_state.paper_portfolio, 'get_total_value'):
+        total_value = st.session_state.paper_portfolio.get_total_value()
+        total_return = st.session_state.paper_portfolio.get_total_return()
+        win_rate = st.session_state.paper_portfolio.get_win_rate()
+    else:
+        # Fallback calculations
+        positions_value = sum(
+            pos.get('quantity', 0) * pos.get('current_price', 0) 
+            for pos in st.session_state.paper_portfolio.get('positions', {}).values()
+        )
+        total_value = st.session_state.paper_portfolio.get('cash', 0) + positions_value
+        total_return = ((total_value - starting_capital) / starting_capital) * 100
+        win_rate = 0.0
     
-    def calculate_profit_factor(self):
-        """Calculate profit factor"""
-        gross_profits = self.closed_trades[self.closed_trades['PnL_Dollar'] > 0]['PnL_Dollar'].sum()
-        gross_losses = abs(self.closed_trades[self.closed_trades['PnL_Dollar'] < 0]['PnL_Dollar'].sum())
-        
-        if gross_losses == 0:
-            return float('inf') if gross_profits > 0 else 0
-            
-        return gross_profits / gross_losses
+    st.metric("Win Rate", f"{win_rate:.1f}%")
+    st.metric("Total Trades", len(st.session_state.paper_portfolio.get('trades', [])))
+
+# Main content area
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Trade", "💼 Portfolio", "📊 Analytics", "📜 History"])
+
+# Tab 1: Trading Interface
+with tab1:
+    col1, col2 = st.columns([3, 2])
     
-    def calculate_expectancy(self):
-        """Calculate mathematical expectancy per trade"""
-        if self.closed_trades.empty:
-            return 0
+    with col1:
+        st.subheader("🎯 Place a Trade")
+        
+        # Stock selection and price display
+        symbol = st.text_input("Stock Symbol", value="AAPL").upper()
+        
+        # Fetch real-time price
+        current_price = 0.0
+        if symbol:
+            try:
+                ticker = yf.Ticker(symbol)
+                data = ticker.history(period="1d", interval="1m")
+                if not data.empty:
+                    current_price = data['Close'].iloc[-1]
+                    price_change = current_price - data['Open'].iloc[0]
+                    price_change_pct = (price_change / data['Open'].iloc[0]) * 100
+                    
+                    col_p1, col_p2, col_p3 = st.columns(3)
+                    with col_p1:
+                        st.metric("Current Price", f"${current_price:.2f}")
+                    with col_p2:
+                        st.metric("Change", f"${price_change:.2f}", f"{price_change_pct:+.2f}%")
+                    with col_p3:
+                        st.metric("Volume", f"{int(data['Volume'].sum()):,}")
+                else:
+                    st.warning(f"Could not fetch price for {symbol}")
+            except Exception as e:
+                st.error(f"Error fetching price: {str(e)}")
+                current_price = st.number_input("Enter price manually", min_value=0.01, value=100.0)
+        
+        # Trading form
+        with st.form("trade_form"):
+            col_t1, col_t2, col_t3 = st.columns(3)
             
-        return self.closed_trades['PnL_Dollar'].mean()
+            with col_t1:
+                action = st.selectbox("Action", ["BUY", "SELL"])
+            with col_t2:
+                quantity = st.number_input("Shares", min_value=1, value=10)
+            with col_t3:
+                if current_price > 0:
+                    st.metric("Total Value", f"${quantity * current_price:,.2f}")
+            
+            # Order type
+            order_type = st.radio("Order Type", ["Market", "Limit"], horizontal=True)
+            
+            if order_type == "Limit":
+                limit_price = st.number_input("Limit Price", min_value=0.01, value=current_price)
+            else:
+                limit_price = current_price
+            
+            # Stop loss and take profit
+            col_sl, col_tp = st.columns(2)
+            with col_sl:
+                use_stop_loss = st.checkbox("Set Stop Loss")
+                if use_stop_loss:
+                    stop_loss = st.number_input("Stop Loss Price", min_value=0.01, value=current_price * 0.95)
+            with col_tp:
+                use_take_profit = st.checkbox("Set Take Profit")
+                if use_take_profit:
+                    take_profit = st.number_input("Take Profit Price", min_value=0.01, value=current_price * 1.05)
+            
+            submit_trade = st.form_submit_button("Execute Trade", type="primary", use_container_width=True)
+            
+            if submit_trade and current_price > 0:
+                # Execute trade
+                if hasattr(st.session_state.paper_portfolio, 'execute_trade'):
+                    success, message = st.session_state.paper_portfolio.execute_trade(
+                        symbol=symbol,
+                        action=action,
+                        quantity=quantity,
+                        price=limit_price,
+                        stop_loss=stop_loss if use_stop_loss else None,
+                        take_profit=take_profit if use_take_profit else None
+                    )
+                    if success:
+                        st.success(message)
+                        st.balloons()
+                    else:
+                        st.error(message)
+                else:
+                    # Fallback execution
+                    total_cost = quantity * limit_price
+                    if action == "BUY":
+                        if total_cost <= st.session_state.paper_portfolio['cash']:
+                            st.session_state.paper_portfolio['cash'] -= total_cost
+                            st.success(f"Bought {quantity} shares of {symbol} at ${limit_price:.2f}")
+                        else:
+                            st.error("Insufficient funds!")
+                    else:
+                        st.error("Sell functionality requires analytics module")
+                
+                st.rerun()
     
-    def calculate_sqn(self):
-        """Calculate System Quality Number (Van Tharp)"""
-        if len(self.closed_trades) < 2:
-            return 0
-            
-        expectancy = self.calculate_expectancy()
-        std_dev = self.closed_trades['PnL_Dollar'].std()
-        
-        if std_dev == 0:
-            return 0
-            
-        sqn = np.sqrt(len(self.closed_trades)) * (expectancy / std_dev)
-        return sqn
+    with col2:
+        st.subheader("📊 Quick Chart")
+        if symbol and current_price > 0:
+            try:
+                # Fetch data for mini chart
+                ticker = yf.Ticker(symbol)
+                hist_data = ticker.history(period="5d", interval="30m")
+                
+                if not hist_data.empty:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=hist_data.index,
+                        y=hist_data['Close'],
+                        mode='lines',
+                        name=symbol,
+                        line=dict(color='#1f77b4', width=2)
+                    ))
+                    fig.update_layout(
+                        title=f"{symbol} - 5 Day",
+                        height=300,
+                        showlegend=False,
+                        margin=dict(l=0, r=0, t=30, b=0)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("Chart unavailable")
+
+# Tab 2: Portfolio Overview
+with tab2:
+    st.subheader("💼 Current Portfolio")
     
-    def calculate_edge_ratio(self):
-        """Calculate Edge Ratio (average win/loss vs probability)"""
-        if self.closed_trades.empty:
-            return 0
-            
-        wins = self.closed_trades[self.closed_trades['PnL_Dollar'] > 0]
-        losses = self.closed_trades[self.closed_trades['PnL_Dollar'] <= 0]
-        
-        if wins.empty or losses.empty:
-            return 0
-            
-        avg_win = wins['PnL_Dollar'].mean()
-        avg_loss = abs(losses['PnL_Dollar'].mean())
-        win_rate = len(wins) / len(self.closed_trades)
-        
-        if avg_loss == 0:
-            return float('inf')
-            
-        # Edge = (Average Win × Win%) - (Average Loss × Loss%)
-        edge = (avg_win * win_rate) - (avg_loss * (1 - win_rate))
-        edge_ratio = edge / avg_loss
-        
-        return edge_ratio
+    # Portfolio metrics
+    col1, col2, col3, col4 = st.columns(4)
     
-    def run_monte_carlo_simulation(self, num_simulations=10000, confidence=0.95):
-        """Run Monte Carlo simulation to project future performance"""
-        if self.closed_trades.empty:
-            return {'median': 0, 'lower_bound': 0, 'upper_bound': 0}
-            
-        trade_results = self.closed_trades['PnL_Dollar'].values
-        
-        final_values = []
-        for _ in range(num_simulations):
-            # Randomly sample trades with replacement
-            simulated_trades = np.random.choice(trade_results, size=len(trade_results), replace=True)
-            final_value = self.initial_capital + simulated_trades.sum()
-            final_values.append(final_value)
-        
-        # Calculate confidence intervals
-        lower_percentile = (1 - confidence) / 2 * 100
-        upper_percentile = (1 + confidence) / 2 * 100
-        
-        return {
-            'median': np.median(final_values),
-            'lower_bound': np.percentile(final_values, lower_percentile),
-            'upper_bound': np.percentile(final_values, upper_percentile),
-            'probability_of_profit': sum(1 for v in final_values if v > self.initial_capital) / num_simulations
-        }
+    if hasattr(st.session_state.paper_portfolio, 'cash'):
+        cash = st.session_state.paper_portfolio.cash
+        positions_value = st.session_state.paper_portfolio.get_positions_value()
+        total_value = st.session_state.paper_portfolio.get_total_value()
+        total_return = st.session_state.paper_portfolio.get_total_return()
+    else:
+        cash = st.session_state.paper_portfolio.get('cash', 0)
+        positions_value = sum(
+            pos.get('quantity', 0) * pos.get('current_price', 0) 
+            for pos in st.session_state.paper_portfolio.get('positions', {}).values()
+        )
+        total_value = cash + positions_value
+        total_return = ((total_value - starting_capital) / starting_capital) * 100
     
-    def calculate_t_statistic(self):
-        """Calculate t-statistic to determine if edge is statistically significant"""
-        if len(self.closed_trades) < 30:  # Need sufficient sample size
-            return {'t_stat': 0, 'p_value': 1, 'significant': False}
-            
-        returns = self.closed_trades['PnL_Dollar'].values
-        
-        # Test if mean return is significantly different from 0
-        t_stat, p_value = stats.ttest_1samp(returns, 0)
-        
-        return {
-            't_stat': t_stat,
-            'p_value': p_value,
-            'significant': p_value < 0.05,
-            'confidence': f"{(1 - p_value) * 100:.1f}%"
-        }
+    with col1:
+        st.metric("💵 Cash", f"${cash:,.2f}")
+    with col2:
+        st.metric("📊 Positions Value", f"${positions_value:,.2f}")
+    with col3:
+        st.metric("💰 Total Value", f"${total_value:,.2f}")
+    with col4:
+        st.metric("📈 Total Return", f"{total_return:+.2f}%", 
+                 f"${total_value - starting_capital:+,.2f}")
     
-    def calculate_avg_holding_time(self, result_type):
-        """Calculate average holding time for wins/losses"""
-        filtered = self.closed_trades[self.closed_trades['Result'] == result_type]
+    # Positions table
+    if hasattr(st.session_state.paper_portfolio, 'positions') and st.session_state.paper_portfolio.positions:
+        st.markdown("### 📊 Open Positions")
         
-        if filtered.empty or 'Hold_Time' not in filtered.columns:
-            return 0
+        positions_data = []
+        for symbol, pos in st.session_state.paper_portfolio.positions.items():
+            # Update current price
+            try:
+                ticker = yf.Ticker(symbol)
+                current = ticker.history(period="1d")['Close'].iloc[-1]
+                pos['current_price'] = current
+            except:
+                current = pos.get('current_price', pos['avg_price'])
             
-        return filtered['Hold_Time'].mean()
+            market_value = pos['quantity'] * current
+            profit_loss = (current - pos['avg_price']) * pos['quantity']
+            profit_loss_pct = ((current - pos['avg_price']) / pos['avg_price']) * 100
+            
+            positions_data.append({
+                'Symbol': symbol,
+                'Shares': pos['quantity'],
+                'Avg Cost': f"${pos['avg_price']:.2f}",
+                'Current': f"${current:.2f}",
+                'Market Value': f"${market_value:,.2f}",
+                'P&L': f"${profit_loss:+,.2f}",
+                'P&L %': f"{profit_loss_pct:+.2f}%",
+                'Stop Loss': f"${pos.get('stop_loss', 0):.2f}" if pos.get('stop_loss') else '-',
+                'Take Profit': f"${pos.get('take_profit', 0):.2f}" if pos.get('take_profit') else '-'
+            })
+        
+        df_positions = pd.DataFrame(positions_data)
+        st.dataframe(
+            df_positions,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "P&L": st.column_config.TextColumn("P&L", help="Profit/Loss"),
+                "P&L %": st.column_config.TextColumn("P&L %", help="Profit/Loss Percentage")
+            }
+        )
+        
+        # Portfolio composition pie chart
+        if get_holdings_pie_chart:
+            fig_pie = get_holdings_pie_chart(st.session_state.paper_portfolio)
+            if fig_pie:
+                st.plotly_chart(fig_pie, use_container_width=True)
+    else:
+        st.info("No open positions. Start trading to build your portfolio!")
+
+# Tab 3: Analytics
+with tab3:
+    st.subheader("📊 Performance Analytics")
     
-    def calculate_win_loss_ratio(self):
-        """Calculate win/loss size ratio"""
-        wins = self.closed_trades[self.closed_trades['PnL_Dollar'] > 0]
-        losses = self.closed_trades[self.closed_trades['PnL_Dollar'] < 0]
-        
-        if wins.empty or losses.empty:
-            return 0
+    if hasattr(st.session_state.paper_portfolio, 'trades') and st.session_state.paper_portfolio.trades:
+        # Performance metrics
+        if calculate_portfolio_metrics:
+            metrics = calculate_portfolio_metrics(st.session_state.paper_portfolio)
             
-        avg_win = wins['PnL_Dollar'].mean()
-        avg_loss = abs(losses['PnL_Dollar'].mean())
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Sharpe Ratio", f"{metrics.get('sharpe_ratio', 0):.2f}")
+                st.metric("Win Rate", f"{metrics.get('win_rate', 0):.1f}%")
+            with col2:
+                st.metric("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
+                st.metric("Avg Win", f"${metrics.get('avg_win', 0):.2f}")
+            with col3:
+                st.metric("Max Drawdown", f"{metrics.get('max_drawdown', 0):.1f}%")
+                st.metric("Avg Loss", f"${metrics.get('avg_loss', 0):.2f}")
+            with col4:
+                st.metric("Total Trades", metrics.get('total_trades', 0))
+                st.metric("Best Trade", f"${metrics.get('best_trade', 0):.2f}")
         
-        if avg_loss == 0:
-            return float('inf')
-            
-        return avg_win / avg_loss
+        # Performance chart
+        if get_performance_chart:
+            fig_performance = get_performance_chart(st.session_state.paper_portfolio)
+            if fig_performance:
+                st.plotly_chart(fig_performance, use_container_width=True)
+        
+        # Trade distribution
+        st.markdown("### 📊 Trade Analysis")
+        
+        # P&L distribution histogram
+        if hasattr(st.session_state.paper_portfolio, 'get_trade_pnls'):
+            pnls = st.session_state.paper_portfolio.get_trade_pnls()
+            if pnls:
+                fig_hist = px.histogram(
+                    x=pnls,
+                    nbins=20,
+                    title="Profit/Loss Distribution",
+                    labels={'x': 'Profit/Loss ($)', 'y': 'Number of Trades'}
+                )
+                fig_hist.add_vline(x=0, line_dash="dash", line_color="red")
+                st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("No trades yet. Start trading to see analytics!")
+
+# Tab 4: Trade History
+with tab4:
+    st.subheader("📜 Trade History")
     
-    def find_best_trading_day(self):
-        """Find most profitable day of week"""
-        if self.closed_trades.empty:
-            return "N/A"
-            
-        self.closed_trades['DayOfWeek'] = pd.to_datetime(self.closed_trades['Date_Opened']).dt.day_name()
-        daily_pnl = self.closed_trades.groupby('DayOfWeek')['PnL_Dollar'].sum()
+    if hasattr(st.session_state.paper_portfolio, 'trades') and st.session_state.paper_portfolio.trades:
+        # Create DataFrame from trades
+        trades_data = []
+        for trade in reversed(st.session_state.paper_portfolio.trades[-50:]):  # Last 50 trades
+            trades_data.append({
+                'Time': datetime.fromisoformat(trade['timestamp']).strftime('%Y-%m-%d %H:%M'),
+                'Symbol': trade['symbol'],
+                'Action': trade['action'],
+                'Shares': trade['quantity'],
+                'Price': f"${trade['price']:.2f}",
+                'Total': f"${trade['total']:.2f}",
+                'P&L': f"${trade.get('pnl', 0):+.2f}" if trade.get('pnl') else '-',
+                'Status': trade.get('status', 'Executed')
+            })
         
-        if daily_pnl.empty:
-            return "N/A"
-            
-        return daily_pnl.idxmax()
-    
-    def find_worst_trading_day(self):
-        """Find least profitable day of week"""
-        if self.closed_trades.empty:
-            return "N/A"
-            
-        self.closed_trades['DayOfWeek'] = pd.to_datetime(self.closed_trades['Date_Opened']).dt.day_name()
-        daily_pnl = self.closed_trades.groupby('DayOfWeek')['PnL_Dollar'].sum()
+        df_trades = pd.DataFrame(trades_data)
         
-        if daily_pnl.empty:
-            return "N/A"
-            
-        return daily_pnl.idxmin()
-    
-    def find_best_trading_hour(self):
-        """Find most profitable hour of day"""
-        if self.closed_trades.empty:
-            return "N/A"
-            
-        self.closed_trades['Hour'] = pd.to_datetime(self.closed_trades['Date_Opened']).dt.hour
-        hourly_pnl = self.closed_trades.groupby('Hour')['PnL_Dollar'].sum()
+        # Add filters
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filter_symbol = st.selectbox(
+                "Filter by Symbol",
+                ["All"] + list(set(trade['symbol'] for trade in st.session_state.paper_portfolio.trades))
+            )
+        with col2:
+            filter_action = st.selectbox("Filter by Action", ["All", "BUY", "SELL"])
+        with col3:
+            filter_status = st.selectbox("Filter by Status", ["All", "Executed", "Pending", "Cancelled"])
         
-        if hourly_pnl.empty:
-            return "N/A"
-            
-        best_hour = hourly_pnl.idxmax()
-        return f"{best_hour}:00-{best_hour+1}:00"
-    
-    def calculate_monthly_returns(self):
-        """Calculate returns by month"""
-        if self.closed_trades.empty:
-            return {}
-            
-        self.closed_trades['Month'] = pd.to_datetime(self.closed_trades['Date_Closed']).dt.to_period('M')
-        monthly_returns = self.closed_trades.groupby('Month')['PnL_Dollar'].sum()
+        # Apply filters
+        if filter_symbol != "All":
+            df_trades = df_trades[df_trades['Symbol'] == filter_symbol]
+        if filter_action != "All":
+            df_trades = df_trades[df_trades['Action'] == filter_action]
+        if filter_status != "All":
+            df_trades = df_trades[df_trades['Status'] == filter_status]
         
-        return monthly_returns.to_dict()
-    
-    def generate_performance_report(self):
-        """Generate comprehensive performance report"""
-        metrics = self.calculate_advanced_metrics()
+        st.dataframe(df_trades, use_container_width=True, hide_index=True)
         
-        report = f"""
-        PROFESSIONAL TRADING PERFORMANCE REPORT
-        =====================================
-        
-        SUMMARY STATISTICS
-        ------------------
-        Total Trades: {metrics['total_trades']}
-        Winning Trades: {metrics['winning_trades']}
-        Losing Trades: {metrics['losing_trades']}
-        Win Rate: {(metrics['winning_trades'] / metrics['total_trades'] * 100):.1f}%
-        
-        RETURNS ANALYSIS
-        ----------------
-        Total Return: {metrics['total_return']:.2f}%
-        CAGR: {metrics['cagr']:.2f}%
-        Sharpe Ratio: {metrics['sharpe_ratio']:.2f}
-        Sortino Ratio: {metrics['sortino_ratio']:.2f}
-        Calmar Ratio: {metrics['calmar_ratio']:.2f}
-        
-        RISK METRICS
-        ------------
-        Maximum Drawdown: {metrics['max_drawdown']:.2f} ({metrics['max_drawdown']:.1f}%)
-        95% VaR: ${metrics['var_95']:.2f}
-        99% VaR: ${metrics['var_99']:.2f}
-        Kelly Criterion: {metrics['kelly_criterion']*100:.1f}%
-        
-        PERFORMANCE METRICS
-        -------------------
-        Profit Factor: {metrics['profit_factor']:.2f}
-        Expectancy: ${metrics['expectancy']:.2f}
-        SQN: {metrics['sqn']:.2f}
-        Edge Ratio: {metrics['edge_ratio']:.2f}
-        
-        STATISTICAL SIGNIFICANCE
-        ------------------------
-        T-Statistic: {metrics['t_statistic']:.2f}
-        Monte Carlo 95% CI: ${metrics['monte_carlo_95']['lower_bound']:.2f} - ${metrics['monte_carlo_95']['upper_bound']:.2f}
-        
-        BEHAVIORAL ANALYSIS
-        -------------------
-        Avg Winner Hold Time: {metrics['avg_winner_holding']:.1f} hours
-        Avg Loser Hold Time: {metrics['avg_loser_holding']:.1f} hours
-        Win/Loss Size Ratio: {metrics['win_loss_ratio']:.2f}
-        
-        Best Trading Day: {metrics['best_day']}
-        Worst Trading Day: {metrics['worst_day']}
-        Best Trading Hour: {metrics['best_hour']}
-        
-        SYSTEM QUALITY
-        --------------
-        {'⭐⭐⭐⭐⭐ Superb (SQN > 3.0)' if metrics['sqn'] > 3 else 
-         '⭐⭐⭐⭐ Excellent (SQN 2.5-3.0)' if metrics['sqn'] > 2.5 else
-         '⭐⭐⭐ Good (SQN 2.0-2.5)' if metrics['sqn'] > 2 else
-         '⭐⭐ Average (SQN 1.6-2.0)' if metrics['sqn'] > 1.6 else
-         '⭐ Below Average (SQN < 1.6)'}
-        """
-        
-        return report
+        # Export functionality
+        if st.button("📥 Export Trade History"):
+            csv = df_trades.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"paper_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+    else:
+        st.info("No trades yet. Start trading to build your history!")
+
+# Footer
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: gray;'>
+        Paper Trading Mode | Not Real Money | Practice Safely
+    </div>
+    """,
+    unsafe_allow_html=True
+)
