@@ -10,7 +10,7 @@ import os
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import our analytics module
+# Try to import our analytics module
 try:
     from paper_trading_analytics import (
         PaperTradingPortfolio,
@@ -18,8 +18,10 @@ try:
         get_performance_chart,
         get_holdings_pie_chart
     )
+    ANALYTICS_AVAILABLE = True
 except ImportError:
-    st.error("⚠️ Could not import paper_trading_analytics module. Please ensure it exists.")
+    st.warning("⚠️ Paper Trading Analytics module not found. Running in basic mode.")
+    ANALYTICS_AVAILABLE = False
     PaperTradingPortfolio = None
 
 # Page config
@@ -34,16 +36,59 @@ st.markdown("Practice trading strategies with virtual money before risking real 
 
 # Initialize portfolio in session state
 if 'paper_portfolio' not in st.session_state:
-    if PaperTradingPortfolio:
+    if ANALYTICS_AVAILABLE and PaperTradingPortfolio:
         st.session_state.paper_portfolio = PaperTradingPortfolio()
+        st.session_state.portfolio_type = 'advanced'
     else:
-        # Fallback if analytics module is missing
+        # Fallback dictionary-based portfolio
         st.session_state.paper_portfolio = {
             'cash': 100000.0,
             'positions': {},
             'trades': [],
-            'portfolio_history': []
+            'portfolio_history': [],
+            'starting_capital': 100000.0
         }
+        st.session_state.portfolio_type = 'basic'
+
+# Helper functions for basic mode
+def get_portfolio_value():
+    """Get total portfolio value for basic mode"""
+    if st.session_state.portfolio_type == 'advanced':
+        return st.session_state.paper_portfolio.get_total_value()
+    else:
+        positions_value = sum(
+            pos.get('quantity', 0) * pos.get('current_price', pos.get('avg_price', 0)) 
+            for pos in st.session_state.paper_portfolio.get('positions', {}).values()
+        )
+        return st.session_state.paper_portfolio.get('cash', 0) + positions_value
+
+def get_total_return():
+    """Get total return for basic mode"""
+    if st.session_state.portfolio_type == 'advanced':
+        return st.session_state.paper_portfolio.get_total_return()
+    else:
+        total_value = get_portfolio_value()
+        starting_capital = st.session_state.paper_portfolio.get('starting_capital', 100000)
+        return ((total_value - starting_capital) / starting_capital) * 100
+
+def get_win_rate():
+    """Get win rate for basic mode"""
+    if st.session_state.portfolio_type == 'advanced':
+        return st.session_state.paper_portfolio.get_win_rate()
+    else:
+        trades = st.session_state.paper_portfolio.get('trades', [])
+        sell_trades = [t for t in trades if t.get('action') == 'SELL' and 'pnl' in t]
+        if not sell_trades:
+            return 0.0
+        winning_trades = [t for t in sell_trades if t.get('pnl', 0) > 0]
+        return (len(winning_trades) / len(sell_trades)) * 100 if sell_trades else 0
+
+def get_trades_count():
+    """Get number of trades"""
+    if st.session_state.portfolio_type == 'advanced':
+        return len(st.session_state.paper_portfolio.trades)
+    else:
+        return len(st.session_state.paper_portfolio.get('trades', []))
 
 # Sidebar configuration
 with st.sidebar:
@@ -58,15 +103,18 @@ with st.sidebar:
     )
     
     if st.button("🔄 Reset Portfolio", type="secondary", use_container_width=True):
-        if PaperTradingPortfolio:
+        if ANALYTICS_AVAILABLE and PaperTradingPortfolio:
             st.session_state.paper_portfolio = PaperTradingPortfolio(starting_capital)
+            st.session_state.portfolio_type = 'advanced'
         else:
             st.session_state.paper_portfolio = {
                 'cash': starting_capital,
                 'positions': {},
                 'trades': [],
-                'portfolio_history': []
+                'portfolio_history': [],
+                'starting_capital': starting_capital
             }
+            st.session_state.portfolio_type = 'basic'
         st.success("Portfolio reset!")
         st.rerun()
     
@@ -74,22 +122,11 @@ with st.sidebar:
     st.markdown("### 📊 Quick Stats")
     
     # Calculate quick stats
-    if hasattr(st.session_state.paper_portfolio, 'get_total_value'):
-        total_value = st.session_state.paper_portfolio.get_total_value()
-        total_return = st.session_state.paper_portfolio.get_total_return()
-        win_rate = st.session_state.paper_portfolio.get_win_rate()
-    else:
-        # Fallback calculations
-        positions_value = sum(
-            pos.get('quantity', 0) * pos.get('current_price', 0) 
-            for pos in st.session_state.paper_portfolio.get('positions', {}).values()
-        )
-        total_value = st.session_state.paper_portfolio.get('cash', 0) + positions_value
-        total_return = ((total_value - starting_capital) / starting_capital) * 100
-        win_rate = 0.0
+    win_rate = get_win_rate()
+    trades_count = get_trades_count()
     
     st.metric("Win Rate", f"{win_rate:.1f}%")
-    st.metric("Total Trades", len(st.session_state.paper_portfolio.get('trades', [])))
+    st.metric("Total Trades", trades_count)
 
 # Main content area
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Trade", "💼 Portfolio", "📊 Analytics", "📜 History"])
@@ -124,8 +161,9 @@ with tab1:
                         st.metric("Volume", f"{int(data['Volume'].sum()):,}")
                 else:
                     st.warning(f"Could not fetch price for {symbol}")
+                    current_price = st.number_input("Enter price manually", min_value=0.01, value=100.0)
             except Exception as e:
-                st.error(f"Error fetching price: {str(e)}")
+                st.info(f"Could not fetch live price. Enter manually below.")
                 current_price = st.number_input("Enter price manually", min_value=0.01, value=100.0)
         
         # Trading form
@@ -148,29 +186,37 @@ with tab1:
             else:
                 limit_price = current_price
             
-            # Stop loss and take profit
-            col_sl, col_tp = st.columns(2)
-            with col_sl:
-                use_stop_loss = st.checkbox("Set Stop Loss")
-                if use_stop_loss:
-                    stop_loss = st.number_input("Stop Loss Price", min_value=0.01, value=current_price * 0.95)
-            with col_tp:
-                use_take_profit = st.checkbox("Set Take Profit")
-                if use_take_profit:
-                    take_profit = st.number_input("Take Profit Price", min_value=0.01, value=current_price * 1.05)
+            # Stop loss and take profit (only in advanced mode)
+            if ANALYTICS_AVAILABLE:
+                col_sl, col_tp = st.columns(2)
+                with col_sl:
+                    use_stop_loss = st.checkbox("Set Stop Loss")
+                    if use_stop_loss:
+                        stop_loss = st.number_input("Stop Loss Price", min_value=0.01, value=current_price * 0.95)
+                    else:
+                        stop_loss = None
+                with col_tp:
+                    use_take_profit = st.checkbox("Set Take Profit")
+                    if use_take_profit:
+                        take_profit = st.number_input("Take Profit Price", min_value=0.01, value=current_price * 1.05)
+                    else:
+                        take_profit = None
+            else:
+                stop_loss = None
+                take_profit = None
             
             submit_trade = st.form_submit_button("Execute Trade", type="primary", use_container_width=True)
             
             if submit_trade and current_price > 0:
                 # Execute trade
-                if hasattr(st.session_state.paper_portfolio, 'execute_trade'):
+                if st.session_state.portfolio_type == 'advanced':
                     success, message = st.session_state.paper_portfolio.execute_trade(
                         symbol=symbol,
                         action=action,
                         quantity=quantity,
                         price=limit_price,
-                        stop_loss=stop_loss if use_stop_loss else None,
-                        take_profit=take_profit if use_take_profit else None
+                        stop_loss=stop_loss,
+                        take_profit=take_profit
                     )
                     if success:
                         st.success(message)
@@ -178,16 +224,78 @@ with tab1:
                     else:
                         st.error(message)
                 else:
-                    # Fallback execution
+                    # Basic mode execution
                     total_cost = quantity * limit_price
+                    portfolio = st.session_state.paper_portfolio
+                    
                     if action == "BUY":
-                        if total_cost <= st.session_state.paper_portfolio['cash']:
-                            st.session_state.paper_portfolio['cash'] -= total_cost
-                            st.success(f"Bought {quantity} shares of {symbol} at ${limit_price:.2f}")
+                        if total_cost <= portfolio['cash']:
+                            portfolio['cash'] -= total_cost
+                            
+                            # Update or create position
+                            if symbol in portfolio['positions']:
+                                pos = portfolio['positions'][symbol]
+                                new_quantity = pos['quantity'] + quantity
+                                new_avg_price = ((pos['quantity'] * pos['avg_price']) + (quantity * limit_price)) / new_quantity
+                                portfolio['positions'][symbol] = {
+                                    'quantity': new_quantity,
+                                    'avg_price': new_avg_price,
+                                    'current_price': limit_price
+                                }
+                            else:
+                                portfolio['positions'][symbol] = {
+                                    'quantity': quantity,
+                                    'avg_price': limit_price,
+                                    'current_price': limit_price
+                                }
+                            
+                            # Record trade
+                            trade = {
+                                'timestamp': datetime.now().isoformat(),
+                                'symbol': symbol,
+                                'action': action,
+                                'quantity': quantity,
+                                'price': limit_price,
+                                'total': total_cost
+                            }
+                            portfolio['trades'].append(trade)
+                            
+                            st.success(f"✅ Bought {quantity} shares of {symbol} at ${limit_price:.2f}")
+                            st.balloons()
                         else:
-                            st.error("Insufficient funds!")
-                    else:
-                        st.error("Sell functionality requires analytics module")
+                            st.error(f"Insufficient funds! Need ${total_cost:.2f}, have ${portfolio['cash']:.2f}")
+                    else:  # SELL
+                        if symbol in portfolio['positions'] and portfolio['positions'][symbol]['quantity'] >= quantity:
+                            pos = portfolio['positions'][symbol]
+                            
+                            # Calculate P&L
+                            pnl = (limit_price - pos['avg_price']) * quantity
+                            pnl_pct = ((limit_price - pos['avg_price']) / pos['avg_price']) * 100
+                            
+                            # Update position
+                            portfolio['cash'] += total_cost
+                            pos['quantity'] -= quantity
+                            
+                            if pos['quantity'] == 0:
+                                del portfolio['positions'][symbol]
+                            
+                            # Record trade
+                            trade = {
+                                'timestamp': datetime.now().isoformat(),
+                                'symbol': symbol,
+                                'action': action,
+                                'quantity': quantity,
+                                'price': limit_price,
+                                'total': total_cost,
+                                'pnl': pnl,
+                                'pnl_pct': pnl_pct
+                            }
+                            portfolio['trades'].append(trade)
+                            
+                            st.success(f"✅ Sold {quantity} shares of {symbol} at ${limit_price:.2f} (P&L: ${pnl:+.2f})")
+                            st.balloons()
+                        else:
+                            st.error(f"Insufficient shares or no position in {symbol}")
                 
                 st.rerun()
     
@@ -225,19 +333,24 @@ with tab2:
     # Portfolio metrics
     col1, col2, col3, col4 = st.columns(4)
     
-    if hasattr(st.session_state.paper_portfolio, 'cash'):
+    # Get values based on portfolio type
+    if st.session_state.portfolio_type == 'advanced':
         cash = st.session_state.paper_portfolio.cash
         positions_value = st.session_state.paper_portfolio.get_positions_value()
         total_value = st.session_state.paper_portfolio.get_total_value()
         total_return = st.session_state.paper_portfolio.get_total_return()
+        positions = st.session_state.paper_portfolio.positions
     else:
-        cash = st.session_state.paper_portfolio.get('cash', 0)
+        portfolio = st.session_state.paper_portfolio
+        cash = portfolio.get('cash', 0)
+        positions = portfolio.get('positions', {})
         positions_value = sum(
-            pos.get('quantity', 0) * pos.get('current_price', 0) 
-            for pos in st.session_state.paper_portfolio.get('positions', {}).values()
+            pos.get('quantity', 0) * pos.get('current_price', pos.get('avg_price', 0)) 
+            for pos in positions.values()
         )
         total_value = cash + positions_value
-        total_return = ((total_value - starting_capital) / starting_capital) * 100
+        starting_cap = portfolio.get('starting_capital', 100000)
+        total_return = ((total_value - starting_cap) / starting_cap) * 100
     
     with col1:
         st.metric("💵 Cash", f"${cash:,.2f}")
@@ -246,15 +359,14 @@ with tab2:
     with col3:
         st.metric("💰 Total Value", f"${total_value:,.2f}")
     with col4:
-        st.metric("📈 Total Return", f"{total_return:+.2f}%", 
-                 f"${total_value - starting_capital:+,.2f}")
+        st.metric("📈 Total Return", f"{total_return:+.2f}%")
     
     # Positions table
-    if hasattr(st.session_state.paper_portfolio, 'positions') and st.session_state.paper_portfolio.positions:
+    if positions:
         st.markdown("### 📊 Open Positions")
         
         positions_data = []
-        for symbol, pos in st.session_state.paper_portfolio.positions.items():
+        for symbol, pos in positions.items():
             # Update current price
             try:
                 ticker = yf.Ticker(symbol)
@@ -274,24 +386,18 @@ with tab2:
                 'Current': f"${current:.2f}",
                 'Market Value': f"${market_value:,.2f}",
                 'P&L': f"${profit_loss:+,.2f}",
-                'P&L %': f"{profit_loss_pct:+.2f}%",
-                'Stop Loss': f"${pos.get('stop_loss', 0):.2f}" if pos.get('stop_loss') else '-',
-                'Take Profit': f"${pos.get('take_profit', 0):.2f}" if pos.get('take_profit') else '-'
+                'P&L %': f"{profit_loss_pct:+.2f}%"
             })
+            
+            if st.session_state.portfolio_type == 'advanced':
+                positions_data[-1]['Stop Loss'] = f"${pos.get('stop_loss', 0):.2f}" if pos.get('stop_loss') else '-'
+                positions_data[-1]['Take Profit'] = f"${pos.get('take_profit', 0):.2f}" if pos.get('take_profit') else '-'
         
         df_positions = pd.DataFrame(positions_data)
-        st.dataframe(
-            df_positions,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "P&L": st.column_config.TextColumn("P&L", help="Profit/Loss"),
-                "P&L %": st.column_config.TextColumn("P&L %", help="Profit/Loss Percentage")
-            }
-        )
+        st.dataframe(df_positions, use_container_width=True, hide_index=True)
         
-        # Portfolio composition pie chart
-        if get_holdings_pie_chart:
+        # Portfolio pie chart (if available)
+        if ANALYTICS_AVAILABLE and get_holdings_pie_chart:
             fig_pie = get_holdings_pie_chart(st.session_state.paper_portfolio)
             if fig_pie:
                 st.plotly_chart(fig_pie, use_container_width=True)
@@ -302,9 +408,11 @@ with tab2:
 with tab3:
     st.subheader("📊 Performance Analytics")
     
-    if hasattr(st.session_state.paper_portfolio, 'trades') and st.session_state.paper_portfolio.trades:
-        # Performance metrics
-        if calculate_portfolio_metrics:
+    trades = st.session_state.paper_portfolio.trades if st.session_state.portfolio_type == 'advanced' else st.session_state.paper_portfolio.get('trades', [])
+    
+    if trades:
+        if ANALYTICS_AVAILABLE and calculate_portfolio_metrics and st.session_state.portfolio_type == 'advanced':
+            # Advanced analytics
             metrics = calculate_portfolio_metrics(st.session_state.paper_portfolio)
             
             col1, col2, col3, col4 = st.columns(4)
@@ -320,28 +428,23 @@ with tab3:
             with col4:
                 st.metric("Total Trades", metrics.get('total_trades', 0))
                 st.metric("Best Trade", f"${metrics.get('best_trade', 0):.2f}")
-        
-        # Performance chart
-        if get_performance_chart:
-            fig_performance = get_performance_chart(st.session_state.paper_portfolio)
-            if fig_performance:
-                st.plotly_chart(fig_performance, use_container_width=True)
-        
-        # Trade distribution
-        st.markdown("### 📊 Trade Analysis")
-        
-        # P&L distribution histogram
-        if hasattr(st.session_state.paper_portfolio, 'get_trade_pnls'):
-            pnls = st.session_state.paper_portfolio.get_trade_pnls()
-            if pnls:
-                fig_hist = px.histogram(
-                    x=pnls,
-                    nbins=20,
-                    title="Profit/Loss Distribution",
-                    labels={'x': 'Profit/Loss ($)', 'y': 'Number of Trades'}
-                )
-                fig_hist.add_vline(x=0, line_dash="dash", line_color="red")
-                st.plotly_chart(fig_hist, use_container_width=True)
+            
+            # Performance chart
+            if get_performance_chart:
+                fig_performance = get_performance_chart(st.session_state.paper_portfolio)
+                if fig_performance:
+                    st.plotly_chart(fig_performance, use_container_width=True)
+        else:
+            # Basic analytics
+            st.info("Advanced analytics require the paper_trading_analytics module. Showing basic stats.")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Trades", len(trades))
+            with col2:
+                st.metric("Win Rate", f"{get_win_rate():.1f}%")
+            with col3:
+                st.metric("Total Return", f"{get_total_return():.2f}%")
     else:
         st.info("No trades yet. Start trading to see analytics!")
 
@@ -349,10 +452,12 @@ with tab3:
 with tab4:
     st.subheader("📜 Trade History")
     
-    if hasattr(st.session_state.paper_portfolio, 'trades') and st.session_state.paper_portfolio.trades:
+    trades = st.session_state.paper_portfolio.trades if st.session_state.portfolio_type == 'advanced' else st.session_state.paper_portfolio.get('trades', [])
+    
+    if trades:
         # Create DataFrame from trades
         trades_data = []
-        for trade in reversed(st.session_state.paper_portfolio.trades[-50:]):  # Last 50 trades
+        for trade in reversed(trades[-50:]):  # Last 50 trades
             trades_data.append({
                 'Time': datetime.fromisoformat(trade['timestamp']).strftime('%Y-%m-%d %H:%M'),
                 'Symbol': trade['symbol'],
@@ -360,32 +465,10 @@ with tab4:
                 'Shares': trade['quantity'],
                 'Price': f"${trade['price']:.2f}",
                 'Total': f"${trade['total']:.2f}",
-                'P&L': f"${trade.get('pnl', 0):+.2f}" if trade.get('pnl') else '-',
-                'Status': trade.get('status', 'Executed')
+                'P&L': f"${trade.get('pnl', 0):+.2f}" if trade.get('pnl') is not None else '-'
             })
         
         df_trades = pd.DataFrame(trades_data)
-        
-        # Add filters
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            filter_symbol = st.selectbox(
-                "Filter by Symbol",
-                ["All"] + list(set(trade['symbol'] for trade in st.session_state.paper_portfolio.trades))
-            )
-        with col2:
-            filter_action = st.selectbox("Filter by Action", ["All", "BUY", "SELL"])
-        with col3:
-            filter_status = st.selectbox("Filter by Status", ["All", "Executed", "Pending", "Cancelled"])
-        
-        # Apply filters
-        if filter_symbol != "All":
-            df_trades = df_trades[df_trades['Symbol'] == filter_symbol]
-        if filter_action != "All":
-            df_trades = df_trades[df_trades['Action'] == filter_action]
-        if filter_status != "All":
-            df_trades = df_trades[df_trades['Status'] == filter_status]
-        
         st.dataframe(df_trades, use_container_width=True, hide_index=True)
         
         # Export functionality
