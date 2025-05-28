@@ -15,7 +15,7 @@ else:
     ])
 
 # ---- Streamlit UI ----
-st.title("📊 Paper Trading Agent")
+st.title("🧾 Paper Trading Agent")
 
 st.subheader("➕ Add a Simulated Trade")
 ticker = st.text_input("Ticker (e.g. AAPL)", "AAPL")
