@@ -29,22 +29,99 @@ class DataManager:
     """Manages all data operations across the platform"""
     
     def __init__(self):
-        self.cache_dir = Path("data/cache")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.use_ai_sentiment_dm = False
+    # Update the cache directory path
+    self.cache_dir = Path("data/cache")
+    # Ensure the directory exists on initialization
+    self.cache_dir.mkdir(parents=True, exist_ok=True)
+    self.use_ai_sentiment_dm = False
+    
+    # Also create persistent directory if needed
+    self.persistent_dir = Path("data/persistent")
+    self.persistent_dir.mkdir(parents=True, exist_ok=True)
 
-        if OPENAI_INSTALLED_DM:
-            openai_api_key_from_secrets = st.secrets.get("OPENAI_API_KEY")
-            if openai_api_key_from_secrets:
-                try:
-                    global openai_client_dm
-                    openai_client_dm = openai.OpenAI(api_key=openai_api_key_from_secrets)
-                    self.use_ai_sentiment_dm = True
-                except openai.AuthenticationError as auth_err:
-                    global OPENAI_AUTH_ERROR_MESSAGE_DM
-                    OPENAI_AUTH_ERROR_MESSAGE_DM = f"DM OpenAI AuthError: {auth_err}. Basic sentiment will be used."
-                except Exception as e_client_init:
-                    pass
+    # ... rest of init code ...
+
+def add_trade_entry(self, trade):
+    """Add a trade to the journal"""
+    journal = self.get_trade_journal()
+    trade['timestamp'] = datetime.now().isoformat()
+    journal.append(trade)
+    
+    try:
+        # Double-check directory exists
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        journal_file = self.cache_dir / "trade_journal.json"
+        
+        # Debug logging
+        print(f"Attempting to save to: {journal_file.absolute()}")
+        
+        # Write with proper error handling
+        with open(journal_file, 'w') as f:
+            json.dump(journal, f, indent=2, default=str)  # default=str handles datetime serialization
+        
+        print(f"Successfully saved {len(journal)} trades")
+        return True
+        
+    except PermissionError as e:
+        print(f"Permission error saving trade journal: {e}")
+        st.error("Permission denied. Check file permissions for data/cache directory.")
+        return False
+    except Exception as e:
+        print(f"Error saving trade journal: {e}")
+        st.error(f"Failed to save trade: {str(e)}")
+        return False
+
+def add_trade_with_context(self, trade_data):
+    """Add trade with additional context"""
+    # Ensure all required fields are present
+    required_fields = ['ticker', 'entry_price', 'shares']
+    
+    for field in required_fields:
+        if field not in trade_data:
+            print(f"Missing required field: {field}")
+            return False
+    
+    # Add timestamp if not present
+    if 'timestamp' not in trade_data:
+        trade_data['timestamp'] = datetime.now().isoformat()
+    
+    # Convert any numpy/pandas types to Python native types
+    for key, value in trade_data.items():
+        if hasattr(value, 'item'):  # numpy types
+            trade_data[key] = value.item()
+        elif pd and isinstance(value, pd.Timestamp):  # pandas timestamp
+            trade_data[key] = value.isoformat()
+    
+    # Add trade to journal
+    return self.add_trade_entry(trade_data)
+
+def get_trade_journal(self):
+    """Get trade journal entries"""
+    journal_file = self.cache_dir / "trade_journal.json"
+    
+    # Create empty file if it doesn't exist
+    if not journal_file.exists():
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            with open(journal_file, 'w') as f:
+                json.dump([], f)
+            print(f"Created new trade journal at: {journal_file}")
+        except Exception as e:
+            print(f"Error creating trade journal: {e}")
+            return []
+    
+    # Read existing journal
+    try:
+        with open(journal_file, 'r') as f:
+            journal = json.load(f)
+            return journal
+    except json.JSONDecodeError:
+        print("Corrupted trade journal, returning empty list")
+        return []
+    except Exception as e:
+        print(f"Error reading trade journal: {e}")
+        return []
 
     @st.cache_data(ttl=300)
     def get_stock_data(_self, tickers, period="1mo"):
