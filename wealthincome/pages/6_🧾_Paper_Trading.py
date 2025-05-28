@@ -3,6 +3,15 @@ import pandas as pd
 import datetime
 import os
 
+# Prefill if values exist
+prefill_ticker = st.session_state.get("prefill_ticker", "")
+prefill_entry = st.session_state.get("prefill_entry", 100.0)
+prefill_exit = st.session_state.get("prefill_exit", prefill_entry * 1.05)
+
+ticker = st.text_input("Ticker (e.g. AAPL)", value=prefill_ticker)
+entry = st.number_input("Entry Price", value=prefill_entry)
+exit_ = st.number_input("Target Exit Price", value=prefill_exit)
+
 # ---- Setup ----
 TRADE_LOG = "paper_trades.csv"  # Save at root for Streamlit Cloud compatibility
 
