@@ -17,16 +17,12 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 # --- End of Path Fix ---
 
-# --- Import data_manager ---
-data_manager_instance = None 
+# Import data_manager
 try:
-    from data_manager import data_manager as dm_instance 
-    data_manager_instance = dm_instance 
+    from data_manager import data_manager
 except ImportError as e:
-    st.error(f"Could not import data_manager: {e}. Some features might be limited.")
-except Exception as e:
-    st.error(f"An unexpected error occurred during data_manager import: {e}")
-# --- End Imports ---
+    st.error(f"Could not import data_manager: {e}")
+    data_manager = None
 
 # Page config
 try:
@@ -38,733 +34,1085 @@ st.title("🧠 AI Multi-Strategy Stock Screener")
 
 # Initialize session state
 if 'screener_results' not in st.session_state:
-    st.session_state.screener_results = [] 
+    st.session_state.screener_results = []
 if 'trade_signals' not in st.session_state:
     st.session_state.trade_signals = []
 
-# Sidebar for configuration
+# Scoring System Documentation
+with st.expander("📚 Understanding the Scoring System", expanded=False):
+    st.markdown("""
+    ### 🎯 The Four-Score System Explained
+    
+    Our AI analyzes stocks using four distinct scoring methodologies, each optimized for different trading styles:
+    
+    #### ⚡ **Day Score (0-100)** - For Intraday Trading
+    - **What it measures**: Short-term momentum, volume surges, and intraday price action
+    - **Key factors**:
+        - Price movement today (30% weight)
+        - Volume surge vs average (30% weight)
+        - Price position in day's range (20% weight)
+        - Technical momentum indicators (20% weight)
+    - **Good score**: 70+ indicates strong day trading opportunity
+    - **Use when**: You plan to enter and exit within the same day
+    
+    #### 📊 **Swing Score (0-100)** - For Multi-Day Positions
+    - **What it measures**: Technical setups, trend strength, and 2-10 day momentum
+    - **Key factors**:
+        - Moving average alignment (30% weight)
+        - RSI and MACD signals (25% weight)
+        - Support/Resistance levels (25% weight)
+        - Volume confirmation (20% weight)
+    - **Good score**: 70+ indicates solid swing trade setup
+    - **Use when**: You plan to hold for several days to weeks
+    
+    #### 💎 **Position Score (0-100)** - For Long-Term Investment
+    - **What it measures**: Fundamental strength and long-term growth potential
+    - **Key factors**:
+        - P/E and PEG ratios (35% weight)
+        - Revenue growth & margins (35% weight)
+        - Debt levels & financial health (20% weight)
+        - Technical trend confirmation (10% weight)
+    - **Good score**: 75+ indicates investment-grade opportunity
+    - **Use when**: You plan to hold for months to years
+    
+    #### 🤖 **AI Score (0-100)** - Overall Rating
+    - **What it measures**: Weighted average of all three scores
+    - **Calculation**: (Day Score × 0.3) + (Swing Score × 0.4) + (Position Score × 0.3)
+    - **Good score**: 70+ indicates strong opportunity across multiple timeframes
+    - **Use when**: You want a single metric to rank opportunities
+    
+    ### 📈 How Professionals Use These Scores
+    
+    1. **Hedge Funds**: Focus on stocks with AI Score > 80 and specific strategy scores > 85
+    2. **Day Traders**: Filter for Day Score > 70 with RVOL > 2.0
+    3. **Swing Traders**: Look for Swing Score > 70 with good risk/reward setups
+    4. **Portfolio Managers**: Emphasize Position Score > 75 with strong fundamentals
+    
+    💡 **Pro Tip**: The best trades often have high scores in multiple categories!
+    """)
+
+# Sidebar configuration
 with st.sidebar:
     st.header("⚙️ Screener Settings")
+    
+    # Trading strategy selector with explanation
     trade_type = st.selectbox(
         "Trading Strategy",
         ["🎯 All Signals", "⚡ Day Trade", "📊 Swing Trade", "💎 Position Trade"],
-        key="trade_type_selector"
+        help="Filter results based on your trading timeframe"
     )
+    
+    # Data source
     data_source = st.selectbox(
         "Data Source",
-        ["📊 Manual Tickers", "🔥 Top Movers", "📈 Trending Stocks", "📋 My Watchlist"],
-        key="data_source_selector"
+        ["📋 My Watchlist", "📊 Manual Tickers", "🔥 Top Movers", "📈 S&P 500 Leaders"],
+        index=0,
+        help="Choose where to scan for opportunities"
     )
+    
     st.markdown("---")
     st.subheader("🎛️ Advanced Filters")
-    min_price = st.number_input("Min Price ($)", value=1.0, step=0.5, min_value=0.0, key="min_price_input")
-    max_price = st.number_input("Max Price ($)", value=500.0, step=10.0, min_value=0.0, key="max_price_input")
-    min_volume_m = st.number_input("Min Volume (M)", value=1.0, step=0.5, min_value=0.0, key="min_volume_input")
+    
+    # Price filters
+    col1, col2 = st.columns(2)
+    with col1:
+        min_price = st.number_input("Min Price ($)", value=5.0, step=1.0, min_value=0.0)
+    with col2:
+        max_price = st.number_input("Max Price ($)", value=500.0, step=10.0, min_value=0.0)
+    
+    # Volume filter
+    min_volume_m = st.number_input("Min Avg Volume (M)", value=1.0, step=0.5, min_value=0.0,
+                                   help="Minimum average daily volume in millions")
     min_volume = min_volume_m * 1_000_000
-    use_news_sentiment = st.checkbox("Include News Sentiment", value=True, key="news_sentiment_checkbox")
-    debug_mode = st.checkbox("Debug Mode", value=False, help="Show detailed analysis info")
+    
+    # Score filters
+    min_score = st.slider("Minimum Score Threshold", 0, 100, 60,
+                          help="Only show stocks with at least one score above this")
+    
+    # Feature toggles
+    st.markdown("---")
+    st.subheader("🔧 Analysis Features")
+    use_news_sentiment = st.checkbox("Include News Sentiment", value=True)
+    use_earnings_data = st.checkbox("Include Earnings Analysis", value=True)
+    use_insider_data = st.checkbox("Include Insider Activity", value=False)
+    show_research_summary = st.checkbox("Generate AI Research Summary", value=True)
 
-# Main content area
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Scanner", "📈 Signals", "💼 Portfolio", "📚 Education"])
-
-# Enhanced analyze_stock function using data_manager
-def analyze_stock(ticker_symbol):
-    """Analyze a stock using data_manager for consistency with other modules"""
+# Enhanced stock analysis function
+def analyze_stock_enhanced(ticker_symbol):
+    """Professional-grade stock analysis"""
     try:
-        # Use data_manager for stock data
-        if data_manager_instance:
-            stock_data = data_manager_instance.get_stock_data([ticker_symbol], period="1mo")
-            if not stock_data or ticker_symbol not in stock_data:
-                return None
-            
-            ticker_data = stock_data[ticker_symbol]
-            info = ticker_data.get('info', {})
-            hist = ticker_data.get('history')
-            
-            # Basic stock data
-            data = {
-                'ticker': ticker_symbol,
-                'price': info.get('regularMarketPrice', info.get('currentPrice', 0)),
-                'change': info.get('regularMarketChangePercent', 0),
-                'volume': info.get('regularMarketVolume', 0),
-                'avg_volume': info.get('averageVolume', 1),
-                'market_cap': info.get('marketCap', 0),
-                'short_pct': info.get('shortPercentOfFloat', 0) * 100 if info.get('shortPercentOfFloat') else 0
-            }
-            
-            # Calculate RVOL
-            data['rvol'] = (data['volume'] / data['avg_volume']) if data['avg_volume'] > 0 else 0
-            
-            # Fundamentals
-            data['fundamentals'] = {
-                'pe_ratio': info.get('trailingPE'),
-                'peg_ratio': info.get('pegRatio'),
-                'revenue_growth': info.get('revenueGrowth'),
-                'profit_margins': info.get('profitMargins'),
-                'debt_to_equity': info.get('debtToEquity')
-            }
-            
-            # Technical indicators
-            if hist is not None and not hist.empty and len(hist) >= 20:
-                data['technicals'] = {
-                    'price': data['price'],
-                    'sma_20': hist['Close'].rolling(20).mean().iloc[-1] if len(hist) >= 20 else None,
-                    'sma_50': hist['Close'].rolling(50).mean().iloc[-1] if len(hist) >= 50 else None,
-                    'rsi': data_manager_instance._calculate_rsi(hist['Close']) if data_manager_instance else None,
-                    'support': hist['Low'].rolling(20).min().iloc[-1],
-                    'resistance': hist['High'].rolling(20).max().iloc[-1],
-                    'volume_trend': hist['Volume'].iloc[-1] / hist['Volume'].rolling(20).mean().iloc[-1] if hist['Volume'].rolling(20).mean().iloc[-1] > 0 else 0
-                }
-                
-                # MACD
-                if len(hist) >= 26:
-                    exp1 = hist['Close'].ewm(span=12, adjust=False).mean()
-                    exp2 = hist['Close'].ewm(span=26, adjust=False).mean()
-                    data['technicals']['macd'] = (exp1 - exp2).iloc[-1]
-                    data['technicals']['macd_signal'] = (exp1 - exp2).ewm(span=9, adjust=False).mean().iloc[-1]
-                else:
-                    data['technicals']['macd'] = None
-                    data['technicals']['macd_signal'] = None
-                    
-                # Bollinger Bands
-                sma = hist['Close'].rolling(20).mean()
-                std = hist['Close'].rolling(20).std()
-                data['technicals']['bb_upper'] = (sma + (std * 2)).iloc[-1]
-                data['technicals']['bb_lower'] = (sma - (std * 2)).iloc[-1]
-            else:
-                data['technicals'] = None
-                
-            # Intraday momentum
-            intraday = ticker_data.get('intraday')
-            if intraday is not None and not intraday.empty:
-                open_price = intraday['Open'].iloc[0]
-                current_price = intraday['Close'].iloc[-1]
-                high = intraday['High'].max()
-                low = intraday['Low'].min()
-                
-                data['intraday'] = {
-                    'intraday_change': ((current_price - open_price) / open_price * 100) if open_price > 0 else 0,
-                    'price_position': (current_price - low) / (high - low) if (high - low) > 0 else 0.5,
-                    'volume_surge': intraday['Volume'].iloc[-1] / intraday['Volume'].mean() if intraday['Volume'].mean() > 0 else 1,
-                    'day_high': high,
-                    'day_low': low,
-                    'range': high - low
-                }
-            else:
-                # Fallback for intraday data from info
-                data['intraday'] = {
-                    'intraday_change': data['change'],
-                    'price_position': 0.5,
-                    'volume_surge': data['rvol'],
-                    'day_high': info.get('dayHigh', data['price']),
-                    'day_low': info.get('dayLow', data['price']),
-                    'range': info.get('dayHigh', data['price']) - info.get('dayLow', data['price'])
-                }
-            
-            # Get news sentiment if enabled
-            if use_news_sentiment and data_manager_instance:
-                news_sentiment = data_manager_instance.get_latest_news_sentiment(ticker_symbol, debug_mode=debug_mode)
-                data['news_sentiment'] = news_sentiment
-            else:
-                data['news_sentiment'] = None
-                
-            # Calculate AI scores using the enhanced function
-            data['scores'] = calculate_ai_scores_enhanced(data)
-            
-            # Generate signals
-            signals = []
-            if data['scores'].get('day_trade', 0) > 60:
-                signals.append("⚡ DAY")
-            if data['scores'].get('swing_trade', 0) > 70:
-                signals.append("📊 SWING")
-            if data['scores'].get('position_trade', 0) > 75:
-                signals.append("💎 POSITION")
-            data['signals'] = signals
-            
-            return data
-            
-        else:
-            # Fallback to basic analysis if data_manager not available
-            st.warning(f"DataManager not available for {ticker_symbol}, using basic analysis")
+        # Get comprehensive data
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
+        
+        # Basic validation
+        if not info or (not info.get('regularMarketPrice') and not info.get('currentPrice')):
             return None
-            
+        
+        # Initialize results
+        analysis = {
+            'ticker': ticker_symbol,
+            'price': info.get('regularMarketPrice', info.get('currentPrice', 0)),
+            'change': info.get('regularMarketChangePercent', 0),
+            'volume': info.get('regularMarketVolume', 0),
+            'avg_volume': info.get('averageVolume', 1),
+            'market_cap': info.get('marketCap', 0),
+            'sector': info.get('sector', 'Unknown'),
+            'industry': info.get('industry', 'Unknown')
+        }
+        
+        # Calculate key metrics
+        analysis['rvol'] = analysis['volume'] / analysis['avg_volume'] if analysis['avg_volume'] > 0 else 0
+        
+        # Get historical data
+        hist_1mo = ticker.history(period="1mo")
+        hist_1y = ticker.history(period="1y")
+        
+        # Technical Analysis
+        if len(hist_1mo) >= 20:
+            analysis['technicals'] = calculate_technical_indicators(hist_1mo, analysis['price'])
+        else:
+            analysis['technicals'] = None
+        
+        # Fundamental Analysis
+        analysis['fundamentals'] = {
+            'pe_ratio': info.get('trailingPE'),
+            'forward_pe': info.get('forwardPE'),
+            'peg_ratio': info.get('pegRatio'),
+            'price_to_book': info.get('priceToBook'),
+            'price_to_sales': info.get('priceToSalesTrailing12Months'),
+            'revenue_growth': info.get('revenueGrowth'),
+            'earnings_growth': info.get('earningsGrowth'),
+            'profit_margins': info.get('profitMargins'),
+            'operating_margins': info.get('operatingMargins'),
+            'roe': info.get('returnOnEquity'),
+            'debt_to_equity': info.get('debtToEquity'),
+            'current_ratio': info.get('currentRatio'),
+            'free_cash_flow': info.get('freeCashflow'),
+            'dividend_yield': info.get('dividendYield')
+        }
+        
+        # Earnings Data
+        if use_earnings_data:
+            try:
+                earnings_hist = ticker.quarterly_earnings
+                if not earnings_hist.empty:
+                    recent_earnings = earnings_hist.head(4)
+                    analysis['earnings'] = {
+                        'last_report_date': recent_earnings.index[0].strftime('%Y-%m-%d') if len(recent_earnings) > 0 else None,
+                        'last_eps': recent_earnings['Earnings'].iloc[0] if len(recent_earnings) > 0 else None,
+                        'last_revenue': recent_earnings['Revenue'].iloc[0] if len(recent_earnings) > 0 else None,
+                        'earnings_trend': 'Growing' if len(recent_earnings) > 1 and recent_earnings['Earnings'].iloc[0] > recent_earnings['Earnings'].iloc[1] else 'Declining',
+                        'next_earnings_date': info.get('earningsTimestamp', None)
+                    }
+                else:
+                    analysis['earnings'] = None
+            except:
+                analysis['earnings'] = None
+        
+        # News Sentiment
+        if use_news_sentiment and data_manager:
+            news = data_manager.get_latest_news_sentiment(ticker_symbol)
+            analysis['news_sentiment'] = news
+        else:
+            analysis['news_sentiment'] = None
+        
+        # Performance Metrics
+        if len(hist_1y) > 0:
+            year_ago_price = hist_1y['Close'].iloc[0]
+            analysis['performance'] = {
+                '1y_return': ((analysis['price'] - year_ago_price) / year_ago_price * 100) if year_ago_price > 0 else 0,
+                '52w_high': info.get('fiftyTwoWeekHigh', analysis['price']),
+                '52w_low': info.get('fiftyTwoWeekLow', analysis['price']),
+                'from_52w_high': ((analysis['price'] - info.get('fiftyTwoWeekHigh', analysis['price'])) / info.get('fiftyTwoWeekHigh', analysis['price']) * 100) if info.get('fiftyTwoWeekHigh') else 0,
+                'from_52w_low': ((analysis['price'] - info.get('fiftyTwoWeekLow', analysis['price'])) / info.get('fiftyTwoWeekLow', analysis['price']) * 100) if info.get('fiftyTwoWeekLow') else 0
+            }
+        else:
+            analysis['performance'] = None
+        
+        # Calculate comprehensive scores
+        analysis['scores'] = calculate_professional_scores(analysis)
+        
+        # Generate trading signals
+        signals = []
+        if analysis['scores']['day_score'] >= 70:
+            signals.append("⚡ DAY")
+        if analysis['scores']['swing_score'] >= 70:
+            signals.append("📊 SWING")
+        if analysis['scores']['position_score'] >= 75:
+            signals.append("💎 POSITION")
+        analysis['signals'] = signals
+        
+        return analysis
+        
     except Exception as e:
-        if debug_mode:
-            st.error(f"Error analyzing {ticker_symbol}: {str(e)}")
+        st.error(f"Error analyzing {ticker_symbol}: {str(e)}")
         return None
 
-def calculate_ai_scores_enhanced(ticker_data):
-    """Enhanced AI scoring that includes news sentiment"""
-    scores = {'day_trade': 0, 'swing_trade': 0, 'position_trade': 0, 'overall': 0}
-    if not ticker_data:
-        return scores
+def calculate_technical_indicators(hist_data, current_price):
+    """Calculate comprehensive technical indicators"""
+    close_prices = hist_data['Close']
+    
+    indicators = {
+        'price': current_price,
+        'sma_20': close_prices.rolling(20).mean().iloc[-1] if len(close_prices) >= 20 else None,
+        'sma_50': close_prices.rolling(50).mean().iloc[-1] if len(close_prices) >= 50 else None,
+        'sma_200': close_prices.rolling(200).mean().iloc[-1] if len(close_prices) >= 200 else None,
+        'ema_12': close_prices.ewm(span=12, adjust=False).mean().iloc[-1],
+        'ema_26': close_prices.ewm(span=26, adjust=False).mean().iloc[-1],
+    }
+    
+    # RSI
+    if len(close_prices) >= 14:
+        delta = close_prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
+    else:
+        indicators['rsi'] = 50
+    
+    # MACD
+    if len(close_prices) >= 26:
+        exp1 = close_prices.ewm(span=12, adjust=False).mean()
+        exp2 = close_prices.ewm(span=26, adjust=False).mean()
+        macd_line = exp1 - exp2
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        indicators['macd'] = macd_line.iloc[-1]
+        indicators['macd_signal'] = signal_line.iloc[-1]
+        indicators['macd_histogram'] = indicators['macd'] - indicators['macd_signal']
+    
+    # Bollinger Bands
+    if len(close_prices) >= 20:
+        sma = close_prices.rolling(20).mean()
+        std = close_prices.rolling(20).std()
+        indicators['bb_upper'] = (sma + (std * 2)).iloc[-1]
+        indicators['bb_lower'] = (sma - (std * 2)).iloc[-1]
+        indicators['bb_width'] = indicators['bb_upper'] - indicators['bb_lower']
+        indicators['bb_position'] = (current_price - indicators['bb_lower']) / indicators['bb_width'] if indicators['bb_width'] > 0 else 0.5
+    
+    # Support and Resistance
+    indicators['support'] = hist_data['Low'].rolling(20).min().iloc[-1]
+    indicators['resistance'] = hist_data['High'].rolling(20).max().iloc[-1]
+    
+    # Volume indicators
+    indicators['volume_sma'] = hist_data['Volume'].rolling(20).mean().iloc[-1]
+    indicators['volume_ratio'] = hist_data['Volume'].iloc[-1] / indicators['volume_sma'] if indicators['volume_sma'] > 0 else 1
+    
+    # Price action
+    indicators['range'] = hist_data['High'].iloc[-1] - hist_data['Low'].iloc[-1]
+    indicators['true_range'] = max(
+        hist_data['High'].iloc[-1] - hist_data['Low'].iloc[-1],
+        abs(hist_data['High'].iloc[-1] - hist_data['Close'].iloc[-2]) if len(hist_data) > 1 else 0,
+        abs(hist_data['Low'].iloc[-1] - hist_data['Close'].iloc[-2]) if len(hist_data) > 1 else 0
+    )
+    
+    return indicators
 
-    tech = ticker_data.get('technicals')
-    intra = ticker_data.get('intraday')
-    fund = ticker_data.get('fundamentals')
-    news = ticker_data.get('news_sentiment')
-
-    # Day Trading Score (focus on momentum and intraday metrics)
-    if intra:
-        # Intraday momentum (0-30 points)
-        if intra.get('intraday_change', 0) > 2:
-            scores['day_trade'] += min(intra['intraday_change'] * 3, 15)
-        elif intra.get('intraday_change', 0) < -2:
-            scores['day_trade'] -= 10
-            
-        # Price position in range (0-15 points)
-        price_pos = intra.get('price_position', 0.5)
-        if price_pos > 0.8:  # Near high of day
-            scores['day_trade'] += 15
-        elif price_pos > 0.6:
-            scores['day_trade'] += 10
-        elif price_pos < 0.2:  # Near low of day
-            scores['day_trade'] -= 5
-            
-        # Volume surge (0-20 points)
-        vol_surge = intra.get('volume_surge', 1)
-        if vol_surge > 3:
-            scores['day_trade'] += 20
-        elif vol_surge > 2:
-            scores['day_trade'] += 15
-        elif vol_surge > 1.5:
-            scores['day_trade'] += 10
-            
-    # Technical indicators scoring (applies to all strategies)
-    if tech:
-        rsi = tech.get('rsi')
+def calculate_professional_scores(analysis):
+    """Calculate scores using hedge fund-grade methodology"""
+    scores = {
+        'day_score': 0,
+        'swing_score': 0,
+        'position_score': 0,
+        'ai_score': 0
+    }
+    
+    # Day Trading Score (0-100)
+    if analysis.get('technicals'):
+        tech = analysis['technicals']
+        
+        # Intraday momentum (30 points)
+        change_pct = analysis.get('change', 0)
+        if change_pct > 3:
+            scores['day_score'] += 30
+        elif change_pct > 2:
+            scores['day_score'] += 20
+        elif change_pct > 1:
+            scores['day_score'] += 10
+        elif change_pct < -2:
+            scores['day_score'] -= 10
+        
+        # Volume surge (30 points)
+        rvol = analysis.get('rvol', 0)
+        if rvol > 3:
+            scores['day_score'] += 30
+        elif rvol > 2:
+            scores['day_score'] += 20
+        elif rvol > 1.5:
+            scores['day_score'] += 10
+        
+        # Technical momentum (20 points)
+        if tech.get('rsi'):
+            if 30 < tech['rsi'] < 70:
+                scores['day_score'] += 10
+            if tech['rsi'] < 30 or tech['rsi'] > 70:
+                scores['day_score'] += 10  # Extremes for reversals
+        
+        # Price position (20 points)
+        if tech.get('bb_position') is not None:
+            if tech['bb_position'] > 0.8 or tech['bb_position'] < 0.2:
+                scores['day_score'] += 20
+            elif 0.6 < tech['bb_position'] < 0.8 or 0.2 < tech['bb_position'] < 0.4:
+                scores['day_score'] += 10
+    
+    # Swing Trading Score (0-100)
+    if analysis.get('technicals'):
+        tech = analysis['technicals']
+        
+        # Trend alignment (30 points)
         price = tech.get('price', 0)
-        sma_20 = tech.get('sma_20')
-        sma_50 = tech.get('sma_50')
-        macd = tech.get('macd')
-        macd_signal = tech.get('macd_signal')
-        bb_upper = tech.get('bb_upper')
-        bb_lower = tech.get('bb_lower')
-        volume_trend = tech.get('volume_trend', 0)
+        sma20 = tech.get('sma_20')
+        sma50 = tech.get('sma_50')
         
-        # RSI scoring
-        if rsi is not None:
-            # Day trade: extreme levels for quick reversals
-            if 30 < rsi < 70:
-                scores['day_trade'] += 10
-            if rsi < 30:  # Oversold bounce potential
-                scores['day_trade'] += 15
-                scores['swing_trade'] += 20
-            elif rsi > 70:  # Overbought but could continue
-                scores['day_trade'] += 5
-                scores['swing_trade'] -= 5
-                
-            # Swing/Position: prefer moderate RSI
-            if 40 < rsi < 60:
-                scores['swing_trade'] += 15
-                scores['position_trade'] += 15
-                
-        # Moving average alignment
-        if price and sma_20 and sma_50:
-            # Bullish alignment
-            if price > sma_20 > sma_50:
-                scores['day_trade'] += 10
-                scores['swing_trade'] += 20
-                scores['position_trade'] += 25
-            # Price above 20 SMA
-            elif price > sma_20:
-                scores['day_trade'] += 5
-                scores['swing_trade'] += 10
-                scores['position_trade'] += 10
-            # Bearish alignment
-            elif price < sma_20 < sma_50:
-                scores['day_trade'] -= 10
-                scores['swing_trade'] -= 15
-                scores['position_trade'] -= 20
-                
-        # MACD scoring
-        if macd is not None and macd_signal is not None:
-            # Bullish crossover
-            if macd > macd_signal:
-                scores['day_trade'] += 10
-                scores['swing_trade'] += 15
-                scores['position_trade'] += 10
-            # Strong momentum
-            if macd > 0 and macd > macd_signal:
-                scores['swing_trade'] += 10
-                scores['position_trade'] += 15
-                
-        # Bollinger Bands
-        if price and bb_upper and bb_lower:
-            # Near lower band (oversold)
-            if price < bb_lower * 1.02:
-                scores['day_trade'] += 15
-                scores['swing_trade'] += 20
-            # Near upper band (overbought)
-            elif price > bb_upper * 0.98:
-                scores['day_trade'] += 5  # Could continue
-                scores['swing_trade'] -= 5
-                
-        # Volume trend
-        if volume_trend > 2:
-            scores['day_trade'] += 15
-            scores['swing_trade'] += 10
-        elif volume_trend > 1.5:
-            scores['day_trade'] += 10
-            scores['swing_trade'] += 5
-            
-    # Fundamental scoring (mainly for position trading)
-    if fund:
-        pe_ratio = fund.get('pe_ratio')
-        peg_ratio = fund.get('peg_ratio')
-        revenue_growth = fund.get('revenue_growth')
-        profit_margins = fund.get('profit_margins')
-        debt_to_equity = fund.get('debt_to_equity')
+        if price and sma20 and sma50:
+            if price > sma20 > sma50:
+                scores['swing_score'] += 30
+            elif price > sma20:
+                scores['swing_score'] += 15
         
-        # PE Ratio
-        if pe_ratio and 0 < pe_ratio < 25:
-            scores['position_trade'] += 15
-            scores['swing_trade'] += 5
-        elif pe_ratio and pe_ratio > 50:
-            scores['position_trade'] -= 10
-            
-        # PEG Ratio
-        if peg_ratio and 0 < peg_ratio < 1.5:
-            scores['position_trade'] += 15
-            scores['swing_trade'] += 10
-            
-        # Revenue Growth
-        if revenue_growth and revenue_growth > 0.2:
-            scores['position_trade'] += 20
-            scores['swing_trade'] += 10
-        elif revenue_growth and revenue_growth > 0.1:
-            scores['position_trade'] += 10
-            scores['swing_trade'] += 5
-            
-        # Profit Margins
-        if profit_margins and profit_margins > 0.2:
-            scores['position_trade'] += 15
-        elif profit_margins and profit_margins > 0.1:
-            scores['position_trade'] += 10
-            
-        # Debt to Equity
-        if debt_to_equity is not None:
-            if debt_to_equity < 0.5:
-                scores['position_trade'] += 10
-            elif debt_to_equity > 2:
-                scores['position_trade'] -= 10
+        # MACD Signal (25 points)
+        if tech.get('macd') is not None and tech.get('macd_signal') is not None:
+            if tech['macd'] > tech['macd_signal']:
+                scores['swing_score'] += 25
+                if tech.get('macd_histogram', 0) > 0:
+                    scores['swing_score'] += 5
+        
+        # Support/Resistance (25 points)
+        if price and tech.get('support') and tech.get('resistance'):
+            range_position = (price - tech['support']) / (tech['resistance'] - tech['support']) if (tech['resistance'] - tech['support']) > 0 else 0.5
+            if range_position < 0.3:  # Near support
+                scores['swing_score'] += 25
+            elif range_position > 0.7:  # Breaking resistance
+                scores['swing_score'] += 20
+        
+        # RSI conditions (20 points)
+        if tech.get('rsi'):
+            if 40 < tech['rsi'] < 60:
+                scores['swing_score'] += 20
+            elif tech['rsi'] < 30:
+                scores['swing_score'] += 15  # Oversold bounce
     
-    # Add relative volume boost for all strategies
-    rvol = ticker_data.get('rvol', 0)
-    if rvol > 3:
-        scores['day_trade'] += 10
-        scores['swing_trade'] += 5
-    elif rvol > 2:
-        scores['day_trade'] += 5
-        scores['swing_trade'] += 3
+    # Position Trading Score (0-100)
+    if analysis.get('fundamentals'):
+        fund = analysis['fundamentals']
         
-    # Add market cap consideration
-    market_cap = ticker_data.get('market_cap', 0)
-    if market_cap > 10_000_000_000:  # Large cap
-        scores['position_trade'] += 10
-    elif market_cap > 2_000_000_000:  # Mid cap
-        scores['swing_trade'] += 5
-    elif 300_000_000 < market_cap < 2_000_000_000:  # Small cap
-        scores['day_trade'] += 5
+        # Valuation metrics (35 points)
+        pe = fund.get('pe_ratio')
+        if pe and 0 < pe < 20:
+            scores['position_score'] += 20
+        elif pe and 20 < pe < 30:
+            scores['position_score'] += 10
         
-    # News sentiment boost/penalty
-    if news:
-        news_boost = 0
-        if news['label'] == 'Positive':
-            news_boost = news['score'] * 10  # Max +10 points
-        elif news['label'] == 'Negative':
-            news_boost = -abs(news['score']) * 10  # Max -10 points
-            
-        # Apply news boost to all scores
-        scores['day_trade'] = scores['day_trade'] + news_boost * 1.5  # Day traders care more about news
-        scores['swing_trade'] = scores['swing_trade'] + news_boost
-        scores['position_trade'] = scores['position_trade'] + news_boost * 0.5  # Position traders care less about short-term news
+        peg = fund.get('peg_ratio')
+        if peg and 0 < peg < 1:
+            scores['position_score'] += 15
+        elif peg and 1 < peg < 1.5:
+            scores['position_score'] += 8
+        
+        # Growth metrics (35 points)
+        rev_growth = fund.get('revenue_growth')
+        if rev_growth and rev_growth > 0.20:
+            scores['position_score'] += 20
+        elif rev_growth and rev_growth > 0.10:
+            scores['position_score'] += 10
+        
+        margins = fund.get('profit_margins')
+        if margins and margins > 0.20:
+            scores['position_score'] += 15
+        elif margins and margins > 0.10:
+            scores['position_score'] += 8
+        
+        # Financial health (20 points)
+        debt_equity = fund.get('debt_to_equity')
+        if debt_equity is not None:
+            if debt_equity < 0.5:
+                scores['position_score'] += 10
+            elif debt_equity > 2:
+                scores['position_score'] -= 5
+        
+        roe = fund.get('roe')
+        if roe and roe > 0.15:
+            scores['position_score'] += 10
+        
+        # Technical confirmation (10 points)
+        if analysis.get('performance'):
+            if analysis['performance'].get('from_52w_low', 0) > 20:
+                scores['position_score'] += 10
     
-    # Ensure scores are within 0-100 range and round
-    for key in ['day_trade', 'swing_trade', 'position_trade']:
-        scores[key] = round(max(0, min(100, scores[key])), 2)
+    # News sentiment modifier (applies to all scores)
+    if analysis.get('news_sentiment'):
+        sentiment_modifier = 0
+        if analysis['news_sentiment']['label'] == 'Positive':
+            sentiment_modifier = 10
+        elif analysis['news_sentiment']['label'] == 'Negative':
+            sentiment_modifier = -10
+        
+        scores['day_score'] = max(0, min(100, scores['day_score'] + sentiment_modifier * 1.5))
+        scores['swing_score'] = max(0, min(100, scores['swing_score'] + sentiment_modifier))
+        scores['position_score'] = max(0, min(100, scores['position_score'] + sentiment_modifier * 0.5))
     
-    # Calculate overall score
-    scores['overall'] = round((scores['day_trade'] + scores['swing_trade'] + scores['position_trade']) / 3, 2)
+    # Ensure scores are in valid range
+    for key in ['day_score', 'swing_score', 'position_score']:
+        scores[key] = max(0, min(100, scores[key]))
+    
+    # Calculate AI Score (weighted average)
+    scores['ai_score'] = (scores['day_score'] * 0.3 + 
+                         scores['swing_score'] * 0.4 + 
+                         scores['position_score'] * 0.3)
     
     return scores
+
+# Position sizing calculation
+def calculate_position_size(account_size, risk_percent, entry_price, stop_loss_price):
+    """Calculate position size using professional risk management"""
+    risk_amount = account_size * (risk_percent / 100)
+    price_risk = abs(entry_price - stop_loss_price)
+    
+    if price_risk > 0:
+        shares = int(risk_amount / price_risk)
+        position_value = shares * entry_price
+        
+        # Kelly Criterion adjustment (optional)
+        win_rate = 0.55  # Assumed win rate
+        avg_win_loss_ratio = 1.5  # Assumed R:R
+        kelly_percent = (win_rate * avg_win_loss_ratio - (1 - win_rate)) / avg_win_loss_ratio
+        kelly_adjusted_shares = int(shares * min(kelly_percent, 0.25))  # Cap at 25%
+        
+        return {
+            'shares': shares,
+            'position_value': position_value,
+            'risk_amount': risk_amount,
+            'kelly_shares': kelly_adjusted_shares,
+            'percent_of_account': (position_value / account_size) * 100
+        }
+    return None
+
+# Main content tabs
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Scanner", "📈 Signals", "💼 Portfolio", "📚 Education"])
 
 with tab1:
     st.header("🔍 Stock Scanner")
     
     # Get tickers based on data source
-    if data_source == "📊 Manual Tickers":
-        default_tickers = "NVDA,TSLA,AAPL,AMD,MSFT,META,GOOGL,AMZN,NFLX,PLTR"
-        ticker_input = st.text_area("Enter tickers (comma-separated):", value=default_tickers, height=100, key="ticker_text_area")
-        tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
-    elif data_source == "📋 My Watchlist":
-        if data_manager_instance:
-            watchlist = data_manager_instance.get_watchlist()
-            if watchlist:
-                tickers = watchlist
-                st.info(f"Scanning {len(tickers)} stocks from your watchlist: {', '.join(tickers)}")
+    tickers = []
+    if data_source == "📋 My Watchlist":
+        if data_manager:
+            tickers = data_manager.get_watchlist()
+            if tickers:
+                st.info(f"📊 Scanning {len(tickers)} stocks from your watchlist")
             else:
                 st.warning("Your watchlist is empty. Add stocks in the Watchlist page.")
-                tickers = []
-        else:
-            st.warning("DataManager not available. Cannot access watchlist.")
-            tickers = []
+    elif data_source == "📊 Manual Tickers":
+        default_tickers = "NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA"
+        ticker_input = st.text_area("Enter tickers (comma-separated):", value=default_tickers, height=60)
+        tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
     elif data_source == "🔥 Top Movers":
-        tickers = ["NVDA", "TSLA", "AMD", "SOFI", "PLTR", "RIVN", "LCID", "NIO", "MARA", "RIOT"] 
-        st.info(f"Scanning top {len(tickers)} movers...")
-    else: 
-        tickers = ["NVDA", "TSLA", "AAPL", "SPY", "QQQ", "AMD", "MSFT", "META", "GOOGL", "AMZN"] 
-        st.info(f"Scanning {len(tickers)} trending stocks...")
-
-    if st.button("🚀 Run Analysis", type="primary", key="run_analysis_button_main"):
+        # In production, this would fetch real movers
+        tickers = ["NVDA", "SMCI", "ARM", "PLTR", "MARA", "COIN", "TSLA", "AMD"]
+        st.info(f"📊 Scanning today's top {len(tickers)} movers")
+    elif data_source == "📈 S&P 500 Leaders":
+        # Top S&P 500 by market cap
+        tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "LLY", "JPM", "V"]
+        st.info(f"📊 Scanning S&P 500 market leaders")
+    
+    # Run Analysis button
+    if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
         if not tickers:
-            st.warning("Please enter some tickers or select a valid data source.")
+            st.warning("Please select a data source or enter tickers")
         else:
-            progress_bar = st.progress(0, text="Initializing Analysis...")
-            results_list = [] 
-            total_tickers = len(tickers)
-
-            with ThreadPoolExecutor(max_workers=min(10, total_tickers)) as executor:
-                future_to_ticker = {executor.submit(analyze_stock, ticker): ticker for ticker in tickers}
-                for i, future in enumerate(future_to_ticker):
-                    ticker_name = future_to_ticker[future]
-                    progress_text = f"Analyzing {ticker_name} ({i+1}/{total_tickers})..."
-                    progress_bar.progress((i + 1) / total_tickers, text=progress_text)
-                    try:
-                        result = future.result()
-                        if result:
-                            results_list.append(result)
-                    except Exception as e:
-                        if debug_mode:
-                            st.error(f"Analysis failed for {ticker_name}: {e}")
+            progress_bar = st.progress(0, text="Initializing scanner...")
+            results = []
+            
+            # Analyze each ticker
+            for i, ticker in enumerate(tickers):
+                progress_bar.progress((i + 1) / len(tickers), 
+                                    text=f"Analyzing {ticker} ({i+1}/{len(tickers)})...")
+                
+                analysis = analyze_stock_enhanced(ticker)
+                if analysis:
+                    results.append(analysis)
             
             progress_bar.empty()
-            st.session_state.screener_results = results_list
-
-            if results_list:
-                # Create summary data
-                summary_data = []
-                for r in results_list:
-                    if not r or r.get('price') is None or r.get('volume') is None:
-                        continue
-
-                    price, volume, scores = r['price'], r['volume'], r['scores']
-                    
-                    # Apply filters
-                    if not (min_price <= price <= max_price and volume >= min_volume):
+            st.session_state.screener_results = results
+            
+            if results:
+                # Filter results based on criteria
+                filtered_results = []
+                for r in results:
+                    # Price filter
+                    if not (min_price <= r['price'] <= max_price):
                         continue
                     
-                    # Apply trade type filter
-                    passes_trade_type_filter = True
-                    if trade_type != "🎯 All Signals":
-                        if trade_type == "⚡ Day Trade" and scores.get('day_trade', 0) < 60:
-                            passes_trade_type_filter = False
-                        elif trade_type == "📊 Swing Trade" and scores.get('swing_trade', 0) < 70:
-                            passes_trade_type_filter = False
-                        elif trade_type == "💎 Position Trade" and scores.get('position_trade', 0) < 75:
-                            passes_trade_type_filter = False
-                    
-                    if not passes_trade_type_filter:
+                    # Volume filter
+                    if r['avg_volume'] < min_volume:
                         continue
                     
-                    # Add news sentiment to display
-                    news_sentiment = "N/A"
-                    if r.get('news_sentiment'):
-                        news_label = r['news_sentiment'].get('label', 'N/A')
-                        if news_label == 'Positive':
-                            news_sentiment = "📈 Positive"
-                        elif news_label == 'Negative':
-                            news_sentiment = "📉 Negative"
-                        else:
-                            news_sentiment = "➡️ Neutral"
-
-                    summary_data.append({
-                        'Ticker': r.get('ticker', 'N/A'),
-                        'Price': f"${price:.2f}",
-                        '% Change': f"{r.get('change', 0):.2f}%",
-                        'RVOL': f"{r.get('rvol', 0):.2f}",
-                        'News': news_sentiment,
-                        'Signals': ' '.join(r.get('signals', [])),
-                        'Day Score': scores.get('day_trade', 0),
-                        'Swing Score': scores.get('swing_trade', 0),
-                        'Position Score': scores.get('position_trade', 0),
-                        'AI Score': scores.get('overall', 0)
-                    })
+                    # Score filter
+                    scores = r['scores']
+                    if max(scores['day_score'], scores['swing_score'], scores['position_score']) < min_score:
+                        continue
+                    
+                    # Strategy filter
+                    if trade_type == "⚡ Day Trade" and scores['day_score'] < 70:
+                        continue
+                    elif trade_type == "📊 Swing Trade" and scores['swing_score'] < 70:
+                        continue
+                    elif trade_type == "💎 Position Trade" and scores['position_score'] < 75:
+                        continue
+                    
+                    filtered_results.append(r)
                 
-                if summary_data:
-                    df = pd.DataFrame(summary_data).sort_values('AI Score', ascending=False)
-                    
-                    # Display metrics
+                # Display results
+                if filtered_results:
+                    # Summary metrics
                     col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Stocks Matched", len(df))
-                    col2.metric("Buy Signals", len([d for d in summary_data if d['Signals']]))
+                    col1.metric("Stocks Matched", len(filtered_results))
+                    col2.metric("Avg AI Score", f"{np.mean([r['scores']['ai_score'] for r in filtered_results]):.1f}")
                     
-                    # Count positive news
-                    positive_news = len([d for d in summary_data if "Positive" in d['News']])
-                    col3.metric("Positive News", positive_news)
+                    buy_signals = sum(1 for r in filtered_results if r['signals'])
+                    col3.metric("Buy Signals", buy_signals)
                     
-                    # Top pick
-                    if not df.empty:
-                        top_pick = df.iloc[0]['Ticker']
-                        col4.metric("Top Pick", top_pick)
+                    positive_news = sum(1 for r in filtered_results 
+                                       if r.get('news_sentiment', {}).get('label') == 'Positive')
+                    col4.metric("Positive News", positive_news)
                     
-                    # Display results with color coding
+                    # Results table
+                    table_data = []
+                    for r in filtered_results:
+                        scores = r['scores']
+                        table_data.append({
+                            'Ticker': r['ticker'],
+                            'Price': f"${r['price']:.2f}",
+                            '% Change': f"{r['change']:.1f}%",
+                            'RVOL': f"{r['rvol']:.1f}",
+                            'News': r.get('news_sentiment', {}).get('label', 'N/A'),
+                            'Signals': ' '.join(r['signals']),
+                            'Day Score': scores['day_score'],
+                            'Swing Score': scores['swing_score'],
+                            'Position Score': scores['position_score'],
+                            'AI Score': f"{scores['ai_score']:.1f}"
+                        })
+                    
+                    df = pd.DataFrame(table_data)
+                    
+                    # Sort by AI Score
+                    df['_ai_score_numeric'] = df['AI Score'].str.replace(r'[^\d.]', '', regex=True).astype(float)
+                    df = df.sort_values('_ai_score_numeric', ascending=False)
+                    df = df.drop('_ai_score_numeric', axis=1)
+                    
                     st.dataframe(
-                        df.style.background_gradient(subset=['AI Score'], cmap='RdYlGn')
-                        .background_gradient(subset=['Day Score', 'Swing Score', 'Position Score'], cmap='Blues'),
-                        use_container_width=True
+                        df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Day Score": st.column_config.ProgressColumn(
+                                "Day Score",
+                                help="0-100 score for day trading",
+                                format="%d",
+                                min_value=0,
+                                max_value=100,
+                            ),
+                            "Swing Score": st.column_config.ProgressColumn(
+                                "Swing Score",
+                                help="0-100 score for swing trading",
+                                format="%d",
+                                min_value=0,
+                                max_value=100,
+                            ),
+                            "Position Score": st.column_config.ProgressColumn(
+                                "Position Score",
+                                help="0-100 score for position trading",
+                                format="%d",
+                                min_value=0,
+                                max_value=100,
+                            ),
+                        }
                     )
                     
-                    st.session_state.trade_signals = summary_data
+                    st.session_state.trade_signals = filtered_results
                 else:
-                    st.warning("No stocks matched your filter criteria after analysis.")
+                    st.warning("No stocks matched your criteria. Try adjusting filters.")
             else:
-                st.info("No analysis results. Check if tickers were provided and analysis completed.")
+                st.error("No valid analysis results. Please check your tickers.")
 
 with tab2:
-    st.header("📈 Trading Signals")
+    st.header("📈 Trading Signals - Professional Analysis")
+    
     if st.session_state.get('trade_signals'):
-        for signal_idx, signal_data in enumerate(st.session_state.trade_signals[:5]):
-            ticker_symbol = signal_data.get('Ticker', f"unknown_{signal_idx}")
+        # Allow selection of which signal to analyze
+        ticker_list = [r['ticker'] for r in st.session_state.trade_signals]
+        selected_ticker = st.selectbox("Select stock for detailed analysis:", ticker_list)
+        
+        # Find the selected analysis
+        selected_analysis = next((r for r in st.session_state.trade_signals if r['ticker'] == selected_ticker), None)
+        
+        if selected_analysis:
+            # Header with key metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Price", f"${selected_analysis['price']:.2f}", 
+                         f"{selected_analysis['change']:.1f}%")
+            with col2:
+                st.metric("AI Score", f"{selected_analysis['scores']['ai_score']:.1f}")
+            with col3:
+                st.metric("Signals", ' '.join(selected_analysis['signals']) or "None")
+            with col4:
+                news_label = selected_analysis.get('news_sentiment', {}).get('label', 'N/A')
+                news_color = "🟢" if news_label == "Positive" else "🔴" if news_label == "Negative" else "⚪"
+                st.metric("News", f"{news_color} {news_label}")
             
-            # Get full data for this ticker
-            full_data = next((r for r in st.session_state.get('screener_results', []) 
-                            if r and r.get('ticker') == ticker_symbol), None)
+            # Detailed Analysis Tabs
+            analysis_tab1, analysis_tab2, analysis_tab3, analysis_tab4, analysis_tab5 = st.tabs(
+                ["📊 Technical", "💰 Fundamentals", "📰 News & Sentiment", "📈 Trade Setup", "📑 Research Report"]
+            )
             
-            if not full_data:
-                continue
+            with analysis_tab1:
+                st.subheader("📊 Technical Analysis")
                 
-            with st.expander(f"{ticker_symbol} - {signal_data.get('Signals', 'No Signals')} | {signal_data.get('News', '')}"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("📊 Technical Analysis")
-                    tech = full_data.get('technicals', {})
-                    if tech:
-                        st.write(f"**Price:** ${tech.get('price', 0):.2f}")
-                        
-                        # RSI with proper display
-                        rsi_val = tech.get('rsi')
-                        if rsi_val is not None:
-                            st.write(f"**RSI:** {rsi_val:.2f}")
-                        else:
-                            st.write("**RSI:** N/A")
-                            
+                if selected_analysis.get('technicals'):
+                    tech = selected_analysis['technicals']
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.markdown("### Price Levels")
+                        st.write(f"**Current Price:** ${tech['price']:.2f}")
                         st.write(f"**Support:** ${tech.get('support', 0):.2f}")
                         st.write(f"**Resistance:** ${tech.get('resistance', 0):.2f}")
-                        
-                        # News sentiment display
-                        if full_data.get('news_sentiment'):
-                            news = full_data['news_sentiment']
-                            st.markdown("### 📰 Latest News")
-                            st.write(f"**Sentiment:** {news.get('label', 'N/A')} ({news.get('score', 0):.2f})")
-                            st.write(f"**Headline:** {news.get('headline', 'N/A')[:100]}...")
-                            st.write(f"**Source:** {news.get('source', 'N/A')}")
-                            st.write(f"**Date:** {news.get('date', 'N/A')}")
-                        
-                        st.markdown("### 🎯 Trade Setup")
-                        entry = tech.get('price')
-                        stop = tech.get('support')
-                        target = tech.get('resistance')
-
-                        if all(val is not None and val > 0 for val in [entry, stop, target]) and entry > stop and target > entry:
-                            risk_reward = (target - entry) / (entry - stop)
-                            st.write(f"**Entry:** ${entry:.2f}")
-                            st.write(f"**Stop Loss:** ${stop:.2f} (-{((entry-stop)/entry*100):.1f}%)")
-                            st.write(f"**Target:** ${target:.2f} (+{((target-entry)/entry*100):.1f}%)")
-                            st.write(f"**Risk/Reward:** 1:{risk_reward:.1f}")
-                        else:
-                            st.warning("Cannot calculate trade setup - invalid price levels")
+                        if tech.get('bb_upper') and tech.get('bb_lower'):
+                            st.write(f"**BB Upper:** ${tech['bb_upper']:.2f}")
+                            st.write(f"**BB Lower:** ${tech['bb_lower']:.2f}")
                     
+                    with col2:
+                        st.markdown("### Moving Averages")
+                        if tech.get('sma_20'):
+                            st.write(f"**SMA 20:** ${tech['sma_20']:.2f}")
+                        if tech.get('sma_50'):
+                            st.write(f"**SMA 50:** ${tech['sma_50']:.2f}")
+                        if tech.get('sma_200'):
+                            st.write(f"**SMA 200:** ${tech['sma_200']:.2f}")
+                        
+                        # Trend determination
+                        if tech.get('sma_20') and tech.get('sma_50'):
+                            if tech['price'] > tech['sma_20'] > tech.get('sma_50', 0):
+                                st.success("📈 Bullish Trend")
+                            elif tech['price'] < tech['sma_20'] < tech.get('sma_50', float('inf')):
+                                st.error("📉 Bearish Trend")
+                            else:
+                                st.info("↔️ Neutral Trend")
+                    
+                    with col3:
+                        st.markdown("### Momentum Indicators")
+                        if tech.get('rsi') is not None:
+                            rsi_value = tech['rsi']
+                            st.write(f"**RSI (14):** {rsi_value:.1f}")
+                            if rsi_value > 70:
+                                st.warning("⚠️ Overbought")
+                            elif rsi_value < 30:
+                                st.success("🎯 Oversold")
+                        
+                        if tech.get('macd') is not None and tech.get('macd_signal') is not None:
+                            st.write(f"**MACD:** {tech['macd']:.3f}")
+                            st.write(f"**Signal:** {tech['macd_signal']:.3f}")
+                            if tech['macd'] > tech['macd_signal']:
+                                st.success("📈 Bullish Cross")
+                            else:
+                                st.warning("📉 Bearish Cross")
+            
+            with analysis_tab2:
+                st.subheader("💰 Fundamental Analysis")
+                
+                if selected_analysis.get('fundamentals'):
+                    fund = selected_analysis['fundamentals']
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.markdown("### Valuation Metrics")
+                        metrics = {
+                            "P/E Ratio": fund.get('pe_ratio'),
+                            "Forward P/E": fund.get('forward_pe'),
+                            "PEG Ratio": fund.get('peg_ratio'),
+                            "P/B Ratio": fund.get('price_to_book'),
+                            "P/S Ratio": fund.get('price_to_sales')
+                        }
+                        
+                        for metric, value in metrics.items():
+                            if value is not None and value > 0:
+                                st.write(f"**{metric}:** {value:.2f}")
+                            else:
+                                st.write(f"**{metric}:** N/A")
+                    
+                    with col2:
+                        st.markdown("### Growth & Profitability")
+                        growth_metrics = {
+                            "Revenue Growth": fund.get('revenue_growth'),
+                            "Earnings Growth": fund.get('earnings_growth'),
+                            "Profit Margin": fund.get('profit_margins'),
+                            "Operating Margin": fund.get('operating_margins'),
+                            "ROE": fund.get('roe')
+                        }
+                        
+                        for metric, value in growth_metrics.items():
+                            if value is not None:
+                                if "Growth" in metric or "Margin" in metric or "ROE" in metric:
+                                    st.write(f"**{metric}:** {value*100:.1f}%")
+                                else:
+                                    st.write(f"**{metric}:** {value:.2f}")
+                            else:
+                                st.write(f"**{metric}:** N/A")
+                    
+                    with col3:
+                        st.markdown("### Financial Health")
+                        health_metrics = {
+                            "Debt/Equity": fund.get('debt_to_equity'),
+                            "Current Ratio": fund.get('current_ratio'),
+                            "Free Cash Flow": fund.get('free_cash_flow'),
+                            "Dividend Yield": fund.get('dividend_yield')
+                        }
+                        
+                        for metric, value in health_metrics.items():
+                            if value is not None:
+                                if metric == "Free Cash Flow":
+                                    st.write(f"**{metric}:** ${value/1e9:.2f}B" if value > 1e9 else f"${value/1e6:.0f}M")
+                                elif metric == "Dividend Yield":
+                                    st.write(f"**{metric}:** {value*100:.2f}%")
+                                else:
+                                    st.write(f"**{metric}:** {value:.2f}")
+                            else:
+                                st.write(f"**{metric}:** N/A")
+                
+                # Earnings section
+                if selected_analysis.get('earnings'):
+                    st.markdown("---")
+                    st.markdown("### 📊 Earnings History")
+                    earnings = selected_analysis['earnings']
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if earnings.get('last_report_date'):
+                            st.write(f"**Last Report:** {earnings['last_report_date']}")
+                        if earnings.get('last_eps') is not None:
+                            st.write(f"**Last EPS:** ${earnings['last_eps']:.2f}")
+                        if earnings.get('earnings_trend'):
+                            trend_emoji = "📈" if earnings['earnings_trend'] == 'Growing' else "📉"
+                            st.write(f"**Trend:** {trend_emoji} {earnings['earnings_trend']}")
+                    
+                    with col2:
+                        if earnings.get('next_earnings_date'):
+                            next_date = datetime.fromtimestamp(earnings['next_earnings_date'])
+                            days_until = (next_date - datetime.now()).days
+                            st.write(f"**Next Earnings:** {next_date.strftime('%Y-%m-%d')}")
+                            st.write(f"**Days Until:** {days_until}")
+            
+            with analysis_tab3:
+                st.subheader("📰 News & Market Sentiment")
+                
+                # Latest news
+                if selected_analysis.get('news_sentiment'):
+                    news = selected_analysis['news_sentiment']
+                    
+                    # Sentiment display
+                    sentiment_color = "green" if news['label'] == "Positive" else "red" if news['label'] == "Negative" else "gray"
+                    st.markdown(f"""
+                    <div style='padding: 1rem; border-radius: 0.5rem; background-color: {sentiment_color}; color: white;'>
+                        <h3>Sentiment: {news['label']} (Score: {news['score']:.2f})</h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown("### Latest Headline")
+                    st.write(f"**{news.get('headline', 'No headline available')}**")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Source:** {news.get('source', 'Unknown')}")
+                    with col2:
+                        st.write(f"**Date:** {news.get('date', 'Unknown')}")
+                    
+                    if news.get('link'):
+                        st.markdown(f"[Read Full Article]({news['link']})")
+                
+                # Market sentiment indicators
+                st.markdown("---")
+                st.markdown("### 🎯 Market Sentiment Indicators")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    # Volume sentiment
+                    rvol = selected_analysis.get('rvol', 1)
+                    if rvol > 2:
+                        st.success(f"🔥 High Volume ({rvol:.1f}x avg)")
+                    elif rvol > 1.5:
+                        st.info(f"📊 Above Avg Volume ({rvol:.1f}x)")
+                    else:
+                        st.warning(f"😴 Low Volume ({rvol:.1f}x)")
+                
                 with col2:
-                    st.subheader("💰 Position Sizing")
-                    account_size = st.number_input(
-                        "Account Size ($)", 
-                        value=10000, 
-                        step=1000, 
-                        min_value=0, 
-                        key=f"acc_{ticker_symbol}_{signal_idx}"
-                    )
-                    risk_pct = st.slider(
-                        "Risk per trade (%)", 
-                        1, 5, 2, 
-                        key=f"risk_{ticker_symbol}_{signal_idx}"
-                    )
-                    
-                    if tech and tech.get('price') and tech.get('support'):
-                        entry = tech['price']
-                        stop = tech['support']
+                    # Price action sentiment
+                    change = selected_analysis.get('change', 0)
+                    if abs(change) > 3:
+                        st.warning(f"⚡ High Volatility ({change:.1f}%)")
+                    else:
+                        st.info(f"📊 Normal Movement ({change:.1f}%)")
+                
+                with col3:
+                    # 52-week position
+                    if selected_analysis.get('performance'):
+                        from_low = selected_analysis['performance'].get('from_52w_low', 0)
+                        from_high = selected_analysis['performance'].get('from_52w_high', 0)
                         
-                        if entry > stop:
-                            risk_amount = account_size * (risk_pct / 100)
-                            stop_distance = entry - stop
-                            shares = int(risk_amount / stop_distance)
-                            position_size = shares * entry
+                        if from_high > -10:
+                            st.success(f"🎯 Near 52W High ({from_high:.1f}%)")
+                        elif from_low < 20:
+                            st.warning(f"⚠️ Near 52W Low (+{from_low:.1f}%)")
+                        else:
+                            st.info("📊 Mid-range")
+            
+            with analysis_tab4:
+                st.subheader("📈 Professional Trade Setup")
+                
+                # Position sizing calculator
+                col1, col2 = st.columns([3, 2])
+                
+                with col1:
+                    st.markdown("### 🎯 Entry & Exit Levels")
+                    
+                    if selected_analysis.get('technicals'):
+                        tech = selected_analysis['technicals']
+                        
+                        # Determine trade direction
+                        scores = selected_analysis['scores']
+                        if scores['day_score'] >= scores['swing_score'] and scores['day_score'] >= scores['position_score']:
+                            trade_type = "Day Trade"
+                            holding_period = "Intraday"
+                        elif scores['swing_score'] >= scores['position_score']:
+                            trade_type = "Swing Trade"
+                            holding_period = "2-10 days"
+                        else:
+                            trade_type = "Position Trade"
+                            holding_period = "Weeks to months"
+                        
+                        st.info(f"**Recommended Strategy:** {trade_type} ({holding_period})")
+                        
+                        # Calculate levels
+                        entry = tech['price']
+                        
+                        if trade_type == "Day Trade":
+                            stop = tech.get('support', entry * 0.98)
+                            target1 = tech.get('resistance', entry * 1.02)
+                            target2 = entry + (entry - stop) * 2  # 2:1 R:R
+                        else:
+                            stop = tech.get('support', entry * 0.95)
+                            target1 = tech.get('resistance', entry * 1.05)
+                            target2 = entry + (entry - stop) * 3  # 3:1 R:R
+                        
+                        # Display levels
+                        st.write(f"**Entry Price:** ${entry:.2f}")
+                        st.write(f"**Stop Loss:** ${stop:.2f} ({((stop-entry)/entry*100):.1f}%)")
+                        st.write(f"**Target 1:** ${target1:.2f} ({((target1-entry)/entry*100):+.1f}%)")
+                        st.write(f"**Target 2:** ${target2:.2f} ({((target2-entry)/entry*100):+.1f}%)")
+                        
+                        # Risk/Reward
+                        risk = entry - stop
+                        reward1 = target1 - entry
+                        reward2 = target2 - entry
+                        
+                        rr1 = reward1 / risk if risk > 0 else 0
+                        rr2 = reward2 / risk if risk > 0 else 0
+                        
+                        st.write(f"**Risk/Reward Ratios:** 1:{rr1:.1f} / 1:{rr2:.1f}")
+                
+                with col2:
+                    st.markdown("### 💰 Position Sizing")
+                    
+                    account_size = st.number_input("Account Size ($)", 
+                                                   min_value=1000, 
+                                                   value=10000, 
+                                                   step=1000)
+                    
+                    risk_percent = st.slider("Risk per Trade (%)", 
+                                           min_value=0.5, 
+                                           max_value=5.0, 
+                                           value=2.0, 
+                                           step=0.5)
+                    
+                    if 'entry' in locals() and 'stop' in locals():
+                        position_calc = calculate_position_size(account_size, risk_percent, entry, stop)
+                        
+                        if position_calc:
+                            st.write(f"**Risk Amount:** ${position_calc['risk_amount']:.2f}")
+                            st.write(f"**Shares to Buy:** {position_calc['shares']}")
+                            st.write(f"**Position Size:** ${position_calc['position_value']:,.2f}")
+                            st.write(f"**% of Account:** {position_calc['percent_of_account']:.1f}%")
                             
-                            st.write(f"**Risk Amount:** ${risk_amount:.2f}")
-                            st.write(f"**Shares to Buy:** {shares}")
-                            st.write(f"**Position Size:** ${position_size:.2f}")
-                            st.write(f"**% of Account:** {(position_size/account_size*100):.1f}%")
+                            # Kelly Criterion suggestion
+                            if position_calc['kelly_shares'] < position_calc['shares']:
+                                st.info(f"💡 Kelly Criterion suggests: {position_calc['kelly_shares']} shares")
                             
-                            # Score breakdown
-                            st.markdown("### 🎯 Score Breakdown")
-                            scores = full_data.get('scores', {})
-                            st.write(f"**Day Trade Score:** {scores.get('day_trade', 0):.0f}/100")
-                            st.write(f"**Swing Trade Score:** {scores.get('swing_trade', 0):.0f}/100")
-                            st.write(f"**Position Score:** {scores.get('position_trade', 0):.0f}/100")
-                            st.write(f"**Overall AI Score:** {scores.get('overall', 0):.0f}/100")
-                            
-                            # 💡 SIMULATE TRADE BUTTON - AUTO-NAVIGATION FIX
+                            # Add to cart buttons
                             st.markdown("---")
-                            col_sim1, col_sim2 = st.columns(2)
+                            col_a, col_b = st.columns(2)
                             
-                            with col_sim1:
-                                if st.button("🧾 Simulate Trade", key=f"sim_{ticker_symbol}_{signal_idx}", type="primary", use_container_width=True):
-                                    # Determine trade type based on highest score
-                                    if scores.get('day_trade', 0) >= scores.get('swing_trade', 0) and scores.get('day_trade', 0) >= scores.get('position_trade', 0):
-                                        trade_type_sim = "Day Trade"
-                                    elif scores.get('swing_trade', 0) >= scores.get('position_trade', 0):
-                                        trade_type_sim = "Swing Trade"
-                                    else:
-                                        trade_type_sim = "Position Trade"
-                                    
+                            with col_a:
+                                if st.button("🧾 Simulate Trade", type="primary", use_container_width=True):
                                     # Set session state for paper trading
-                                    st.session_state['prefill_ticker'] = ticker_symbol
+                                    st.session_state['prefill_ticker'] = selected_ticker
                                     st.session_state['prefill_entry'] = entry
-                                    st.session_state['prefill_exit'] = target if target else entry * 1.05
-                                    st.session_state['prefill_type'] = trade_type_sim
-                                    st.session_state['prefill_notes'] = f"AI Score: {scores.get('overall', 0):.0f} | News: {news.get('label', 'N/A') if full_data.get('news_sentiment') else 'N/A'}"
-                                    
-                                    # Auto-navigate to Paper Trading page
+                                    st.session_state['prefill_exit'] = target1
+                                    st.session_state['prefill_type'] = trade_type
+                                    st.session_state['prefill_shares'] = position_calc['shares']
                                     st.switch_page("pages/6_🧾_Paper_Trading.py")
                             
-                            with col_sim2:
-                                if st.button("📓 Add to Journal", key=f"journal_{ticker_symbol}_{signal_idx}", use_container_width=True):
-                                    st.session_state['journal_ticker'] = ticker_symbol
+                            with col_b:
+                                if st.button("📓 Add to Journal", use_container_width=True):
+                                    st.session_state['journal_ticker'] = selected_ticker
+                                    st.session_state['journal_entry'] = entry
+                                    st.session_state['journal_stop'] = stop
+                                    st.session_state['journal_target'] = target1
                                     st.switch_page("pages/5_📓_Journal.py")
+            
+            with analysis_tab5:
+                st.subheader("📑 AI-Generated Research Report")
+                
+                if show_research_summary:
+                    # Generate comprehensive research summary
+                    report = f"""
+                    ## {selected_ticker} - Investment Research Summary
+                    
+                    **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}
+                    
+                    ### Executive Summary
+                    {selected_ticker} is currently trading at ${selected_analysis['price']:.2f}, 
+                    {'up' if selected_analysis['change'] > 0 else 'down'} {abs(selected_analysis['change']):.1f}% today. 
+                    Our AI analysis assigns an overall score of {selected_analysis['scores']['ai_score']:.1f}/100, 
+                    with particular strength in {max(selected_analysis['scores'], key=lambda k: selected_analysis['scores'][k] if k != 'ai_score' else 0).replace('_', ' ').title()}.
+                    
+                    ### Investment Thesis
+                    """
+                    
+                    # Bullish/Bearish case
+                    if selected_analysis['scores']['ai_score'] > 70:
+                        report += f"""
+                        **Bullish Case:**
+                        - Strong technical momentum with price above key moving averages
+                        - {selected_analysis.get('news_sentiment', {}).get('label', 'Neutral')} news sentiment supports upward movement
+                        - Relative volume of {selected_analysis.get('rvol', 1):.1f}x indicates institutional interest
+                        """
+                    else:
+                        report += f"""
+                        **Neutral/Cautious View:**
+                        - Mixed technical signals require careful entry timing
+                        - Wait for clearer setup or improved fundamentals
+                        - Consider smaller position size or wait for better entry
+                        """
+                    
+                    # Fundamental highlights
+                    if selected_analysis.get('fundamentals'):
+                        fund = selected_analysis['fundamentals']
+                        pe = fund.get('pe_ratio')
+                        growth = fund.get('revenue_growth')
+                        
+                        report += f"""
+                        
+                        ### Fundamental Highlights
+                        - Valuation: {'Attractive' if pe and pe < 20 else 'Fair' if pe and pe < 30 else 'Premium'} 
+                          with P/E of {pe:.1f if pe else 'N/A'}
+                        - Growth: {'Strong' if growth and growth > 0.15 else 'Moderate' if growth and growth > 0.05 else 'Weak'} 
+                          revenue growth of {(growth*100):.1f if growth else 'N/A'}%
+                        - Sector: {selected_analysis.get('sector', 'Unknown')}
+                        - Industry: {selected_analysis.get('industry', 'Unknown')}
+                        """
+                    
+                    # Risk factors
+                    report += f"""
+                    
+                    ### Risk Factors
+                    - Market volatility and sector rotation risk
+                    - {'High valuation risk' if selected_analysis.get('fundamentals', {}).get('pe_ratio', 0) > 30 else 'Valuation within reasonable range'}
+                    - {'Earnings announcement upcoming' if selected_analysis.get('earnings', {}).get('next_earnings_date') else 'No near-term earnings catalyst'}
+                    
+                    ### Recommended Action
+                    Based on our analysis, {selected_ticker} is best suited for **{max(selected_analysis['scores'], key=lambda k: selected_analysis['scores'][k] if k != 'ai_score' else 0).replace('_', ' ').title()}** strategies.
+                    
+                    **Price Targets:**
+                    - Entry: ${selected_analysis['price']:.2f}
+                    - Target 1: ${selected_analysis['price'] * 1.05:.2f} (+5%)
+                    - Target 2: ${selected_analysis['price'] * 1.10:.2f} (+10%)
+                    - Stop Loss: ${selected_analysis['price'] * 0.95:.2f} (-5%)
+                    
+                    ---
+                    *This report is generated by AI and should not be considered investment advice. Always do your own research.*
+                    """
+                    
+                    st.markdown(report)
+                    
+                    # Download report button
+                    st.download_button(
+                        label="📥 Download Full Report",
+                        data=report,
+                        file_name=f"{selected_ticker}_research_{datetime.now().strftime('%Y%m%d')}.md",
+                        mime="text/markdown"
+                    )
     else:
-        st.info("Run the scanner first to see detailed signals.")
+        st.info("👆 Run the scanner to see detailed trading signals and analysis")
 
 with tab3:
-    st.header("💼 Portfolio Tracker")
-    if data_manager_instance:
-        portfolio_stats = data_manager_instance.analyze_portfolio_performance()
-        if portfolio_stats and portfolio_stats.get('total_trades', 0) > 0:
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total Trades", portfolio_stats['total_trades'])
-            with col2:
-                st.metric("Win Rate", f"{portfolio_stats['win_rate']*100:.1f}%")
-            with col3:
-                st.metric("Total P&L", f"${portfolio_stats['total_pnl']:.2f}")
-            with col4:
-                st.metric("Profit Factor", f"{portfolio_stats.get('profit_factor', 0):.2f}")
-                
-            # Trade journal preview
-            trades = data_manager_instance.get_trade_journal()
-            if trades:
-                st.subheader("Recent Trades")
-                recent_trades = trades[-5:]  # Last 5 trades
-                trade_df = pd.DataFrame(recent_trades)
-                st.dataframe(trade_df, use_container_width=True)
-        else:
-            st.info("No trades recorded yet. Start adding trades in the Trade Journal page.")
-    else:
-        st.warning("Portfolio tracking requires DataManager. Please ensure it's properly configured.")
+    st.header("💼 Portfolio Overview")
+    st.info("Portfolio tracking integrates with your Trade Journal and Paper Trading modules")
+    
+    if st.button("📓 Go to Trade Journal"):
+        st.switch_page("pages/5_📓_Journal.py")
+    
+    if st.button("🧾 Go to Paper Trading"):
+        st.switch_page("pages/6_🧾_Paper_Trading.py")
 
 with tab4:
-    st.header("📚 Trading Education")
+    st.header("📚 Trading Education - Professional Strategies")
     
-    # Enhanced education content with news sentiment integration
-    with st.expander("📰 Using News Sentiment in Trading"):
+    with st.expander("🎓 How Professional Traders Use These Scores"):
         st.markdown("""
-        ### How News Sentiment Affects Scores:
+        ### The Professional Approach
         
-        **Day Trading (1.5x multiplier)**
-        - News has highest impact on day trades
-        - Positive news can add up to 15 points
-        - Negative news can subtract up to 15 points
-        - React quickly to breaking news
+        **1. Pre-Market Routine (30 mins before open)**
+        - Run scanner on watchlist with all signals enabled
+        - Sort by AI Score > 80 to find best opportunities
+        - Check news sentiment for any overnight developments
+        - Review support/resistance levels from technical analysis
         
-        **Swing Trading (1x multiplier)**
-        - Moderate impact from news
-        - Look for sustained sentiment trends
-        - Combine with technical levels
+        **2. Position Entry Checklist**
+        - ✅ Score matches your strategy (Day/Swing/Position > 70)
+        - ✅ Risk/Reward ratio > 2:1
+        - ✅ Volume confirmation (RVOL > 1.5)
+        - ✅ Clear stop loss level identified
+        - ✅ Position size calculated (max 2% risk)
         
-        **Position Trading (0.5x multiplier)**
-        - Least affected by short-term news
-        - Focus on fundamental changes
-        - Consider long-term sentiment shifts
+        **3. Trade Management**
+        - Day Trades: Use trailing stops after 1:1 R:R achieved
+        - Swing Trades: Scale out 50% at target 1, let rest run
+        - Position Trades: Add on dips, trim on rips
         
-        ### Best Practices:
-        1. **Positive News + Technical Breakout** = Strong Buy Signal
-        2. **Negative News + Support Break** = Strong Sell Signal
-        3. **Mixed Sentiment** = Wait for clarity
-        4. Always confirm news with price action
-        """)
-    
-    with st.expander("⚡ Day Trading Strategy"):
-        st.markdown("""
-        ### Entry Criteria:
-        1. **AI Day Score > 60**
-        2. **RVOL > 2.0** (High relative volume)
-        3. **Positive news sentiment** (for longs)
-        4. **Price breaking VWAP or key level**
-        5. **Strong market (SPY green)**
+        **4. Post-Market Review**
+        - Journal all trades with entry/exit reasoning
+        - Review score accuracy vs actual performance
+        - Adjust filters based on what's working
         
-        ### Risk Management:
-        - Max 1-2% risk per trade
-        - Stop loss at previous candle low
-        - Take profits at resistance or 2:1 R/R
-        - No overnight positions
-        - Exit if news sentiment changes
+        ### 🏆 Hedge Fund Secrets
         
-        ### Best Times:
-        - First 30 minutes (9:30-10:00 AM ET)
-        - Power hour (3:00-4:00 PM ET)
-        - Immediately after news releases
-        """)
-    
-    with st.expander("📊 Swing Trading Strategy"):
-        st.markdown("""
-        ### Entry Criteria:
-        1. **AI Swing Score > 70**
-        2. **RSI oversold bounce or momentum**
-        3. **Price above 20 SMA**
-        4. **Volume confirmation**
-        5. **Sustained positive sentiment**
+        **The 80/20 Rule**: 80% of profits come from 20% of trades
+        - Focus on highest conviction setups (AI Score > 85)
+        - Size up on A+ setups, size down on B setups
         
-        ### Position Management:
-        - Hold 2-10 days
-        - Trail stop at 20 SMA
-        - Scale out at targets
-        - Position size: 5-10% of account
-        - Monitor daily news flow
+        **Risk Parity Approach**: Balance risk across strategies
+        - 40% Swing trades (moderate risk/reward)
+        - 30% Position trades (lower risk, steady returns)
+        - 30% Day trades (higher risk, quick profits)
         
-        ### Best Setups:
-        - Bull flag breakouts with positive news
-        - Oversold bounces at support
-        - Moving average reclaims
-        - Sentiment shifts from negative to positive
-        """)
-    
-    with st.expander("💎 Position Trading Strategy"):
-        st.markdown("""
-        ### Entry Criteria:
-        1. **AI Position Score > 75**
-        2. **Strong fundamentals (PE < 25, Growth > 15%)**
-        3. **Technical uptrend (above 50 SMA)**
-        4. **Sector leadership**
-        5. **Long-term positive sentiment trend**
-        
-        ### Long-term Approach:
-        - Hold weeks to months
-        - Add on dips to support
-        - Rebalance quarterly
-        - Focus on quality over quantity
-        - Track sentiment shifts over time
+        **The Edge**: Combining multiple confirmations
+        - Technical + Fundamental + Sentiment = Higher probability
+        - Never rely on just one indicator or score
         """)
 
 st.markdown("---")
-st.markdown("🚨 **Disclaimer:** This tool is for educational purposes. Always do your own research and manage risk appropriately.")
+st.caption("🚨 Remember: High scores indicate opportunity, not guarantee. Always use stop losses and proper position sizing.")
