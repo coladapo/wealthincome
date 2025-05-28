@@ -3,17 +3,8 @@ import pandas as pd
 import datetime
 import os
 
-# Prefill if values exist
-prefill_ticker = st.session_state.get("prefill_ticker", "")
-prefill_entry = st.session_state.get("prefill_entry", 100.0)
-prefill_exit = st.session_state.get("prefill_exit", prefill_entry * 1.05)
-
-ticker = st.text_input("Ticker (e.g. AAPL)", value=prefill_ticker)
-entry = st.number_input("Entry Price", value=prefill_entry)
-exit_ = st.number_input("Target Exit Price", value=prefill_exit)
-
 # ---- Setup ----
-TRADE_LOG = "paper_trades.csv"  # Save at root for Streamlit Cloud compatibility
+TRADE_LOG = "paper_trades.csv"  # Root level for Streamlit Cloud compatibility
 
 # ---- Load or Create Trade Log ----
 if os.path.exists(TRADE_LOG):
@@ -27,9 +18,15 @@ else:
 st.title("🧾 Paper Trading Agent")
 
 st.subheader("➕ Add a Simulated Trade")
-ticker = st.text_input("Ticker (e.g. AAPL)", "AAPL")
-entry = st.number_input("Entry Price", value=100.0)
-exit_ = st.number_input("Target Exit Price", value=105.0)
+
+# Prefill using session state (for simulate trade from AI Signals)
+prefill_ticker = st.session_state.get("prefill_ticker", "")
+prefill_entry = st.session_state.get("prefill_entry", 100.0)
+prefill_exit = st.session_state.get("prefill_exit", prefill_entry * 1.05)
+
+ticker = st.text_input("Ticker (e.g. AAPL)", value=prefill_ticker)
+entry = st.number_input("Entry Price", value=prefill_entry)
+exit_ = st.number_input("Target Exit Price", value=prefill_exit)
 trade_type = st.selectbox("Trade Type", ["Day Trade", "Swing Trade"])
 notes = st.text_area("Notes", "Triggered by dashboard signal")
 
