@@ -613,6 +613,35 @@ with tab2:
                             st.write(f"**Swing Trade Score:** {scores.get('swing_trade', 0):.0f}/100")
                             st.write(f"**Position Score:** {scores.get('position_trade', 0):.0f}/100")
                             st.write(f"**Overall AI Score:** {scores.get('overall', 0):.0f}/100")
+                            
+                            # 💡 SIMULATE TRADE BUTTON - AUTO-NAVIGATION FIX
+                            st.markdown("---")
+                            col_sim1, col_sim2 = st.columns(2)
+                            
+                            with col_sim1:
+                                if st.button("🧾 Simulate Trade", key=f"sim_{ticker_symbol}_{signal_idx}", type="primary", use_container_width=True):
+                                    # Determine trade type based on highest score
+                                    if scores.get('day_trade', 0) >= scores.get('swing_trade', 0) and scores.get('day_trade', 0) >= scores.get('position_trade', 0):
+                                        trade_type_sim = "Day Trade"
+                                    elif scores.get('swing_trade', 0) >= scores.get('position_trade', 0):
+                                        trade_type_sim = "Swing Trade"
+                                    else:
+                                        trade_type_sim = "Position Trade"
+                                    
+                                    # Set session state for paper trading
+                                    st.session_state['prefill_ticker'] = ticker_symbol
+                                    st.session_state['prefill_entry'] = entry
+                                    st.session_state['prefill_exit'] = target if target else entry * 1.05
+                                    st.session_state['prefill_type'] = trade_type_sim
+                                    st.session_state['prefill_notes'] = f"AI Score: {scores.get('overall', 0):.0f} | News: {news.get('label', 'N/A') if full_data.get('news_sentiment') else 'N/A'}"
+                                    
+                                    # Auto-navigate to Paper Trading page
+                                    st.switch_page("pages/6_🧾_Paper_Trading.py")
+                            
+                            with col_sim2:
+                                if st.button("📓 Add to Journal", key=f"journal_{ticker_symbol}_{signal_idx}", use_container_width=True):
+                                    st.session_state['journal_ticker'] = ticker_symbol
+                                    st.switch_page("pages/5_📓_Journal.py")
     else:
         st.info("Run the scanner first to see detailed signals.")
 
