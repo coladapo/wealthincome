@@ -787,90 +787,94 @@ with tab2:
                                 st.warning("📉 Bearish Cross")
             
             with analysis_tab2:
-                st.subheader("💰 Fundamental Analysis")
-                
-                if selected_analysis.get('fundamentals'):
-                    fund = selected_analysis['fundamentals']
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.markdown("### Valuation Metrics")
-                        metrics = {
-                            "P/E Ratio": fund.get('pe_ratio'),
-                            "Forward P/E": fund.get('forward_pe'),
-                            "PEG Ratio": fund.get('peg_ratio'),
-                            "P/B Ratio": fund.get('price_to_book'),
-                            "P/S Ratio": fund.get('price_to_sales')
-                        }
-                        
-                        for metric, value in metrics.items():
-                            if value is not None and value > 0:
-                                st.write(f"**{metric}:** {value:.2f}")
-                            else:
-                                st.write(f"**{metric}:** N/A")
-                    
-                    with col2:
-                        st.markdown("### Growth & Profitability")
-                        growth_metrics = {
-                            "Revenue Growth": fund.get('revenue_growth'),
-                            "Earnings Growth": fund.get('earnings_growth'),
-                            "Profit Margin": fund.get('profit_margins'),
-                            "Operating Margin": fund.get('operating_margins'),
-                            "ROE": fund.get('roe')
-                        }
-                        
-                        for metric, value in growth_metrics.items():
-                            if value is not None:
-                                if "Growth" in metric or "Margin" in metric or "ROE" in metric:
-                                    st.write(f"**{metric}:** {value*100:.1f}%")
-                                else:
-                                    st.write(f"**{metric}:** {value:.2f}")
-                            else:
-                                st.write(f"**{metric}:** N/A")
-                    
-                    with col3:
-                        st.markdown("### Financial Health")
-                        health_metrics = {
-                            "Debt/Equity": fund.get('debt_to_equity'),
-                            "Current Ratio": fund.get('current_ratio'),
-                            "Free Cash Flow": fund.get('free_cash_flow'),
-                            "Dividend Yield": fund.get('dividend_yield')
-                        }
-                        
-                        for metric, value in health_metrics.items():
-                            if value is not None:
-                                if metric == "Free Cash Flow":
-                                    st.write(f"**{metric}:** ${value/1e9:.2f}B" if value > 1e9 else f"${value/1e6:.0f}M")
-                                elif metric == "Dividend Yield":
-                                    st.write(f"**{metric}:** {value*100:.2f}%")
-                                else:
-                                    st.write(f"**{metric}:** {value:.2f}")
-                            else:
-                                st.write(f"**{metric}:** N/A")
-                
-                # Earnings section
-                if selected_analysis.get('earnings'):
-                    st.markdown("---")
-                    st.markdown("### 📊 Earnings History")
-                    earnings = selected_analysis['earnings']
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if earnings.get('last_report_date'):
-                            st.write(f"**Last Report:** {earnings['last_report_date']}")
-                        if earnings.get('last_eps') is not None:
-                            st.write(f"**Last EPS:** ${earnings['last_eps']:.2f}")
-                        if earnings.get('earnings_trend'):
-                            trend_emoji = "📈" if earnings['earnings_trend'] == 'Growing' else "📉"
-                            st.write(f"**Trend:** {trend_emoji} {earnings['earnings_trend']}")
-                    
-                    with col2:
-                        if earnings.get('next_earnings_date'):
-                            next_date = datetime.fromtimestamp(earnings['next_earnings_date'])
-                            days_until = (next_date - datetime.now()).days
-                            st.write(f"**Next Earnings:** {next_date.strftime('%Y-%m-%d')}")
-                            st.write(f"**Days Until:** {days_until}")
+    st.subheader("💰 Fundamental Analysis")
+    
+    if selected_analysis.get('fundamentals'):
+        fund = selected_analysis['fundamentals']
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("### Valuation Metrics")
+            metrics = {
+                "P/E Ratio": fund.get('pe_ratio'),
+                "Forward P/E": fund.get('forward_pe'),
+                "PEG Ratio": fund.get('peg_ratio'),
+                "P/B Ratio": fund.get('price_to_book'),
+                "P/S Ratio": fund.get('price_to_sales')
+            }
+            
+            for metric, value in metrics.items():
+                if value is not None and isinstance(value, (int, float)) and value > 0:
+                    st.write(f"**{metric}:** {value:.2f}")
+                else:
+                    st.write(f"**{metric}:** N/A")
+        
+        with col2:
+            st.markdown("### Growth & Profitability")
+            growth_metrics = {
+                "Revenue Growth": fund.get('revenue_growth'),
+                "Earnings Growth": fund.get('earnings_growth'),
+                "Profit Margin": fund.get('profit_margins'),
+                "Operating Margin": fund.get('operating_margins'),
+                "ROE": fund.get('roe')
+            }
+            
+            for metric, value in growth_metrics.items():
+                if value is not None and isinstance(value, (int, float)):
+                    # Format as percentage
+                    formatted_value = f"{value*100:.1f}%"
+                    st.write(f"**{metric}:** {formatted_value}")
+                else:
+                    st.write(f"**{metric}:** N/A")
+        
+        with col3:
+            st.markdown("### Financial Health")
+            health_metrics = {
+                "Debt/Equity": fund.get('debt_to_equity'),
+                "Current Ratio": fund.get('current_ratio'),
+                "Free Cash Flow": fund.get('free_cash_flow'),
+                "Dividend Yield": fund.get('dividend_yield')
+            }
+            
+            for metric, value in health_metrics.items():
+                if value is not None and isinstance(value, (int, float)):
+                    if metric == "Free Cash Flow":
+                        if value > 1e9:
+                            formatted_value = f"${value/1e9:.2f}B"
+                        else:
+                            formatted_value = f"${value/1e6:.0f}M"
+                        st.write(f"**{metric}:** {formatted_value}")
+                    elif metric == "Dividend Yield":
+                        formatted_value = f"{value*100:.2f}%"
+                        st.write(f"**{metric}:** {formatted_value}")
+                    else:
+                        st.write(f"**{metric}:** {value:.2f}")
+                else:
+                    st.write(f"**{metric}:** N/A")
+    
+    # Earnings section
+    if selected_analysis.get('earnings'):
+        st.markdown("---")
+        st.markdown("### 📊 Earnings History")
+        earnings = selected_analysis['earnings']
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if earnings.get('last_report_date'):
+                st.write(f"**Last Report:** {earnings['last_report_date']}")
+            if earnings.get('last_eps') is not None:
+                st.write(f"**Last EPS:** ${earnings['last_eps']:.2f}")
+            if earnings.get('earnings_trend'):
+                trend_emoji = "📈" if earnings['earnings_trend'] == 'Growing' else "📉"
+                st.write(f"**Trend:** {trend_emoji} {earnings['earnings_trend']}")
+        
+        with col2:
+            if earnings.get('next_earnings_date'):
+                next_date = datetime.fromtimestamp(earnings['next_earnings_date'])
+                days_until = (next_date - datetime.now()).days
+                st.write(f"**Next Earnings:** {next_date.strftime('%Y-%m-%d')}")
+                st.write(f"**Days Until:** {days_until}")
             
             with analysis_tab3:
                 st.subheader("📰 News & Market Sentiment")
