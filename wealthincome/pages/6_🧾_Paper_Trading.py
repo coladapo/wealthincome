@@ -34,7 +34,7 @@ st.set_page_config(
 st.title("🧾 Paper Trading")
 st.markdown("Practice trading strategies with virtual money before risking real capital")
 
-# Initialize portfolio in session state
+# Initialize or detect portfolio type
 if 'paper_portfolio' not in st.session_state:
     if ANALYTICS_AVAILABLE and PaperTradingPortfolio:
         st.session_state.paper_portfolio = PaperTradingPortfolio()
@@ -49,10 +49,18 @@ if 'paper_portfolio' not in st.session_state:
             'starting_capital': 100000.0
         }
         st.session_state.portfolio_type = 'basic'
+else:
+    # Detect portfolio type for existing portfolios
+    if 'portfolio_type' not in st.session_state:
+        # Check if it's an object or dictionary
+        if hasattr(st.session_state.paper_portfolio, 'execute_trade'):
+            st.session_state.portfolio_type = 'advanced'
+        else:
+            st.session_state.portfolio_type = 'basic'
 
-# Helper functions for basic mode
+# Helper functions that work with both portfolio types
 def get_portfolio_value():
-    """Get total portfolio value for basic mode"""
+    """Get total portfolio value for both modes"""
     if st.session_state.portfolio_type == 'advanced':
         return st.session_state.paper_portfolio.get_total_value()
     else:
@@ -63,7 +71,7 @@ def get_portfolio_value():
         return st.session_state.paper_portfolio.get('cash', 0) + positions_value
 
 def get_total_return():
-    """Get total return for basic mode"""
+    """Get total return for both modes"""
     if st.session_state.portfolio_type == 'advanced':
         return st.session_state.paper_portfolio.get_total_return()
     else:
@@ -72,7 +80,7 @@ def get_total_return():
         return ((total_value - starting_capital) / starting_capital) * 100
 
 def get_win_rate():
-    """Get win rate for basic mode"""
+    """Get win rate for both modes"""
     if st.session_state.portfolio_type == 'advanced':
         return st.session_state.paper_portfolio.get_win_rate()
     else:
@@ -84,11 +92,32 @@ def get_win_rate():
         return (len(winning_trades) / len(sell_trades)) * 100 if sell_trades else 0
 
 def get_trades_count():
-    """Get number of trades"""
+    """Get number of trades for both modes"""
     if st.session_state.portfolio_type == 'advanced':
         return len(st.session_state.paper_portfolio.trades)
     else:
         return len(st.session_state.paper_portfolio.get('trades', []))
+
+def get_cash():
+    """Get cash balance for both modes"""
+    if st.session_state.portfolio_type == 'advanced':
+        return st.session_state.paper_portfolio.cash
+    else:
+        return st.session_state.paper_portfolio.get('cash', 0)
+
+def get_positions():
+    """Get positions for both modes"""
+    if st.session_state.portfolio_type == 'advanced':
+        return st.session_state.paper_portfolio.positions
+    else:
+        return st.session_state.paper_portfolio.get('positions', {})
+
+def get_trades():
+    """Get trades for both modes"""
+    if st.session_state.portfolio_type == 'advanced':
+        return st.session_state.paper_portfolio.trades
+    else:
+        return st.session_state.paper_portfolio.get('trades', [])
 
 # Sidebar configuration
 with st.sidebar:
@@ -121,12 +150,16 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📊 Quick Stats")
     
-    # Calculate quick stats
+    # Calculate quick stats using helper functions
     win_rate = get_win_rate()
     trades_count = get_trades_count()
     
     st.metric("Win Rate", f"{win_rate:.1f}%")
     st.metric("Total Trades", trades_count)
+    
+    # Show portfolio mode
+    mode_color = "🟢" if st.session_state.portfolio_type == 'advanced' else "🟡"
+    st.markdown(f"{mode_color} Mode: {st.session_state.portfolio_type.title()}")
 
 # Main content area
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Trade", "💼 Portfolio", "📊 Analytics", "📜 History"])
@@ -187,7 +220,7 @@ with tab1:
                 limit_price = current_price
             
             # Stop loss and take profit (only in advanced mode)
-            if ANALYTICS_AVAILABLE:
+            if st.session_state.portfolio_type == 'advanced':
                 col_sl, col_tp = st.columns(2)
                 with col_sl:
                     use_stop_loss = st.checkbox("Set Stop Loss")
@@ -208,7 +241,7 @@ with tab1:
             submit_trade = st.form_submit_button("Execute Trade", type="primary", use_container_width=True)
             
             if submit_trade and current_price > 0:
-                # Execute trade
+                # Execute trade based on portfolio type
                 if st.session_state.portfolio_type == 'advanced':
                     success, message = st.session_state.paper_portfolio.execute_trade(
                         symbol=symbol,
@@ -333,24 +366,21 @@ with tab2:
     # Portfolio metrics
     col1, col2, col3, col4 = st.columns(4)
     
-    # Get values based on portfolio type
+    # Get values using helper functions
+    cash = get_cash()
+    positions = get_positions()
+    
+    # Calculate positions value
     if st.session_state.portfolio_type == 'advanced':
-        cash = st.session_state.paper_portfolio.cash
         positions_value = st.session_state.paper_portfolio.get_positions_value()
-        total_value = st.session_state.paper_portfolio.get_total_value()
-        total_return = st.session_state.paper_portfolio.get_total_return()
-        positions = st.session_state.paper_portfolio.positions
     else:
-        portfolio = st.session_state.paper_portfolio
-        cash = portfolio.get('cash', 0)
-        positions = portfolio.get('positions', {})
         positions_value = sum(
             pos.get('quantity', 0) * pos.get('current_price', pos.get('avg_price', 0)) 
             for pos in positions.values()
         )
-        total_value = cash + positions_value
-        starting_cap = portfolio.get('starting_capital', 100000)
-        total_return = ((total_value - starting_cap) / starting_cap) * 100
+    
+    total_value = get_portfolio_value()
+    total_return = get_total_return()
     
     with col1:
         st.metric("💵 Cash", f"${cash:,.2f}")
@@ -397,7 +427,7 @@ with tab2:
         st.dataframe(df_positions, use_container_width=True, hide_index=True)
         
         # Portfolio pie chart (if available)
-        if ANALYTICS_AVAILABLE and get_holdings_pie_chart:
+        if st.session_state.portfolio_type == 'advanced' and get_holdings_pie_chart:
             fig_pie = get_holdings_pie_chart(st.session_state.paper_portfolio)
             if fig_pie:
                 st.plotly_chart(fig_pie, use_container_width=True)
@@ -408,10 +438,10 @@ with tab2:
 with tab3:
     st.subheader("📊 Performance Analytics")
     
-    trades = st.session_state.paper_portfolio.trades if st.session_state.portfolio_type == 'advanced' else st.session_state.paper_portfolio.get('trades', [])
+    trades = get_trades()
     
     if trades:
-        if ANALYTICS_AVAILABLE and calculate_portfolio_metrics and st.session_state.portfolio_type == 'advanced':
+        if st.session_state.portfolio_type == 'advanced' and calculate_portfolio_metrics:
             # Advanced analytics
             metrics = calculate_portfolio_metrics(st.session_state.paper_portfolio)
             
@@ -452,7 +482,7 @@ with tab3:
 with tab4:
     st.subheader("📜 Trade History")
     
-    trades = st.session_state.paper_portfolio.trades if st.session_state.portfolio_type == 'advanced' else st.session_state.paper_portfolio.get('trades', [])
+    trades = get_trades()
     
     if trades:
         # Create DataFrame from trades
