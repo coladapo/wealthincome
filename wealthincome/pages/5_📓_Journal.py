@@ -150,40 +150,51 @@ with tab1:
             else:
                 st.error(f"Analysis failed: {analysis['error']}")
     
-    # Save trade button
-    st.markdown("---")
-    if st.button("💾 Save Trade", type="primary", use_container_width=True):
-        if ticker and entry_price > 0 and shares > 0:
-            # Prepare trade data
-            trade_data = {
-                'ticker': ticker,
-                'trade_type': trade_type,
-                'entry_date': entry_date.isoformat(),
-                'entry_time': entry_time.isoformat(),
-                'entry_price': entry_price,
-                'shares': shares,
-                'position_size': entry_price * shares,
-                'signal_source': signal_source,
-                'entry_notes': entry_notes,
-                'is_closed': is_closed
+  # Save trade button
+st.markdown("---")
+if st.button("💾 Save Trade", type="primary", use_container_width=True):
+    if ticker and entry_price > 0 and shares > 0:
+        # Prepare trade data with proper types
+        trade_data = {
+            'ticker': str(ticker),
+            'trade_type': str(trade_type),
+            'entry_date': entry_date.isoformat(),
+            'entry_time': entry_time.isoformat(),
+            'entry_price': float(entry_price),
+            'shares': int(shares),
+            'position_size': float(entry_price * shares),
+            'signal_source': list(signal_source),  # Convert to list
+            'entry_notes': str(entry_notes),
+            'is_closed': bool(is_closed)
+        }
+        
+        # Add exit data if closed
+        if is_closed:
+            trade_data.update({
+                'exit_date': exit_date.isoformat() if exit_date else None,
+                'exit_time': exit_time.isoformat() if exit_time else None,
+                'exit_price': float(exit_price) if exit_price else None,
+                'profit_loss': float(pnl) if pnl is not None else None,
+                'profit_loss_pct': float(pnl_pct) if pnl_pct is not None else None,
+                'exit_notes': str(exit_notes)
+            })
+        
+        # Add analysis if available
+        if 'analysis' in st.session_state.current_trade:
+            # Don't include the full analysis object, just key metrics
+            analysis = st.session_state.current_trade['analysis']
+            trade_data['entry_scores'] = {
+                'day_score': analysis.get('scores', {}).get('technical', {}).get('day_score', 0),
+                'swing_score': analysis.get('scores', {}).get('technical', {}).get('swing_score', 0),
+                'ai_score': analysis.get('scores', {}).get('technical', {}).get('ai_score', 0)
             }
-            
-            # Add exit data if closed
-            if is_closed:
-                trade_data.update({
-                    'exit_date': exit_date.isoformat() if exit_date else None,
-                    'exit_time': exit_time.isoformat() if exit_time else None,
-                    'exit_price': exit_price,
-                    'profit_loss': pnl,
-                    'profit_loss_pct': pnl_pct,
-                    'exit_notes': exit_notes
-                })
-            
-            # Add analysis if available
-            if 'analysis' in st.session_state.current_trade:
-                trade_data['entry_analysis'] = st.session_state.current_trade['analysis']
-            
-            # Save using enhanced method
+        
+        # Debug info
+        if st.session_state.get('debug_mode', False):
+            st.write("Trade data to save:", trade_data)
+        
+        # Save using enhanced method
+        try:
             if data_manager.add_trade_with_context(trade_data):
                 st.success("✅ Trade saved successfully!")
                 st.balloons()
@@ -192,9 +203,13 @@ with tab1:
                 st.session_state.current_trade = {}
                 st.rerun()
             else:
-                st.error("Failed to save trade")
-        else:
-            st.warning("Please fill in all required fields")
+                st.error("Failed to save trade. Check the console for details.")
+        except Exception as e:
+            st.error(f"Error saving trade: {str(e)}")
+            if st.session_state.get('debug_mode', False):
+                st.exception(e)
+    else:
+        st.warning("Please fill in all required fields (ticker, entry price, shares)")
 
 with tab2:
     st.header("📊 Trade History")
