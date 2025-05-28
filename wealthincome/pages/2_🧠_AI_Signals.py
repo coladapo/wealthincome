@@ -52,7 +52,7 @@ with st.expander("📚 Understanding the Scoring System", expanded=False):
         - Volume surge vs average (30% weight)
         - Price position in day's range (20% weight)
         - Technical momentum indicators (20% weight)
-    - **Good score**: 70+ indicates strong day trading opportunity
+    - **Good score**: 60+ indicates strong day trading opportunity
     - **Use when**: You plan to enter and exit within the same day
     
     #### 📊 **Swing Score (0-100)** - For Multi-Day Positions
@@ -62,7 +62,7 @@ with st.expander("📚 Understanding the Scoring System", expanded=False):
         - RSI and MACD signals (25% weight)
         - Support/Resistance levels (25% weight)
         - Volume confirmation (20% weight)
-    - **Good score**: 70+ indicates solid swing trade setup
+    - **Good score**: 60+ indicates solid swing trade setup
     - **Use when**: You plan to hold for several days to weeks
     
     #### 💎 **Position Score (0-100)** - For Long-Term Investment
@@ -72,7 +72,7 @@ with st.expander("📚 Understanding the Scoring System", expanded=False):
         - Revenue growth & margins (35% weight)
         - Debt levels & financial health (20% weight)
         - Technical trend confirmation (10% weight)
-    - **Good score**: 75+ indicates investment-grade opportunity
+    - **Good score**: 65+ indicates investment-grade opportunity
     - **Use when**: You plan to hold for months to years
     
     #### 🤖 **AI Score (0-100)** - Overall Rating
@@ -83,10 +83,10 @@ with st.expander("📚 Understanding the Scoring System", expanded=False):
     
     ### 📈 How Professionals Use These Scores
     
-    1. **Hedge Funds**: Focus on stocks with AI Score > 80 and specific strategy scores > 85
-    2. **Day Traders**: Filter for Day Score > 70 with RVOL > 2.0
-    3. **Swing Traders**: Look for Swing Score > 70 with good risk/reward setups
-    4. **Portfolio Managers**: Emphasize Position Score > 75 with strong fundamentals
+    1. **Hedge Funds**: Focus on stocks with AI Score > 70 and specific strategy scores > 75
+    2. **Day Traders**: Filter for Day Score > 60 with RVOL > 2.0
+    3. **Swing Traders**: Look for Swing Score > 60 with good risk/reward setups
+    4. **Portfolio Managers**: Emphasize Position Score > 65 with strong fundamentals
     
     💡 **Pro Tip**: The best trades often have high scores in multiple categories!
     """)
@@ -106,7 +106,7 @@ with st.sidebar:
     data_source = st.selectbox(
         "Data Source",
         ["📋 My Watchlist", "📊 Manual Tickers", "🔥 Top Movers", "📈 S&P 500 Leaders"],
-        index=0,
+        index=1,  # Default to Manual Tickers
         help="Choose where to scan for opportunities"
     )
     
@@ -136,6 +136,8 @@ with st.sidebar:
     use_earnings_data = st.checkbox("Include Earnings Analysis", value=True)
     use_insider_data = st.checkbox("Include Insider Activity", value=False)
     show_research_summary = st.checkbox("Generate AI Research Summary", value=True)
+    debug_mode = st.checkbox("Debug Mode", value=False, help="Show detailed scoring information")
+    st.session_state['debug_mode'] = debug_mode
 
 # Enhanced stock analysis function
 def analyze_stock_enhanced(ticker_symbol):
@@ -235,12 +237,17 @@ def analyze_stock_enhanced(ticker_symbol):
         
         # Generate trading signals
         signals = []
-        if analysis['scores']['day_score'] >= 70:
+        if analysis['scores']['day_score'] >= 60:  # Lowered from 70
             signals.append("⚡ DAY")
-        if analysis['scores']['swing_score'] >= 70:
+        if analysis['scores']['swing_score'] >= 60:  # Lowered from 70
             signals.append("📊 SWING")
-        if analysis['scores']['position_score'] >= 75:
+        if analysis['scores']['position_score'] >= 65:  # Lowered from 75
             signals.append("💎 POSITION")
+        
+        # If debug mode is on, show why no signals
+        if st.session_state.get('debug_mode', False) and not signals:
+            st.caption(f"Debug {ticker_symbol}: Day={analysis['scores']['day_score']:.0f}, Swing={analysis['scores']['swing_score']:.0f}, Position={analysis['scores']['position_score']:.0f}")
+        
         analysis['signals'] = signals
         
         return analysis
@@ -251,61 +258,99 @@ def analyze_stock_enhanced(ticker_symbol):
 
 def calculate_technical_indicators(hist_data, current_price):
     """Calculate comprehensive technical indicators"""
+    if hist_data is None or hist_data.empty:
+        return None
+        
     close_prices = hist_data['Close']
     
     indicators = {
         'price': current_price,
-        'sma_20': close_prices.rolling(20).mean().iloc[-1] if len(close_prices) >= 20 else None,
-        'sma_50': close_prices.rolling(50).mean().iloc[-1] if len(close_prices) >= 50 else None,
-        'sma_200': close_prices.rolling(200).mean().iloc[-1] if len(close_prices) >= 200 else None,
-        'ema_12': close_prices.ewm(span=12, adjust=False).mean().iloc[-1],
-        'ema_26': close_prices.ewm(span=26, adjust=False).mean().iloc[-1],
+        'sma_20': None,
+        'sma_50': None,
+        'sma_200': None,
+        'ema_12': None,
+        'ema_26': None,
+        'rsi': None,
+        'macd': None,
+        'macd_signal': None,
+        'macd_histogram': None,
+        'bb_upper': None,
+        'bb_lower': None,
+        'bb_width': None,
+        'bb_position': None,
+        'support': None,
+        'resistance': None,
+        'volume_sma': None,
+        'volume_ratio': 1,
+        'range': 0,
+        'true_range': 0
     }
     
-    # RSI
-    if len(close_prices) >= 14:
-        delta = close_prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
-    else:
-        indicators['rsi'] = 50
-    
-    # MACD
-    if len(close_prices) >= 26:
-        exp1 = close_prices.ewm(span=12, adjust=False).mean()
-        exp2 = close_prices.ewm(span=26, adjust=False).mean()
-        macd_line = exp1 - exp2
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        indicators['macd'] = macd_line.iloc[-1]
-        indicators['macd_signal'] = signal_line.iloc[-1]
-        indicators['macd_histogram'] = indicators['macd'] - indicators['macd_signal']
-    
-    # Bollinger Bands
-    if len(close_prices) >= 20:
-        sma = close_prices.rolling(20).mean()
-        std = close_prices.rolling(20).std()
-        indicators['bb_upper'] = (sma + (std * 2)).iloc[-1]
-        indicators['bb_lower'] = (sma - (std * 2)).iloc[-1]
-        indicators['bb_width'] = indicators['bb_upper'] - indicators['bb_lower']
-        indicators['bb_position'] = (current_price - indicators['bb_lower']) / indicators['bb_width'] if indicators['bb_width'] > 0 else 0.5
-    
-    # Support and Resistance
-    indicators['support'] = hist_data['Low'].rolling(20).min().iloc[-1]
-    indicators['resistance'] = hist_data['High'].rolling(20).max().iloc[-1]
-    
-    # Volume indicators
-    indicators['volume_sma'] = hist_data['Volume'].rolling(20).mean().iloc[-1]
-    indicators['volume_ratio'] = hist_data['Volume'].iloc[-1] / indicators['volume_sma'] if indicators['volume_sma'] > 0 else 1
-    
-    # Price action
-    indicators['range'] = hist_data['High'].iloc[-1] - hist_data['Low'].iloc[-1]
-    indicators['true_range'] = max(
-        hist_data['High'].iloc[-1] - hist_data['Low'].iloc[-1],
-        abs(hist_data['High'].iloc[-1] - hist_data['Close'].iloc[-2]) if len(hist_data) > 1 else 0,
-        abs(hist_data['Low'].iloc[-1] - hist_data['Close'].iloc[-2]) if len(hist_data) > 1 else 0
-    )
+    try:
+        # Moving averages
+        if len(close_prices) >= 20:
+            indicators['sma_20'] = close_prices.rolling(20).mean().iloc[-1]
+        if len(close_prices) >= 50:
+            indicators['sma_50'] = close_prices.rolling(50).mean().iloc[-1]
+        if len(close_prices) >= 200:
+            indicators['sma_200'] = close_prices.rolling(200).mean().iloc[-1]
+        
+        # EMAs
+        if len(close_prices) >= 12:
+            indicators['ema_12'] = close_prices.ewm(span=12, adjust=False).mean().iloc[-1]
+        if len(close_prices) >= 26:
+            indicators['ema_26'] = close_prices.ewm(span=26, adjust=False).mean().iloc[-1]
+        
+        # RSI
+        if len(close_prices) >= 14:
+            delta = close_prices.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
+        
+        # MACD
+        if len(close_prices) >= 26:
+            exp1 = close_prices.ewm(span=12, adjust=False).mean()
+            exp2 = close_prices.ewm(span=26, adjust=False).mean()
+            macd_line = exp1 - exp2
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            indicators['macd'] = macd_line.iloc[-1]
+            indicators['macd_signal'] = signal_line.iloc[-1]
+            indicators['macd_histogram'] = indicators['macd'] - indicators['macd_signal']
+        
+        # Bollinger Bands
+        if len(close_prices) >= 20:
+            sma = close_prices.rolling(20).mean()
+            std = close_prices.rolling(20).std()
+            indicators['bb_upper'] = (sma + (std * 2)).iloc[-1]
+            indicators['bb_lower'] = (sma - (std * 2)).iloc[-1]
+            indicators['bb_width'] = indicators['bb_upper'] - indicators['bb_lower']
+            if indicators['bb_width'] > 0:
+                indicators['bb_position'] = (current_price - indicators['bb_lower']) / indicators['bb_width']
+            
+        # Support and Resistance
+        if len(hist_data) >= 20:
+            indicators['support'] = hist_data['Low'].rolling(20).min().iloc[-1]
+            indicators['resistance'] = hist_data['High'].rolling(20).max().iloc[-1]
+        
+        # Volume indicators
+        if len(hist_data) >= 20:
+            indicators['volume_sma'] = hist_data['Volume'].rolling(20).mean().iloc[-1]
+            if indicators['volume_sma'] > 0:
+                indicators['volume_ratio'] = hist_data['Volume'].iloc[-1] / indicators['volume_sma']
+        
+        # Price action
+        indicators['range'] = hist_data['High'].iloc[-1] - hist_data['Low'].iloc[-1]
+        if len(hist_data) > 1:
+            indicators['true_range'] = max(
+                hist_data['High'].iloc[-1] - hist_data['Low'].iloc[-1],
+                abs(hist_data['High'].iloc[-1] - hist_data['Close'].iloc[-2]),
+                abs(hist_data['Low'].iloc[-1] - hist_data['Close'].iloc[-2])
+            )
+        
+    except Exception as e:
+        st.error(f"Error calculating indicators: {e}")
     
     return indicators
 
@@ -318,148 +363,161 @@ def calculate_professional_scores(analysis):
         'ai_score': 0
     }
     
-    # Day Trading Score (0-100)
-    if analysis.get('technicals'):
-        tech = analysis['technicals']
-        
-        # Intraday momentum (30 points)
-        change_pct = analysis.get('change', 0)
-        if change_pct > 3:
-            scores['day_score'] += 30
-        elif change_pct > 2:
-            scores['day_score'] += 20
-        elif change_pct > 1:
-            scores['day_score'] += 10
-        elif change_pct < -2:
-            scores['day_score'] -= 10
-        
-        # Volume surge (30 points)
-        rvol = analysis.get('rvol', 0)
-        if rvol > 3:
-            scores['day_score'] += 30
-        elif rvol > 2:
-            scores['day_score'] += 20
-        elif rvol > 1.5:
-            scores['day_score'] += 10
-        
-        # Technical momentum (20 points)
-        if tech.get('rsi'):
-            if 30 < tech['rsi'] < 70:
-                scores['day_score'] += 10
-            if tech['rsi'] < 30 or tech['rsi'] > 70:
-                scores['day_score'] += 10  # Extremes for reversals
-        
-        # Price position (20 points)
-        if tech.get('bb_position') is not None:
-            if tech['bb_position'] > 0.8 or tech['bb_position'] < 0.2:
+    try:
+        # Day Trading Score (0-100)
+        if analysis.get('technicals'):
+            tech = analysis['technicals']
+            
+            # Intraday momentum (30 points)
+            change_pct = analysis.get('change', 0)
+            if change_pct > 3:
+                scores['day_score'] += 30
+            elif change_pct > 2:
                 scores['day_score'] += 20
-            elif 0.6 < tech['bb_position'] < 0.8 or 0.2 < tech['bb_position'] < 0.4:
+            elif change_pct > 1:
                 scores['day_score'] += 10
-    
-    # Swing Trading Score (0-100)
-    if analysis.get('technicals'):
-        tech = analysis['technicals']
+            elif change_pct < -2:
+                scores['day_score'] -= 10
+            
+            # Volume surge (30 points)
+            rvol = analysis.get('rvol', 0)
+            if rvol > 3:
+                scores['day_score'] += 30
+            elif rvol > 2:
+                scores['day_score'] += 20
+            elif rvol > 1.5:
+                scores['day_score'] += 10
+            
+            # Technical momentum (20 points)
+            if tech.get('rsi') is not None:
+                if 30 < tech['rsi'] < 70:
+                    scores['day_score'] += 10
+                if tech['rsi'] < 30 or tech['rsi'] > 70:
+                    scores['day_score'] += 10  # Extremes for reversals
+            
+            # Price position (20 points)
+            if tech.get('bb_position') is not None:
+                if tech['bb_position'] > 0.8 or tech['bb_position'] < 0.2:
+                    scores['day_score'] += 20
+                elif 0.6 < tech['bb_position'] < 0.8 or 0.2 < tech['bb_position'] < 0.4:
+                    scores['day_score'] += 10
         
-        # Trend alignment (30 points)
-        price = tech.get('price', 0)
-        sma20 = tech.get('sma_20')
-        sma50 = tech.get('sma_50')
+        # Swing Trading Score (0-100)
+        if analysis.get('technicals'):
+            tech = analysis['technicals']
+            
+            # Trend alignment (30 points)
+            price = tech.get('price', 0)
+            sma20 = tech.get('sma_20')
+            sma50 = tech.get('sma_50')
+            
+            if price and sma20 and sma50:
+                if price > sma20 > sma50:
+                    scores['swing_score'] += 30
+                elif price > sma20:
+                    scores['swing_score'] += 15
+            elif price and sma20:  # Only 20 SMA available
+                if price > sma20:
+                    scores['swing_score'] += 20
+            
+            # MACD Signal (25 points)
+            if tech.get('macd') is not None and tech.get('macd_signal') is not None:
+                if tech['macd'] > tech['macd_signal']:
+                    scores['swing_score'] += 25
+                    if tech.get('macd_histogram', 0) > 0:
+                        scores['swing_score'] += 5
+            
+            # Support/Resistance (25 points)
+            if price and tech.get('support') and tech.get('resistance'):
+                support = tech['support']
+                resistance = tech['resistance']
+                if resistance > support:  # Valid range
+                    range_position = (price - support) / (resistance - support)
+                    if range_position < 0.3:  # Near support
+                        scores['swing_score'] += 25
+                    elif range_position > 0.7:  # Breaking resistance
+                        scores['swing_score'] += 20
+            
+            # RSI conditions (20 points)
+            if tech.get('rsi') is not None:
+                if 40 < tech['rsi'] < 60:
+                    scores['swing_score'] += 20
+                elif tech['rsi'] < 30:
+                    scores['swing_score'] += 15  # Oversold bounce
         
-        if price and sma20 and sma50:
-            if price > sma20 > sma50:
-                scores['swing_score'] += 30
-            elif price > sma20:
-                scores['swing_score'] += 15
-        
-        # MACD Signal (25 points)
-        if tech.get('macd') is not None and tech.get('macd_signal') is not None:
-            if tech['macd'] > tech['macd_signal']:
-                scores['swing_score'] += 25
-                if tech.get('macd_histogram', 0) > 0:
-                    scores['swing_score'] += 5
-        
-        # Support/Resistance (25 points)
-        if price and tech.get('support') and tech.get('resistance'):
-            range_position = (price - tech['support']) / (tech['resistance'] - tech['support']) if (tech['resistance'] - tech['support']) > 0 else 0.5
-            if range_position < 0.3:  # Near support
-                scores['swing_score'] += 25
-            elif range_position > 0.7:  # Breaking resistance
-                scores['swing_score'] += 20
-        
-        # RSI conditions (20 points)
-        if tech.get('rsi'):
-            if 40 < tech['rsi'] < 60:
-                scores['swing_score'] += 20
-            elif tech['rsi'] < 30:
-                scores['swing_score'] += 15  # Oversold bounce
-    
-    # Position Trading Score (0-100)
-    if analysis.get('fundamentals'):
-        fund = analysis['fundamentals']
-        
-        # Valuation metrics (35 points)
-        pe = fund.get('pe_ratio')
-        if pe and 0 < pe < 20:
-            scores['position_score'] += 20
-        elif pe and 20 < pe < 30:
-            scores['position_score'] += 10
-        
-        peg = fund.get('peg_ratio')
-        if peg and 0 < peg < 1:
-            scores['position_score'] += 15
-        elif peg and 1 < peg < 1.5:
-            scores['position_score'] += 8
-        
-        # Growth metrics (35 points)
-        rev_growth = fund.get('revenue_growth')
-        if rev_growth and rev_growth > 0.20:
-            scores['position_score'] += 20
-        elif rev_growth and rev_growth > 0.10:
-            scores['position_score'] += 10
-        
-        margins = fund.get('profit_margins')
-        if margins and margins > 0.20:
-            scores['position_score'] += 15
-        elif margins and margins > 0.10:
-            scores['position_score'] += 8
-        
-        # Financial health (20 points)
-        debt_equity = fund.get('debt_to_equity')
-        if debt_equity is not None:
-            if debt_equity < 0.5:
+        # Position Trading Score (0-100)
+        if analysis.get('fundamentals'):
+            fund = analysis['fundamentals']
+            
+            # Valuation metrics (35 points)
+            pe = fund.get('pe_ratio')
+            if pe and isinstance(pe, (int, float)) and 0 < pe < 20:
+                scores['position_score'] += 20
+            elif pe and isinstance(pe, (int, float)) and 20 < pe < 30:
                 scores['position_score'] += 10
-            elif debt_equity > 2:
-                scores['position_score'] -= 5
-        
-        roe = fund.get('roe')
-        if roe and roe > 0.15:
-            scores['position_score'] += 10
-        
-        # Technical confirmation (10 points)
-        if analysis.get('performance'):
-            if analysis['performance'].get('from_52w_low', 0) > 20:
+            
+            peg = fund.get('peg_ratio')
+            if peg and isinstance(peg, (int, float)) and 0 < peg < 1:
+                scores['position_score'] += 15
+            elif peg and isinstance(peg, (int, float)) and 1 < peg < 1.5:
+                scores['position_score'] += 8
+            
+            # Growth metrics (35 points)
+            rev_growth = fund.get('revenue_growth')
+            if rev_growth and isinstance(rev_growth, (int, float)) and rev_growth > 0.20:
+                scores['position_score'] += 20
+            elif rev_growth and isinstance(rev_growth, (int, float)) and rev_growth > 0.10:
                 scores['position_score'] += 10
-    
-    # News sentiment modifier (applies to all scores)
-    if analysis.get('news_sentiment'):
-        sentiment_modifier = 0
-        if analysis['news_sentiment']['label'] == 'Positive':
-            sentiment_modifier = 10
-        elif analysis['news_sentiment']['label'] == 'Negative':
-            sentiment_modifier = -10
+            
+            margins = fund.get('profit_margins')
+            if margins and isinstance(margins, (int, float)) and margins > 0.20:
+                scores['position_score'] += 15
+            elif margins and isinstance(margins, (int, float)) and margins > 0.10:
+                scores['position_score'] += 8
+            
+            # Financial health (20 points)
+            debt_equity = fund.get('debt_to_equity')
+            if debt_equity is not None and isinstance(debt_equity, (int, float)):
+                if debt_equity < 0.5:
+                    scores['position_score'] += 10
+                elif debt_equity > 2:
+                    scores['position_score'] -= 5
+            
+            roe = fund.get('roe')
+            if roe and isinstance(roe, (int, float)) and roe > 0.15:
+                scores['position_score'] += 10
+            
+            # Technical confirmation (10 points)
+            if analysis.get('performance'):
+                from_52w_low = analysis['performance'].get('from_52w_low', 0)
+                if isinstance(from_52w_low, (int, float)) and from_52w_low > 20:
+                    scores['position_score'] += 10
         
-        scores['day_score'] = max(0, min(100, scores['day_score'] + sentiment_modifier * 1.5))
-        scores['swing_score'] = max(0, min(100, scores['swing_score'] + sentiment_modifier))
-        scores['position_score'] = max(0, min(100, scores['position_score'] + sentiment_modifier * 0.5))
+        # News sentiment modifier (applies to all scores)
+        if analysis.get('news_sentiment'):
+            sentiment_modifier = 0
+            if analysis['news_sentiment']['label'] == 'Positive':
+                sentiment_modifier = 10
+            elif analysis['news_sentiment']['label'] == 'Negative':
+                sentiment_modifier = -10
+            
+            scores['day_score'] = max(0, min(100, scores['day_score'] + sentiment_modifier * 1.5))
+            scores['swing_score'] = max(0, min(100, scores['swing_score'] + sentiment_modifier))
+            scores['position_score'] = max(0, min(100, scores['position_score'] + sentiment_modifier * 0.5))
+        
+        # Ensure scores are in valid range
+        for key in ['day_score', 'swing_score', 'position_score']:
+            scores[key] = max(0, min(100, scores[key]))
+        
+        # Calculate AI Score (weighted average)
+        scores['ai_score'] = (scores['day_score'] * 0.3 + 
+                             scores['swing_score'] * 0.4 + 
+                             scores['position_score'] * 0.3)
     
-    # Ensure scores are in valid range
-    for key in ['day_score', 'swing_score', 'position_score']:
-        scores[key] = max(0, min(100, scores[key]))
-    
-    # Calculate AI Score (weighted average)
-    scores['ai_score'] = (scores['day_score'] * 0.3 + 
-                         scores['swing_score'] * 0.4 + 
-                         scores['position_score'] * 0.3)
+    except Exception as e:
+        st.error(f"Error calculating scores: {e}")
+        # Return default scores on error
+        return scores
     
     return scores
 
@@ -505,7 +563,7 @@ with tab1:
                 st.warning("Your watchlist is empty. Add stocks in the Watchlist page.")
     elif data_source == "📊 Manual Tickers":
         default_tickers = "NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA"
-        ticker_input = st.text_area("Enter tickers (comma-separated):", value=default_tickers, height=60)
+        ticker_input = st.text_area("Enter tickers (comma-separated):", value=default_tickers, height=100)
         tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
     elif data_source == "🔥 Top Movers":
         # In production, this would fetch real movers
@@ -554,11 +612,11 @@ with tab1:
                         continue
                     
                     # Strategy filter
-                    if trade_type == "⚡ Day Trade" and scores['day_score'] < 70:
+                    if trade_type == "⚡ Day Trade" and scores['day_score'] < 60:
                         continue
-                    elif trade_type == "📊 Swing Trade" and scores['swing_score'] < 70:
+                    elif trade_type == "📊 Swing Trade" and scores['swing_score'] < 60:
                         continue
-                    elif trade_type == "💎 Position Trade" and scores['position_score'] < 75:
+                    elif trade_type == "💎 Position Trade" and scores['position_score'] < 65:
                         continue
                     
                     filtered_results.append(r)
@@ -686,12 +744,20 @@ with tab2:
                     
                     with col2:
                         st.markdown("### Moving Averages")
-                        if tech.get('sma_20'):
+                        if tech.get('sma_20') is not None:
                             st.write(f"**SMA 20:** ${tech['sma_20']:.2f}")
-                        if tech.get('sma_50'):
+                        else:
+                            st.write("**SMA 20:** N/A")
+                            
+                        if tech.get('sma_50') is not None:
                             st.write(f"**SMA 50:** ${tech['sma_50']:.2f}")
-                        if tech.get('sma_200'):
+                        else:
+                            st.write("**SMA 50:** N/A")
+                            
+                        if tech.get('sma_200') is not None:
                             st.write(f"**SMA 200:** ${tech['sma_200']:.2f}")
+                        else:
+                            st.write("**SMA 200:** N/A")
                         
                         # Trend determination
                         if tech.get('sma_20') and tech.get('sma_50'):
@@ -1082,7 +1148,7 @@ with tab4:
         - Review support/resistance levels from technical analysis
         
         **2. Position Entry Checklist**
-        - ✅ Score matches your strategy (Day/Swing/Position > 70)
+        - ✅ Score matches your strategy (Day/Swing > 60, Position > 65)
         - ✅ Risk/Reward ratio > 2:1
         - ✅ Volume confirmation (RVOL > 1.5)
         - ✅ Clear stop loss level identified
