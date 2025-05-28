@@ -515,7 +515,7 @@ with tab3:
             st.success(f"🎯 Your ideal mentor is: **{best_mentor}**")
             st.info(f"Style: {MENTORS[best_mentor]['style']}")
             st.write("Key principle to start with:")
-            st.quote(MENTORS[best_mentor]['principles'][0])
+            st.info(f"💭 {MENTORS[best_mentor]['principles'][0]}")
 
 with tab4:
     st.header("🎓 Trading Wisdom Library")
@@ -554,7 +554,7 @@ with tab4:
             with col1:
                 st.write(f"{MENTORS[mentor]['emoji']} **{mentor}**")
             with col2:
-                st.quote(principle)
+                st.info(f"💭 {principle}")
         
     # Daily wisdom
     st.markdown("### 💡 Today's Trading Wisdom")
@@ -569,7 +569,7 @@ with tab4:
     
     daily_wisdom = random.choice(all_principles)
     st.info(f"{MENTORS[daily_wisdom[0]]['emoji']} **{daily_wisdom[0]}** says:")
-    st.quote(daily_wisdom[1])
+    st.info(f"💭 {daily_wisdom[1]}")
 
 # Footer
 st.markdown("---")
