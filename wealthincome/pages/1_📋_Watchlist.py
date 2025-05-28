@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
+import json
 
 # --- Start of Path Fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,42 +28,49 @@ except st.errors.StreamlitAPIException:
 
 st.title("📋 Watchlist Manager")
 
-# Load watchlist from data_manager
-watchlist = data_manager.get_watchlist()
-
-# Initialize session state
+# Initialize session state for temporary watchlist if not exists
 if 'temp_watchlist' not in st.session_state:
-    st.session_state.temp_watchlist = watchlist.copy()
+    # Load saved watchlist from data_manager
+    saved_watchlist = data_manager.get_watchlist()
+    st.session_state.temp_watchlist = saved_watchlist.copy()
+
+# Helper function to explain the difference
+with st.expander("ℹ️ How the Watchlist Works", expanded=False):
+    st.markdown("""
+    **Add Ticker**: Adds a stock to your temporary working list (not saved yet)
+    
+    **Save Watchlist**: Permanently saves all your tickers to disk so they persist between sessions
+    
+    Think of it like editing a document:
+    - Adding tickers = typing changes
+    - Saving watchlist = clicking "Save" to keep your changes
+    """)
 
 # Sidebar for quick actions
 with st.sidebar:
     st.header("⚡ Quick Actions")
     
-    # Add from AI Signals
-    if 'trade_signals' in st.session_state and st.session_state.trade_signals:
-        st.subheader("Add from AI Signals")
-        ai_tickers = [s['Ticker'] for s in st.session_state.trade_signals if s['Ticker'] not in st.session_state.temp_watchlist]
-        if ai_tickers:
-            selected_ai = st.multiselect("Select tickers:", ai_tickers)
-            if st.button("Add Selected", key="add_ai"):
-                st.session_state.temp_watchlist.extend(selected_ai)
-                st.success(f"Added {len(selected_ai)} tickers from AI signals")
-                st.rerun()
+    # Show save status
+    if len(st.session_state.temp_watchlist) != len(data_manager.get_watchlist()):
+        st.warning("⚠️ You have unsaved changes!")
+    else:
+        st.success("✅ Watchlist is saved")
     
-    # Add from News
-    if 'news_articles' in st.session_state and st.session_state.news_articles:
-        st.subheader("Add from News")
-        # Get positive sentiment tickers
-        positive_tickers = list(set([
-            article['Ticker'] for article in st.session_state.news_articles 
-            if article.get('Cached_Sentiment') == 'Positive' and article['Ticker'] not in st.session_state.temp_watchlist
-        ]))
-        if positive_tickers:
-            selected_news = st.multiselect("Positive sentiment:", positive_tickers)
-            if st.button("Add Selected", key="add_news"):
-                st.session_state.temp_watchlist.extend(selected_news)
-                st.success(f"Added {len(selected_news)} positive sentiment tickers")
-                st.rerun()
+    # Quick add from popular stocks
+    st.subheader("🔥 Quick Add Popular Stocks")
+    popular_stocks = {
+        "Magnificent 7": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
+        "High Momentum": ["SMCI", "ARM", "PLTR", "COIN", "MARA"],
+        "Value Picks": ["BRK-B", "JPM", "JNJ", "PG", "KO"]
+    }
+    
+    selected_group = st.selectbox("Select group:", list(popular_stocks.keys()))
+    if st.button(f"Add all {selected_group}", key="add_group"):
+        for ticker in popular_stocks[selected_group]:
+            if ticker not in st.session_state.temp_watchlist:
+                st.session_state.temp_watchlist.append(ticker)
+        st.success(f"Added {len(popular_stocks[selected_group])} stocks!")
+        st.rerun()
 
 # Main content
 col1, col2 = st.columns([2, 1])
@@ -70,55 +78,60 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.header("📊 Current Watchlist")
     
-    # Add new ticker manually
-    with st.form("add_ticker_form"):
-        new_ticker = st.text_input("Add ticker manually:", placeholder="AAPL")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            submitted = st.form_submit_button("➕ Add Ticker", use_container_width=True)
-        with col_b:
-            save_all = st.form_submit_button("💾 Save Watchlist", type="primary", use_container_width=True)
+    # Add new ticker form
+    with st.form("add_ticker_form", clear_on_submit=True):
+        col_input, col_add, col_save = st.columns([3, 1, 1])
         
-        if submitted and new_ticker:
+        with col_input:
+            new_ticker = st.text_input("Add ticker:", placeholder="AAPL", label_visibility="collapsed")
+        
+        with col_add:
+            add_button = st.form_submit_button("➕ Add Ticker", use_container_width=True, type="secondary")
+        
+        with col_save:
+            save_button = st.form_submit_button("💾 Save Watchlist", use_container_width=True, type="primary")
+        
+        # Handle Add Ticker
+        if add_button and new_ticker:
             ticker_upper = new_ticker.strip().upper()
-            if ticker_upper not in st.session_state.temp_watchlist:
-                st.session_state.temp_watchlist.append(ticker_upper)
-                st.success(f"Added {ticker_upper} to watchlist")
-                st.rerun()
+            if ticker_upper in st.session_state.temp_watchlist:
+                st.warning(f"⚠️ {ticker_upper} is already in your watchlist")
             else:
-                st.warning(f"{ticker_upper} already in watchlist")
+                # Validate ticker exists
+                try:
+                    test = yf.Ticker(ticker_upper)
+                    info = test.info
+                    if info.get('regularMarketPrice'):
+                        st.session_state.temp_watchlist.append(ticker_upper)
+                        st.success(f"✅ Added {ticker_upper} to watchlist (not saved yet)")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {ticker_upper} is not a valid ticker")
+                except:
+                    st.error(f"❌ Could not validate {ticker_upper}")
         
-        if save_all:
+        # Handle Save Watchlist
+        if save_button:
             if data_manager.save_watchlist(st.session_state.temp_watchlist):
-                st.success("✅ Watchlist saved successfully!")
+                st.success("✅ Watchlist saved permanently!")
                 st.balloons()
             else:
-                st.error("Failed to save watchlist")
+                st.error("❌ Failed to save watchlist")
 
 with col2:
     st.header("📈 Quick Stats")
-    st.metric("Total Tickers", len(st.session_state.temp_watchlist))
     
-    # Calculate some stats
-    if st.session_state.temp_watchlist:
-        gaining = 0
-        losing = 0
-        for ticker in st.session_state.temp_watchlist[:10]:  # Check first 10 for performance
-            try:
-                info = yf.Ticker(ticker).info
-                change = info.get('regularMarketChangePercent', 0)
-                if change > 0:
-                    gaining += 1
-                elif change < 0:
-                    losing += 1
-            except:
-                pass
-        
-        col_stat1, col_stat2 = st.columns(2)
-        with col_stat1:
-            st.metric("Gaining", gaining, f"{gaining/(gaining+losing)*100:.0f}%" if (gaining+losing) > 0 else "0%")
-        with col_stat2:
-            st.metric("Losing", losing, f"{losing/(gaining+losing)*100:.0f}%" if (gaining+losing) > 0 else "0%")
+    # Calculate portfolio metrics
+    total_tickers = len(st.session_state.temp_watchlist)
+    st.metric("Total Tickers", total_tickers)
+    
+    # Show save status prominently
+    saved_list = data_manager.get_watchlist()
+    if st.session_state.temp_watchlist != saved_list:
+        unsaved_changes = len(st.session_state.temp_watchlist) - len(saved_list)
+        st.metric("Unsaved Changes", abs(unsaved_changes), delta=f"{unsaved_changes:+d} tickers")
+    else:
+        st.metric("Status", "All Saved", delta="✓")
 
 # Display watchlist with live data
 if st.session_state.temp_watchlist:
@@ -130,11 +143,12 @@ if st.session_state.temp_watchlist:
         
         for ticker in st.session_state.temp_watchlist:
             try:
-                # Get data from data_manager (cached)
+                # Get comprehensive data from data_manager
                 stock_data = data_manager.get_stock_data([ticker], period="1d")
                 
                 if stock_data and ticker in stock_data:
                     info = stock_data[ticker]['info']
+                    hist = stock_data[ticker]['history']
                     
                     # Calculate signals
                     signals = data_manager.calculate_signals(stock_data[ticker])
@@ -142,136 +156,212 @@ if st.session_state.temp_watchlist:
                     # Get news sentiment
                     news = data_manager.get_latest_news_sentiment(ticker)
                     
+                    # Calculate price metrics
+                    current_price = info.get('regularMarketPrice', 0)
+                    prev_close = info.get('previousClose', current_price)
+                    change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
+                    
+                    # Calculate 52-week position
+                    fifty_two_high = info.get('fiftyTwoWeekHigh', current_price)
+                    fifty_two_low = info.get('fiftyTwoWeekLow', current_price)
+                    position_52w = ((current_price - fifty_two_low) / (fifty_two_high - fifty_two_low) * 100) if (fifty_two_high - fifty_two_low) > 0 else 50
+                    
                     watchlist_data.append({
                         'Ticker': ticker,
-                        'Price': info.get('regularMarketPrice', 0),
-                        'Change %': info.get('regularMarketChangePercent', 0),
+                        'Price': current_price,
+                        'Change %': change_pct,
                         'Volume': info.get('regularMarketVolume', 0),
                         'Avg Volume': info.get('averageVolume', 0),
                         'Day Score': signals.get('day_score', 0),
                         'Swing Score': signals.get('swing_score', 0),
                         'News': news['label'] if news else 'N/A',
+                        'Market Cap': info.get('marketCap', 0),
+                        '52W Position': position_52w,
+                        'PE Ratio': info.get('trailingPE', 0),
                         'Remove': False
                     })
             except Exception as e:
                 st.error(f"Error fetching {ticker}: {str(e)}")
-    
-    if watchlist_data:
-        # Create DataFrame
-        df = pd.DataFrame(watchlist_data)
         
-        # Calculate RVOL before formatting
-        df['RVOL'] = df.apply(lambda row: row['Volume'] / row['Avg Volume'] if row['Avg Volume'] > 0 else 0, axis=1)
-        
-        # Format columns
-        df['Price'] = df['Price'].apply(lambda x: f"${x:.2f}")
-        df['Change %'] = df['Change %'].apply(lambda x: f"{x:.2f}%")
-        df['Volume'] = df['Volume'].apply(lambda x: f"{x/1e6:.1f}M" if x > 0 else "0")
-        df['RVOL'] = df['RVOL'].apply(lambda x: f"{x:.2f}")
-        df['Day Score'] = df['Day Score'].apply(lambda x: f"{x:.0f}")
-        df['Swing Score'] = df['Swing Score'].apply(lambda x: f"{x:.0f}")
-        
-        # Remove Avg Volume column (used for RVOL calculation)
-        df = df.drop(columns=['Avg Volume'])
-        
-        # Display with sorting
-        st.subheader("📊 Watchlist Details")
-        
-        # Sorting options
-        sort_col1, sort_col2 = st.columns([3, 1])
-        with sort_col1:
-            sort_by = st.selectbox("Sort by:", 
-                                   ["Ticker", "Change %", "Day Score", "Swing Score", "RVOL"],
-                                   index=1)
-        with sort_col2:
-            sort_order = st.radio("Order:", ["Desc", "Asc"])
-        
-        # Sort dataframe
-        ascending = sort_order == "Asc"
-        if sort_by == "Change %":
-            df['_sort_change'] = df['Change %'].str.rstrip('%').astype(float)
-            df = df.sort_values('_sort_change', ascending=ascending).drop(columns=['_sort_change'])
-        elif sort_by in ["Day Score", "Swing Score"]:
-            df[f'_sort_{sort_by}'] = df[sort_by].astype(float)
-            df = df.sort_values(f'_sort_{sort_by}', ascending=ascending).drop(columns=[f'_sort_{sort_by}'])
-        elif sort_by == "RVOL":
-            df['_sort_rvol'] = df['RVOL'].astype(float)
-            df = df.sort_values('_sort_rvol', ascending=ascending).drop(columns=['_sort_rvol'])
-        else:
-            df = df.sort_values(sort_by, ascending=ascending)
-        
-        # Display DataFrame
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Remove": st.column_config.CheckboxColumn(
-                    "Remove",
-                    help="Select to remove from watchlist",
-                    default=False,
+        if watchlist_data:
+            # Create DataFrame
+            df = pd.DataFrame(watchlist_data)
+            
+            # Calculate additional metrics
+            df['RVOL'] = df.apply(lambda row: row['Volume'] / row['Avg Volume'] if row['Avg Volume'] > 0 else 0, axis=1)
+            
+            # Format for display
+            display_df = df.copy()
+            display_df['Price'] = display_df['Price'].apply(lambda x: f"${x:.2f}")
+            display_df['Change %'] = display_df['Change %'].apply(lambda x: f"{x:.1f}%")  # Fixed: Clean format
+            display_df['RVOL'] = display_df['RVOL'].apply(lambda x: f"{x:.1f}")  # Fixed: Clean format
+            display_df['Day Score'] = display_df['Day Score'].apply(lambda x: f"{x:.0f}")  # Fixed: No decimals
+            display_df['Swing Score'] = display_df['Swing Score'].apply(lambda x: f"{x:.0f}")  # Fixed: No decimals
+            display_df['52W Position'] = display_df['52W Position'].apply(lambda x: f"{x:.0f}%")
+            display_df['PE Ratio'] = display_df['PE Ratio'].apply(lambda x: f"{x:.1f}" if x > 0 else "N/A")
+            display_df['Market Cap'] = display_df['Market Cap'].apply(lambda x: f"${x/1e9:.1f}B" if x > 1e9 else f"${x/1e6:.0f}M" if x > 0 else "N/A")
+            
+            # Remove technical columns
+            display_df = display_df[['Ticker', 'Price', 'Change %', 'RVOL', 'Day Score', 'Swing Score', 'News', 'Market Cap', '52W Position', 'PE Ratio']]
+            
+            # Display controls
+            st.subheader("📊 Watchlist Overview")
+            
+            col_sort1, col_sort2, col_filter = st.columns([2, 2, 2])
+            with col_sort1:
+                sort_by = st.selectbox("Sort by:", 
+                    ['Change %', 'Day Score', 'Swing Score', 'RVOL', '52W Position'],
+                    index=0
                 )
-            }
-        )
-        
-        # Remove selected
-        col_rem1, col_rem2, col_rem3 = st.columns([1, 1, 2])
-        with col_rem1:
-            # Simple remove by ticker selection
-            ticker_to_remove = st.selectbox("Remove ticker:", [""] + st.session_state.temp_watchlist)
-            if st.button("🗑️ Remove", use_container_width=True) and ticker_to_remove:
-                st.session_state.temp_watchlist.remove(ticker_to_remove)
-                st.success(f"Removed {ticker_to_remove}")
-                st.rerun()
-        
-        with col_rem2:
-            if st.button("🔄 Refresh Data", use_container_width=True):
-                st.cache_data.clear()
-                st.rerun()
-        
-        # Quick actions for selected ticker
-        st.markdown("---")
-        st.subheader("🎯 Quick Analysis")
-        
-        selected_ticker = st.selectbox("Select ticker for detailed view:", 
-                                       st.session_state.temp_watchlist)
-        
-        if selected_ticker:
-            col_act1, col_act2, col_act3, col_act4 = st.columns(4)
+            with col_sort2:
+                sort_order = st.radio("Order:", ["High to Low", "Low to High"], horizontal=True)
+            with col_filter:
+                min_score = st.slider("Min Score Filter:", 0, 100, 0)
             
-            with col_act1:
-                if st.button("📊 View Patterns", use_container_width=True):
-                    st.session_state['analyze_ticker'] = selected_ticker
-                    st.switch_page("pages/4_📊_Patterns.py")
+            # Apply sorting (need to work with original numeric values)
+            if sort_by == 'Change %':
+                df = df.sort_values('Change %', ascending=(sort_order == "Low to High"))
+            elif sort_by in ['Day Score', 'Swing Score']:
+                df = df.sort_values(sort_by, ascending=(sort_order == "Low to High"))
+            elif sort_by == 'RVOL':
+                df = df.sort_values('RVOL', ascending=(sort_order == "Low to High"))
+            elif sort_by == '52W Position':
+                df = df.sort_values('52W Position', ascending=(sort_order == "Low to High"))
             
-            with col_act2:
-                if st.button("📰 Check News", use_container_width=True):
-                    st.session_state['news_ticker_filter'] = selected_ticker
-                    st.switch_page("pages/3_📰_News.py")
+            # Apply filter
+            if min_score > 0:
+                mask = (df['Day Score'] >= min_score) | (df['Swing Score'] >= min_score)
+                filtered_df = df[mask]
+                if len(filtered_df) > 0:
+                    df = filtered_df
+                else:
+                    st.warning(f"No stocks meet the minimum score of {min_score}")
             
-            with col_act3:
-                if st.button("🤖 AI Analysis", use_container_width=True):
-                    st.session_state['analyze_ticker'] = selected_ticker
-                    st.switch_page("pages/2_🧠_AI_Signals.py")
+            # Re-create display dataframe after sorting/filtering
+            display_df = df.copy()
+            display_df['Price'] = display_df['Price'].apply(lambda x: f"${x:.2f}")
+            display_df['Change %'] = display_df['Change %'].apply(lambda x: f"{x:.1f}%")
+            display_df['RVOL'] = display_df['RVOL'].apply(lambda x: f"{x:.1f}")
+            display_df['Day Score'] = display_df['Day Score'].apply(lambda x: f"{x:.0f}")
+            display_df['Swing Score'] = display_df['Swing Score'].apply(lambda x: f"{x:.0f}")
+            display_df['52W Position'] = display_df['52W Position'].apply(lambda x: f"{x:.0f}%")
+            display_df['PE Ratio'] = display_df['PE Ratio'].apply(lambda x: f"{x:.1f}" if x > 0 else "N/A")
+            display_df['Market Cap'] = display_df['Market Cap'].apply(lambda x: f"${x/1e9:.1f}B" if x > 1e9 else f"${x/1e6:.0f}M" if x > 0 else "N/A")
+            display_df = display_df[['Ticker', 'Price', 'Change %', 'RVOL', 'Day Score', 'Swing Score', 'News', 'Market Cap', '52W Position', 'PE Ratio']]
             
-            with col_act4:
-                if st.button("📓 Add to Journal", use_container_width=True):
-                    st.session_state['journal_ticker'] = selected_ticker
-                    st.switch_page("pages/5_📓_Journal.py")
+            # Display the dataframe
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Change %": st.column_config.TextColumn(
+                        "Change %",
+                        help="Daily price change percentage"
+                    ),
+                    "RVOL": st.column_config.TextColumn(
+                        "RVOL",
+                        help="Relative Volume - today's volume vs average"
+                    ),
+                    "Day Score": st.column_config.TextColumn(
+                        "Day Score",
+                        help="0-100 score for day trading potential"
+                    ),
+                    "Swing Score": st.column_config.TextColumn(
+                        "Swing Score", 
+                        help="0-100 score for swing trading potential"
+                    ),
+                    "52W Position": st.column_config.TextColumn(
+                        "52W Position",
+                        help="Where price sits in 52-week range (0% = low, 100% = high)"
+                    )
+                }
+            )
+            
+            # Remove ticker functionality
+            st.markdown("---")
+            col_rem1, col_rem2, col_rem3 = st.columns([2, 1, 1])
+            
+            with col_rem1:
+                ticker_to_remove = st.selectbox("Remove ticker:", [""] + st.session_state.temp_watchlist)
+            
+            with col_rem2:
+                if st.button("🗑️ Remove Selected", use_container_width=True) and ticker_to_remove:
+                    st.session_state.temp_watchlist.remove(ticker_to_remove)
+                    st.success(f"Removed {ticker_to_remove} (remember to save!)")
+                    st.rerun()
+            
+            with col_rem3:
+                if st.button("🔄 Refresh Data", use_container_width=True):
+                    st.cache_data.clear()
+                    st.rerun()
+            
+            # Quick Analysis Section
+            st.markdown("---")
+            st.subheader("🎯 Quick Analysis")
+            
+            selected_ticker = st.selectbox("Select ticker for detailed view:", 
+                                         st.session_state.temp_watchlist)
+            
+            if selected_ticker:
+                col_act1, col_act2, col_act3, col_act4 = st.columns(4)
+                
+                with col_act1:
+                    if st.button("📊 View Patterns", use_container_width=True):
+                        st.session_state['analyze_ticker'] = selected_ticker
+                        st.switch_page("pages/4_📊_Patterns.py")
+                
+                with col_act2:
+                    if st.button("📰 Check News", use_container_width=True):
+                        st.session_state['news_ticker_filter'] = selected_ticker
+                        st.switch_page("pages/3_📰_News.py")
+                
+                with col_act3:
+                    if st.button("🤖 AI Analysis", use_container_width=True):
+                        st.session_state['analyze_ticker'] = selected_ticker
+                        st.switch_page("pages/2_🧠_AI_Signals.py")
+                
+                with col_act4:
+                    if st.button("📓 Add to Journal", use_container_width=True):
+                        st.session_state['journal_ticker'] = selected_ticker
+                        st.switch_page("pages/5_📓_Journal.py")
 
 else:
     st.info("👆 Your watchlist is empty. Add some tickers to get started!")
     
-    # Suggestions
-    st.markdown("### 💡 Suggestions")
-    st.markdown("""
-    - Run the **AI Scanner** to find high-scoring stocks
-    - Check **Market News** for stocks with positive sentiment
-    - Add major indices: SPY, QQQ, DIA, IWM
-    - Popular stocks: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA
-    """)
+    # Show suggestions
+    st.markdown("### 💡 Quick Start Suggestions")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**📈 Trending Now**")
+        if st.button("Add NVDA"):
+            st.session_state.temp_watchlist.append("NVDA")
+            st.rerun()
+        if st.button("Add TSLA"):
+            st.session_state.temp_watchlist.append("TSLA")
+            st.rerun()
+            
+    with col2:
+        st.markdown("**💎 Blue Chips**")
+        if st.button("Add AAPL"):
+            st.session_state.temp_watchlist.append("AAPL")
+            st.rerun()
+        if st.button("Add MSFT"):
+            st.session_state.temp_watchlist.append("MSFT")
+            st.rerun()
+            
+    with col3:
+        st.markdown("**🔥 High Beta**")
+        if st.button("Add PLTR"):
+            st.session_state.temp_watchlist.append("PLTR")
+            st.rerun()
+        if st.button("Add COIN"):
+            st.session_state.temp_watchlist.append("COIN")
+            st.rerun()
 
-# Export functionality
+# Export/Import functionality
 st.markdown("---")
 with st.expander("📤 Export/Import Watchlist"):
     col_exp1, col_exp2 = st.columns(2)
@@ -279,27 +369,53 @@ with st.expander("📤 Export/Import Watchlist"):
     with col_exp1:
         st.subheader("Export")
         if st.session_state.temp_watchlist:
-            export_data = ",".join(st.session_state.temp_watchlist)
-            st.text_area("Copy this list:", value=export_data, height=100)
+            export_data = {
+                "watchlist": st.session_state.temp_watchlist,
+                "exported_at": datetime.now().isoformat(),
+                "total_tickers": len(st.session_state.temp_watchlist)
+            }
+            export_json = json.dumps(export_data, indent=2)
             
-            # Download as file
             st.download_button(
-                label="📥 Download as CSV",
-                data=export_data,
-                file_name=f"watchlist_{datetime.now().strftime('%Y%m%d')}.txt",
-                mime="text/plain"
+                label="📥 Download Watchlist (JSON)",
+                data=export_json,
+                file_name=f"watchlist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
             )
+            
+            # Simple text format
+            export_text = ",".join(st.session_state.temp_watchlist)
+            st.text_area("Or copy as text:", value=export_text, height=100)
     
     with col_exp2:
         st.subheader("Import")
-        import_data = st.text_area("Paste comma-separated tickers:", height=100)
-        if st.button("📤 Import Tickers"):
-            if import_data:
-                new_tickers = [t.strip().upper() for t in import_data.split(",") if t.strip()]
-                added = 0
-                for ticker in new_tickers:
-                    if ticker not in st.session_state.temp_watchlist:
-                        st.session_state.temp_watchlist.append(ticker)
-                        added += 1
-                st.success(f"Added {added} new tickers to watchlist")
-                st.rerun()
+        import_method = st.radio("Import method:", ["Text (comma-separated)", "JSON file"])
+        
+        if import_method == "Text (comma-separated)":
+            import_text = st.text_area("Paste tickers (comma-separated):", height=100)
+            if st.button("📤 Import from Text"):
+                if import_text:
+                    new_tickers = [t.strip().upper() for t in import_text.split(",") if t.strip()]
+                    added = 0
+                    for ticker in new_tickers:
+                        if ticker not in st.session_state.temp_watchlist:
+                            st.session_state.temp_watchlist.append(ticker)
+                            added += 1
+                    st.success(f"Added {added} new tickers!")
+                    st.rerun()
+        else:
+            uploaded_file = st.file_uploader("Choose a JSON file", type=['json'])
+            if uploaded_file is not None:
+                try:
+                    import_data = json.load(uploaded_file)
+                    if 'watchlist' in import_data:
+                        new_tickers = import_data['watchlist']
+                        added = 0
+                        for ticker in new_tickers:
+                            if ticker not in st.session_state.temp_watchlist:
+                                st.session_state.temp_watchlist.append(ticker)
+                                added += 1
+                        st.success(f"Imported {added} new tickers!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error importing file: {e}")
