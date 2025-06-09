@@ -1,0 +1,49 @@
+# Python stuff you don't need to save
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# Your local secrets (NEVER commit these!)
+secrets.toml
+.streamlit/secrets.toml
+
+# Mac/Windows junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE stuff
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Your data (if it's sensitive)
+# Uncomment these if you don't want to save data
+# wealthincome/data/cache/*
+# wealthincome/data/persistent/*
+# But keep the folders
+!wealthincome/data/cache/.gitkeep
+!wealthincome/data/persistent/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Jupyter Notebooks (if you experiment)
+.ipynb_checkpoints/
+*.ipynb
+
+# Test files
+test_*.py
+*_test.py
+
+# Personal notes
+notes.txt
+todo.txt
