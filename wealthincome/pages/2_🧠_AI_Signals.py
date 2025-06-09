@@ -24,6 +24,13 @@ except ImportError as e:
     st.error(f"Could not import data_manager: {e}")
     data_manager = None
 
+# Import confidence scoring
+try:
+    from confidence_scoring import ConfidenceScorer
+except ImportError as e:
+    st.error(f"Could not import ConfidenceScorer: {e}")
+    ConfidenceScorer = None
+
 # Page config
 try:
     st.set_page_config(page_title="🧠 AI Multi-Strategy Screener", layout="wide")
@@ -234,6 +241,18 @@ def analyze_stock_enhanced(ticker_symbol):
         
         # Calculate comprehensive scores
         analysis['scores'] = calculate_professional_scores(analysis)
+        
+        # Add confidence scoring
+        if ConfidenceScorer:
+            scorer = ConfidenceScorer()
+            confidence = scorer.calculate_confidence_score(ticker_symbol, analysis)
+            analysis['confidence'] = confidence
+            analysis['confidence_score'] = confidence['total_score']
+            analysis['confidence_level'] = confidence['confidence_level']
+        else:
+            analysis['confidence'] = None
+            analysis['confidence_score'] = 0
+            analysis['confidence_level'] = 'N/A'
         
         # Generate trading signals
         signals = []
@@ -637,53 +656,49 @@ with tab1:
                     
                     # Results table
                     table_data = []
+                    hot_trends = ['NVDA', 'IONQ', 'CRWD', 'PLTR', 'AMD', 'MSFT', 'GOOGL', 'META']
+                    
                     for r in filtered_results:
                         scores = r['scores']
+                        ticker = r['ticker']
+                        
+                        # Check for hot trend
+                        trend_badge = '🔥 ' if ticker in hot_trends else ''
+                        
                         table_data.append({
-                            'Ticker': r['ticker'],
+                            'Ticker': trend_badge + ticker,
                             'Price': f"${r['price']:.2f}",
                             '% Change': f"{r['change']:.1f}%",
                             'RVOL': f"{r['rvol']:.1f}",
                             'News': r.get('news_sentiment', {}).get('label', 'N/A'),
+                            'Confidence': f"{r.get('confidence_score', 0):.0f}",
+                            'Level': r.get('confidence_level', 'N/A'),
                             'Signals': ' '.join(r['signals']),
-                            'Day Score': scores['day_score'],
-                            'Swing Score': scores['swing_score'],
-                            'Position Score': scores['position_score'],
                             'AI Score': f"{scores['ai_score']:.1f}"
                         })
                     
                     df = pd.DataFrame(table_data)
                     
-                    # Sort by AI Score
-                    df['_ai_score_numeric'] = df['AI Score'].str.replace(r'[^\d.]', '', regex=True).astype(float)
-                    df = df.sort_values('_ai_score_numeric', ascending=False)
-                    df = df.drop('_ai_score_numeric', axis=1)
+                    # Sort by Confidence Score instead of AI Score
+                    df['_confidence_numeric'] = df['Confidence'].astype(float)
+                    df = df.sort_values('_confidence_numeric', ascending=False)
+                    df = df.drop('_confidence_numeric', axis=1)
                     
                     st.dataframe(
                         df,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "Day Score": st.column_config.ProgressColumn(
-                                "Day Score",
-                                help="0-100 score for day trading",
+                            "Confidence": st.column_config.ProgressColumn(
+                                "Confidence",
+                                help="0-100 confidence score based on multiple factors",
                                 format="%d",
                                 min_value=0,
                                 max_value=100,
                             ),
-                            "Swing Score": st.column_config.ProgressColumn(
-                                "Swing Score",
-                                help="0-100 score for swing trading",
-                                format="%d",
-                                min_value=0,
-                                max_value=100,
-                            ),
-                            "Position Score": st.column_config.ProgressColumn(
-                                "Position Score",
-                                help="0-100 score for position trading",
-                                format="%d",
-                                min_value=0,
-                                max_value=100,
+                            "Level": st.column_config.TextColumn(
+                                "Level",
+                                help="Confidence level: LOW, MEDIUM, HIGH, ULTRA HIGH",
                             ),
                         }
                     )
@@ -712,13 +727,20 @@ with tab2:
                 st.metric("Price", f"${selected_analysis['price']:.2f}", 
                          f"{selected_analysis['change']:.1f}%")
             with col2:
-                st.metric("AI Score", f"{selected_analysis['scores']['ai_score']:.1f}")
+                conf_score = selected_analysis.get('confidence_score', 0)
+                conf_level = selected_analysis.get('confidence_level', 'N/A')
+                st.metric("Confidence", f"{conf_score:.0f}", conf_level)
             with col3:
-                st.metric("Signals", ' '.join(selected_analysis['signals']) or "None")
+                st.metric("AI Score", f"{selected_analysis['scores']['ai_score']:.1f}")
             with col4:
                 news_label = selected_analysis.get('news_sentiment', {}).get('label', 'N/A')
                 news_color = "🟢" if news_label == "Positive" else "🔴" if news_label == "Negative" else "⚪"
                 st.metric("News", f"{news_color} {news_label}")
+            
+            # Add trend badge if applicable
+            hot_trends = ['NVDA', 'IONQ', 'CRWD', 'PLTR', 'AMD', 'MSFT', 'GOOGL', 'META']
+            if selected_ticker in hot_trends:
+                st.success("🔥 Aligned with Future Trends!")
             
             # Detailed Analysis Tabs
             analysis_tab1, analysis_tab2, analysis_tab3, analysis_tab4, analysis_tab5 = st.tabs(
