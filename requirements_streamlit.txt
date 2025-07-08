@@ -1,32 +1,9 @@
 # Streamlit Cloud Deployment Requirements
-# Core Streamlit
 streamlit>=1.28.0
-
-# Data manipulation
-pandas>=2.0.0
-numpy>=1.24.0
-
-# Market data
+pandas>=2.0.0,<2.3.0
+numpy>=1.24.0,<2.0.0
 yfinance>=0.2.18
-
-# Visualization
 plotly>=5.15.0
-
-# Technical analysis
-ta>=0.10.2
-
-# Web requests
 requests>=2.31.0
-
-# Authentication
-bcrypt>=4.0.1
-
-# Environment
-python-dotenv>=1.0.0
-
-# Date handling
 python-dateutil>=2.8.2
 pytz>=2023.3
-
-# Utils
-tqdm>=4.65.0

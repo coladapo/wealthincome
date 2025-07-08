@@ -17,7 +17,10 @@ import threading
 import time
 import requests
 from dataclasses import dataclass
-import redis
+try:
+    import redis
+except ImportError:
+    redis = None
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +69,10 @@ class UnifiedDataManager:
         if config.WS_ENABLED:
             self._start_background_updates()
     
-    def _init_redis(self) -> Optional[redis.Redis]:
+    def _init_redis(self) -> Optional['redis.Redis']:
         """Initialize Redis connection"""
         try:
-            if self.config.REDIS_URL:
+            if redis and self.config.REDIS_URL:
                 return redis.from_url(self.config.REDIS_URL)
             return None
         except Exception as e:
