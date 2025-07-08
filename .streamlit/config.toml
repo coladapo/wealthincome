@@ -1,0 +1,19 @@
+[global]
+# Disable automatic page discovery to prevent simple navigation
+showWarningOnDirectExecution = false
+
+[server]
+# Server configuration
+port = 8501
+address = "0.0.0.0"
+
+[theme]
+# Optional: Set theme for consistency
+primaryColor = "#FF6B6B"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+
+[client]
+# Disable automatic page navigation
+showSidebarNavigation = false

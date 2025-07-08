@@ -1,0 +1,79 @@
+# WealthIncome Unified Platform Docker Compose Configuration
+version: '3.8'
+
+services:
+  # Main Streamlit Application
+  wealthincome-app:
+    build: .
+    container_name: wealthincome-unified
+    ports:
+      - "8501:8501"
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite:///./data/wealthincome.db
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - wealthincome-network
+
+  # Redis for caching and real-time data
+  redis:
+    image: redis:7-alpine
+    container_name: wealthincome-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - wealthincome-network
+
+  # WebSocket Server (optional)
+  websocket-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.websocket
+    container_name: wealthincome-websocket
+    ports:
+      - "8765:8765"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - wealthincome-network
+    profiles:
+      - websocket
+
+  # Nginx Reverse Proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: wealthincome-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - wealthincome-app
+    restart: unless-stopped
+    networks:
+      - wealthincome-network
+    profiles:
+      - production
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  wealthincome-network:
+    driver: bridge
