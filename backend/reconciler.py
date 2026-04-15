@@ -25,7 +25,7 @@ def _reconcile_once(alpaca):
         get_open_positions_lifecycle, close_position_lifecycle,
         update_ai_decision_calibration, upsert_daily_summary,
         get_daily_summaries, DB_PATH,
-        record_trade_analysis,
+        record_trade_analysis, record_post_exit, backfill_post_exit_prices,
     )
     from core.trade_analyzer import analyze_closed_position
 
@@ -139,6 +139,16 @@ def _reconcile_once(alpaca):
                             exit_qty=qty,
                             close_reason=exit_trigger,
                         )
+                        # Record post-exit tracking skeleton
+                        try:
+                            record_post_exit(
+                                position_id=pos["id"],
+                                symbol=pos["symbol"],
+                                exit_price=exit_price,
+                                exit_date=(exit_at or datetime.now().isoformat())[:10],
+                            )
+                        except Exception as pe:
+                            logger.warning(f"record_post_exit failed for {pos['symbol']}: {pe}")
                         # Update AI decision calibration
                         _update_calibration(group["parent_order_id"], realized_pnl, DB_PATH)
                         # Feature 3: analyze closed position and record
@@ -182,6 +192,12 @@ def _reconcile_once(alpaca):
             upsert_daily_summary(yesterday)
     except Exception as e:
         logger.debug(f"Daily summary check: {e}")
+
+    # ── 5. Backfill post-exit follow-up prices ───────────────────────────────
+    try:
+        backfill_post_exit_prices()
+    except Exception as e:
+        logger.debug(f"Post-exit backfill error: {e}")
 
 
 def _backfill_entry_price(symbol: str, fill_price: float, filled_qty: float, db_path: str):
@@ -343,6 +359,17 @@ def _check_sma50_exits(alpaca, db_path: str):
                                 exit_qty=open_pos["entry_qty"],
                                 close_reason="sma50_breach",
                             )
+                            # Record post-exit tracking skeleton
+                            try:
+                                from backend.db import record_post_exit
+                                record_post_exit(
+                                    position_id=open_pos["id"],
+                                    symbol=symbol,
+                                    exit_price=current_price,
+                                    exit_date=datetime.now().strftime("%Y-%m-%d"),
+                                )
+                            except Exception as pe:
+                                logger.warning(f"record_post_exit (sma50) failed for {symbol}: {pe}")
                             _update_calibration(
                                 open_pos.get("entry_order_group_id", ""),
                                 (current_price - open_pos["entry_price"]) * open_pos["entry_qty"],

@@ -9,6 +9,7 @@ import time
 import signal
 import logging
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
@@ -36,6 +37,13 @@ from core.news_sentiment import get_news_summary, build_news_block_for_claude
 from core.portfolio_risk import (
     compute_correlation_matrix, check_entry_correlation,
     build_correlation_heatmap_text, compute_portfolio_concentration,
+)
+from core.tick_agent import (
+    ensure_table as ensure_tick_table,
+    snapshot_symbols as tick_snapshot_symbols,
+    get_latest_snapshots as tick_get_latest,
+    build_vwap_block_for_claude,
+    run_tick_loop,
 )
 
 logging.basicConfig(
@@ -140,6 +148,11 @@ def execute_decision(
     ai_decision_id: int,
     market_data: Dict,
     corr_matrix=None,
+    regime_at_entry: str = None,
+    regime_score: int = None,
+    news_sentiment: float = None,
+    correlation_score: float = None,
+    momentum_score: float = None,
 ) -> Optional[int]:
     """Execute a single Claude decision. Returns trade_id or None."""
     symbol = d.get("symbol", "").upper()
@@ -238,6 +251,9 @@ def execute_decision(
             "ai_decision_id": ai_decision_id,
             "trail_percent": trail_percent,
             "calendar_risk_flag": calendar_risk_flag,
+            "news_sentiment_score": news_sentiment,
+            "correlation_with_portfolio": correlation_score,
+            "regime_at_entry": regime_at_entry,
         })
 
         group_id = record_order_group(
@@ -256,14 +272,28 @@ def execute_decision(
             raw_json=json.dumps(order.raw) if order.raw else None,
         )
 
+        # Extract signal attribution fields
+        macd_data = sym_data.get("macd") or {}
+        volume_data = sym_data.get("volume") or {}
+        signal_summary = sym_data.get("signal_summary")
+        entry_signals_json = json.dumps(signal_summary) if signal_summary else None
+        volume_ratio = volume_data.get("ratio") if isinstance(volume_data, dict) else None
+
         pos_id = open_position_lifecycle(
             symbol=symbol, entry_price=current_price,
             entry_qty=qty, cycle_id=cycle_id, trade_id=trade_id,
             order_group_id=group_id,
             entry_rsi=sym_data.get("rsi_14"),
-            entry_macd_histogram=sym_data.get("macd", {}).get("histogram") if sym_data.get("macd") else None,
+            entry_macd_histogram=macd_data.get("histogram"),
             entry_atr_pct=atr_pct,
             entry_confidence=confidence,
+            regime_at_entry=regime_at_entry,
+            regime_score=regime_score,
+            entry_signals_json=entry_signals_json,
+            momentum_score_at_entry=momentum_score,
+            entry_sma20=sym_data.get("sma_20"),
+            entry_sma50=sym_data.get("sma_50"),
+            entry_volume_ratio=volume_ratio,
         )
 
         update_trade_links(trade_id, order_group_id=group_id, position_lifecycle_id=pos_id)
@@ -434,6 +464,7 @@ def run_cycle(alpaca: AlpacaClient):
         )
 
         # Layer 1: Macro regime — determines how aggressive we trade
+        regime_data = {}
         logger.info("Fetching macro market regime...")
         try:
             regime_data = get_market_regime(include_sectors=True)
@@ -451,6 +482,7 @@ def run_cycle(alpaca: AlpacaClient):
             new_entries_allowed = True
 
         # Layer 2: Dynamic watchlist — top momentum stocks for current regime
+        wl_data = {}
         logger.info("Building dynamic watchlist...")
         try:
             wl_data = build_watchlist(regime=regime, top_n=20)
@@ -511,6 +543,7 @@ def run_cycle(alpaca: AlpacaClient):
             performance_feedback = ""
 
         # Feature 4: News & Sentiment
+        news_summary = {}
         try:
             held_symbols = list(positions.keys())
             news_symbols = list(set(watchlist + held_symbols))[:30]  # cap to limit yfinance calls
@@ -547,6 +580,33 @@ def run_cycle(alpaca: AlpacaClient):
             logger.warning(f"Portfolio risk computation failed: {e}")
             corr_matrix = None
             portfolio_risk_context = ""
+
+        # Tick Agent: VWAP intraday context
+        vwap_context = ""
+        try:
+            # Snapshot watchlist + held positions for VWAP
+            vwap_symbols = list(set(watchlist + list(positions.keys())))[:30]
+            vwap_snaps = tick_snapshot_symbols(vwap_symbols)
+            if not vwap_snaps:
+                # Fall back to cached snapshots from background thread
+                vwap_snaps = tick_get_latest(vwap_symbols)
+            vwap_context = build_vwap_block_for_claude(
+                vwap_snaps,
+                positions=portfolio_snapshot["positions"],
+            )
+            if vwap_context:
+                logger.info(f"VWAP context: {len(vwap_snaps)} symbols snapped")
+        except Exception as e:
+            logger.warning(f"Tick/VWAP context failed: {e}")
+            vwap_context = ""
+
+        # Combine vwap into news_context (or portfolio_risk_context)
+        # We append it to portfolio_risk_context since it's risk-adjacent
+        if vwap_context:
+            portfolio_risk_context = (
+                (portfolio_risk_context + "\n\n" + vwap_context).strip()
+                if portfolio_risk_context else vwap_context
+            )
 
         logger.info(f"Asking Claude to analyze {len(watchlist)} symbols...")
         result = run_claude_decision(
@@ -590,9 +650,52 @@ def run_cycle(alpaca: AlpacaClient):
         logger.info(f"Market: {result.get('market_summary', '')}")
         finish_cycle(cycle_id, result, usage=usage, duration_ms=duration_ms)
 
+        # Extract regime score for passing to execute_decision
+        regime_score_val = regime_data.get("score") if 'regime_data' in dir() else None
+
+        # Extract per-symbol news sentiment
+        news_sentiments = {}
+        try:
+            if news_summary:
+                for sym, nd in news_summary.items():
+                    news_sentiments[sym] = nd.get("avg_sentiment") or nd.get("sentiment_score")
+        except Exception:
+            pass
+
         for d in result.get("decisions", []):
             try:
-                execute_decision(d, account, positions, cfg, alpaca, cycle_id, ai_decision_id, market_data, corr_matrix=corr_matrix)
+                sym = d.get("symbol", "").upper()
+                sym_news = news_sentiments.get(sym)
+                # Max correlation for this symbol against current open positions
+                sym_corr = None
+                if corr_matrix is not None and len(positions) > 0 and sym:
+                    try:
+                        open_syms = list(positions.keys())
+                        corr_check = check_entry_correlation(sym, open_syms, corr_matrix, threshold=0.75)
+                        sym_corr = corr_check.get("max_correlation")
+                    except Exception:
+                        pass
+
+                # Momentum score from watchlist
+                sym_momentum = None
+                try:
+                    if 'wl_data' in dir() and wl_data:
+                        for item in wl_data.get("scored", []):
+                            if item.get("symbol") == sym:
+                                sym_momentum = item.get("score")
+                                break
+                except Exception:
+                    pass
+
+                execute_decision(
+                    d, account, positions, cfg, alpaca, cycle_id, ai_decision_id, market_data,
+                    corr_matrix=corr_matrix,
+                    regime_at_entry=regime,
+                    regime_score=regime_score_val,
+                    news_sentiment=sym_news,
+                    correlation_score=sym_corr,
+                    momentum_score=sym_momentum,
+                )
             except Exception as e:
                 logger.error(f"Execution error {d.get('symbol')}: {e}")
                 record_error("execution_error", f"{d.get('symbol')}: {e}", cycle_id)
@@ -633,10 +736,26 @@ def main():
 
     os.makedirs("logs", exist_ok=True)
     init_db()
+    ensure_tick_table()
     set_config("trader_running", "true")
 
     alpaca = get_alpaca()
     logger.info(f"Trader daemon started — {'PAPER' if alpaca.paper else 'LIVE'} mode")
+
+    # Start tick agent as a background thread
+    # It independently collects 1-min bars + VWAP for the default watchlist
+    default_watchlist = [
+        s.strip() for s in get_config().get("watchlist", "").split(",") if s.strip()
+    ]
+    tick_thread = threading.Thread(
+        target=run_tick_loop,
+        args=(default_watchlist,),
+        kwargs={"interval_seconds": 60, "market_only": True},
+        daemon=True,
+        name="tick-agent",
+    )
+    tick_thread.start()
+    logger.info(f"Tick agent thread started — {len(default_watchlist)} symbols, 60s interval")
 
     account = alpaca.get_account()
     logger.info(f"Account: ${account.portfolio_value:,.2f} | Status: {account.status}")

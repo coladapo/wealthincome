@@ -293,6 +293,7 @@ def init_db():
             ("cycles",            "cache_read_tokens",        "INTEGER"),
             ("cycles",            "cache_write_tokens",       "INTEGER"),
             ("cycles",            "duration_ms",              "INTEGER"),
+            ("cycles",            "cost_usd",                 "REAL"),
             ("trades",            "order_group_id",           "INTEGER"),
             ("trades",            "position_lifecycle_id",    "INTEGER"),
             ("trades",            "ai_decision_id",           "INTEGER"),
@@ -302,17 +303,91 @@ def init_db():
             ("trades",            "news_sentiment_score",     "REAL"),
             ("trades",            "correlation_with_portfolio", "REAL"),
             ("trades",            "calendar_risk_flag",       "TEXT"),
+            ("trades",            "regime_at_entry",          "TEXT"),
             ("position_lifecycle","trailing_stop_order_id",   "TEXT"),
             ("position_lifecycle","trail_percent",            "REAL"),
             ("position_lifecycle","sma50_breach_count",       "INTEGER DEFAULT 0"),
+            ("position_lifecycle","regime_at_entry",          "TEXT"),
+            ("position_lifecycle","regime_score_at_entry",    "INTEGER"),
+            ("position_lifecycle","entry_signals_json",       "TEXT"),
+            ("position_lifecycle","momentum_score_at_entry",  "REAL"),
+            ("position_lifecycle","entry_sma20",              "REAL"),
+            ("position_lifecycle","entry_sma50",              "REAL"),
+            ("position_lifecycle","entry_volume_ratio",       "REAL"),
             ("order_groups",      "ts_order_id",              "TEXT"),
             ("order_groups",      "trail_percent",            "REAL"),
+            ("ai_decisions",      "cost_usd",                 "REAL"),
+            ("ai_decisions",      "agent_name",               "TEXT DEFAULT 'main_trader'"),
+            ("daily_summaries",   "cost_usd",                 "REAL"),
         ]
         for table, col, typedef in migrations:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
             except Exception:
                 pass
+
+        # Create post_exit_tracking table
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS post_exit_tracking (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id         INTEGER REFERENCES position_lifecycle(id),
+                symbol              TEXT NOT NULL,
+                exit_price          REAL,
+                exit_date           TEXT,
+                price_1d_later      REAL,
+                price_5d_later      REAL,
+                price_10d_later     REAL,
+                return_1d_pct       REAL,
+                return_5d_pct       REAL,
+                return_10d_pct      REAL,
+                left_on_table_pct   REAL,
+                tracked_at          TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_post_exit_symbol ON post_exit_tracking(symbol);
+            CREATE INDEX IF NOT EXISTS idx_post_exit_position ON post_exit_tracking(position_id);
+            CREATE INDEX IF NOT EXISTS idx_post_exit_date ON post_exit_tracking(exit_date);
+
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_at          TEXT NOT NULL,
+                strategy        TEXT,
+                symbols         TEXT,
+                start_date      TEXT,
+                end_date        TEXT,
+                total_return_pct REAL,
+                sharpe          REAL,
+                max_drawdown_pct REAL,
+                win_rate        REAL,
+                total_trades    INTEGER,
+                params_json     TEXT,
+                results_json    TEXT
+            );
+        """)
+
+
+# ─── Token cost ──────────────────────────────────────────────────────────────
+
+# Pricing for claude-sonnet-4-6 (USD per 1M tokens)
+_INPUT_COST_PER_M   = 3.00
+_OUTPUT_COST_PER_M  = 15.00
+_CACHE_READ_PER_M   = 0.30
+_CACHE_WRITE_PER_M  = 3.75
+
+
+def compute_token_cost(
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float:
+    """Return USD cost for a claude-sonnet-4-6 API call."""
+    return (
+        (input_tokens       * _INPUT_COST_PER_M   / 1_000_000)
+        + (output_tokens    * _OUTPUT_COST_PER_M  / 1_000_000)
+        + (cache_read_tokens  * _CACHE_READ_PER_M   / 1_000_000)
+        + (cache_write_tokens * _CACHE_WRITE_PER_M  / 1_000_000)
+    )
 
 
 # ─── Config ─────────────────────────────────────────────────────────────────
@@ -367,6 +442,12 @@ def start_cycle(market_open: bool) -> int:
 
 def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: int = None):
     usage = usage or {}
+    cost = compute_token_cost(
+        input_tokens=usage.get("input_tokens", 0) or 0,
+        output_tokens=usage.get("output_tokens", 0) or 0,
+        cache_read_tokens=usage.get("cache_read_tokens", 0) or 0,
+        cache_write_tokens=usage.get("cache_write_tokens", 0) or 0,
+    )
     with db() as conn:
         conn.execute("""
             UPDATE cycles SET
@@ -380,7 +461,8 @@ def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: i
                 output_tokens = ?,
                 cache_read_tokens = ?,
                 cache_write_tokens = ?,
-                duration_ms = ?
+                duration_ms = ?,
+                cost_usd = ?
             WHERE id = ?
         """, (
             datetime.now().isoformat(),
@@ -393,6 +475,7 @@ def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: i
             usage.get("cache_read_tokens"),
             usage.get("cache_write_tokens"),
             duration_ms,
+            cost,
             cycle_id,
         ))
 
@@ -425,8 +508,9 @@ def record_trade(cycle_id: int, trade: Dict) -> int:
         cur = conn.execute("""
             INSERT INTO trades(cycle_id, executed_at, symbol, action, qty,
                 signal_price, confidence, reasoning, order_id, order_status,
-                take_profit, stop_loss, ai_decision_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                take_profit, stop_loss, ai_decision_id,
+                news_sentiment_score, correlation_with_portfolio, regime_at_entry)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             cycle_id,
             datetime.now().isoformat(),
@@ -441,6 +525,9 @@ def record_trade(cycle_id: int, trade: Dict) -> int:
             trade.get("take_profit"),
             trade.get("stop_loss"),
             trade.get("ai_decision_id"),
+            trade.get("news_sentiment_score"),
+            trade.get("correlation_with_portfolio"),
+            trade.get("regime_at_entry"),
         ))
         return cur.lastrowid
 
@@ -496,10 +583,17 @@ def record_ai_decision(
     parsed_decisions: List[Dict],
     usage: Dict,
     duration_ms: int,
+    agent_name: str = "main_trader",
 ) -> int:
     non_holds = [d for d in parsed_decisions if d.get("action", "hold") != "hold"]
     avg_conf = (sum(d.get("confidence", 0) for d in non_holds) / len(non_holds)
                 if non_holds else None)
+    cost = compute_token_cost(
+        input_tokens=usage.get("input_tokens", 0) or 0,
+        output_tokens=usage.get("output_tokens", 0) or 0,
+        cache_read_tokens=usage.get("cache_read_tokens", 0) or 0,
+        cache_write_tokens=usage.get("cache_write_tokens", 0) or 0,
+    )
     with db() as conn:
         cur = conn.execute("""
             INSERT INTO ai_decisions(
@@ -507,8 +601,9 @@ def record_ai_decision(
                 market_snapshot_json, account_snapshot_json, positions_snapshot_json,
                 raw_response, parsed_decisions_json,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms,
-                decisions_made, decisions_executed, avg_confidence
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                decisions_made, decisions_executed, avg_confidence,
+                cost_usd, agent_name
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             cycle_id,
             datetime.now().isoformat(),
@@ -527,6 +622,8 @@ def record_ai_decision(
             len(non_holds),
             0,  # decisions_executed — updated as orders are placed
             avg_conf,
+            cost,
+            agent_name,
         ))
         return cur.lastrowid
 
@@ -775,18 +872,31 @@ def open_position_lifecycle(
     entry_macd_histogram: Optional[float] = None,
     entry_atr_pct: Optional[float] = None,
     entry_confidence: Optional[float] = None,
+    regime_at_entry: Optional[str] = None,
+    regime_score: Optional[int] = None,
+    entry_signals_json: Optional[str] = None,
+    momentum_score_at_entry: Optional[float] = None,
+    entry_sma20: Optional[float] = None,
+    entry_sma50: Optional[float] = None,
+    entry_volume_ratio: Optional[float] = None,
 ) -> int:
     with db() as conn:
         cur = conn.execute("""
             INSERT INTO position_lifecycle(
                 symbol, opened_at, entry_cycle_id, entry_trade_id, entry_order_group_id,
                 entry_price, entry_qty, entry_cost_basis, status,
-                entry_rsi, entry_macd_histogram, entry_atr_pct, entry_confidence
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                entry_rsi, entry_macd_histogram, entry_atr_pct, entry_confidence,
+                regime_at_entry, regime_score_at_entry,
+                entry_signals_json, momentum_score_at_entry,
+                entry_sma20, entry_sma50, entry_volume_ratio
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             symbol, datetime.now().isoformat(), cycle_id, trade_id, order_group_id,
             entry_price, entry_qty, entry_price * entry_qty, "open",
             entry_rsi, entry_macd_histogram, entry_atr_pct, entry_confidence,
+            regime_at_entry, regime_score,
+            entry_signals_json, momentum_score_at_entry,
+            entry_sma20, entry_sma50, entry_volume_ratio,
         ))
         return cur.lastrowid
 
@@ -1114,7 +1224,8 @@ def get_token_usage(days: int = 1) -> Dict:
                 COALESCE(SUM(output_tokens), 0)       AS output_tokens,
                 COALESCE(SUM(cache_read_tokens), 0)   AS cache_read_tokens,
                 COALESCE(SUM(cache_write_tokens), 0)  AS cache_write_tokens,
-                COALESCE(AVG(duration_ms), 0)         AS avg_duration_ms
+                COALESCE(AVG(duration_ms), 0)         AS avg_duration_ms,
+                COALESCE(SUM(cost_usd), 0.0)          AS total_cost_usd
             FROM cycles
             WHERE started_at >= ? AND status = 'done'
         """, (since,)).fetchone()
@@ -1122,6 +1233,27 @@ def get_token_usage(days: int = 1) -> Dict:
         d["total_tokens"] = d["input_tokens"] + d["output_tokens"]
         d["days"] = days
         return d
+
+
+def get_token_usage_by_agent(days: int = 7) -> List[Dict]:
+    """Return token usage grouped by agent_name from ai_decisions."""
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT
+                COALESCE(agent_name, 'main_trader')   AS agent_name,
+                COUNT(*)                              AS decisions,
+                COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)       AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0)   AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0)  AS cache_write_tokens,
+                COALESCE(SUM(cost_usd), 0.0)          AS total_cost_usd
+            FROM ai_decisions
+            WHERE decided_at >= ?
+            GROUP BY COALESCE(agent_name, 'main_trader')
+            ORDER BY total_cost_usd DESC
+        """, (since,)).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ─── Errors ─────────────────────────────────────────────────────────────────
@@ -1249,3 +1381,158 @@ def get_performance_summary(lookback_days: int = 30) -> Dict:
         "worst_signal":     worst_signal,
         "signal_breakdown": signal_breakdown,
     }
+
+
+# ─── Post-Exit Tracking ──────────────────────────────────────────────────────
+
+def record_post_exit(
+    position_id: int,
+    symbol: str,
+    exit_price: float,
+    exit_date: str,
+) -> int:
+    """Insert a skeleton post-exit row; prices will be backfilled later."""
+    with db() as conn:
+        cur = conn.execute("""
+            INSERT INTO post_exit_tracking(
+                position_id, symbol, exit_price, exit_date, tracked_at
+            ) VALUES(?,?,?,?,?)
+        """, (
+            position_id, symbol, exit_price, exit_date,
+            datetime.now().isoformat(),
+        ))
+        return cur.lastrowid
+
+
+def backfill_post_exit_prices():
+    """
+    For closed positions where we don't yet have 1d/5d/10d follow-up prices,
+    fetch them from yfinance and store them.
+    Computes left_on_table_pct = return_10d_pct (positive = we exited too early).
+    """
+    import yfinance as yf
+    from datetime import date as date_type
+
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id, symbol, exit_price, exit_date
+            FROM post_exit_tracking
+            WHERE exit_price IS NOT NULL
+              AND exit_date IS NOT NULL
+              AND (price_1d_later IS NULL OR price_5d_later IS NULL OR price_10d_later IS NULL)
+        """).fetchall()
+
+    for row in rows:
+        try:
+            exit_dt = datetime.strptime(row["exit_date"][:10], "%Y-%m-%d").date()
+            today = datetime.now().date()
+            days_since_exit = (today - exit_dt).days
+
+            # Need at least 1 trading day after exit to backfill
+            if days_since_exit < 1:
+                continue
+
+            # Fetch enough history to cover 10 trading days after exit
+            end_date = today
+            # Download from exit_date through today
+            ticker = yf.Ticker(row["symbol"])
+            hist = ticker.history(
+                start=str(exit_dt),
+                end=str(end_date + timedelta(days=1)),
+                interval="1d",
+                auto_adjust=True,
+            )
+
+            if hist.empty:
+                continue
+
+            # Get sorted trading days after exit
+            trading_days = sorted([d.date() if hasattr(d, 'date') else d for d in hist.index])
+            # Exclude the exit day itself (index 0 could be the exit date)
+            future_days = [d for d in trading_days if d > exit_dt]
+
+            if not future_days:
+                continue
+
+            def get_close_on_or_after(target_day):
+                """Get close price on target_day or the next available trading day."""
+                for d in future_days:
+                    if d >= target_day:
+                        idx = d
+                        try:
+                            row_data = hist.loc[str(idx)]
+                        except KeyError:
+                            # Try timestamp index
+                            matches = [i for i in hist.index if i.date() == idx]
+                            if not matches:
+                                return None
+                            row_data = hist.loc[matches[0]]
+                        try:
+                            c = row_data["Close"]
+                            return float(c.iloc[0] if hasattr(c, 'iloc') else c)
+                        except Exception:
+                            return None
+                return None
+
+            # 1 trading day after exit = future_days[0]
+            price_1d = float(hist.loc[[i for i in hist.index if i.date() == future_days[0]][0]]["Close"]) if future_days else None
+
+            # 5 trading days after exit
+            price_5d = None
+            if len(future_days) >= 5:
+                try:
+                    idx5 = future_days[4]
+                    matches = [i for i in hist.index if i.date() == idx5]
+                    if matches:
+                        price_5d = float(hist.loc[matches[0]]["Close"])
+                except Exception:
+                    pass
+
+            # 10 trading days after exit
+            price_10d = None
+            if len(future_days) >= 10:
+                try:
+                    idx10 = future_days[9]
+                    matches = [i for i in hist.index if i.date() == idx10]
+                    if matches:
+                        price_10d = float(hist.loc[matches[0]]["Close"])
+                except Exception:
+                    pass
+
+            exit_price = row["exit_price"]
+
+            def pct(new_price):
+                if new_price and exit_price:
+                    return round((new_price - exit_price) / exit_price * 100, 4)
+                return None
+
+            return_1d = pct(price_1d)
+            return_5d = pct(price_5d)
+            return_10d = pct(price_10d)
+
+            # left_on_table = return over 10d — positive means we exited too early
+            left_on_table = return_10d
+
+            with db() as conn:
+                conn.execute("""
+                    UPDATE post_exit_tracking SET
+                        price_1d_later   = COALESCE(?, price_1d_later),
+                        price_5d_later   = COALESCE(?, price_5d_later),
+                        price_10d_later  = COALESCE(?, price_10d_later),
+                        return_1d_pct    = COALESCE(?, return_1d_pct),
+                        return_5d_pct    = COALESCE(?, return_5d_pct),
+                        return_10d_pct   = COALESCE(?, return_10d_pct),
+                        left_on_table_pct = COALESCE(?, left_on_table_pct),
+                        tracked_at       = ?
+                    WHERE id = ?
+                """, (
+                    price_1d, price_5d, price_10d,
+                    return_1d, return_5d, return_10d,
+                    left_on_table,
+                    datetime.now().isoformat(),
+                    row["id"],
+                ))
+
+        except Exception as e:
+            import logging
+            logging.getLogger("db").warning(f"backfill_post_exit_prices failed for {row['symbol']} (id={row['id']}): {e}")

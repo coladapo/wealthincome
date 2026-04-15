@@ -59,6 +59,17 @@ SHORT SQUEEZE SIGNALS:
   Be cautious — may indicate smart money is betting against this stock.
 - short_pct_float: shows % of float sold short. Higher = more fuel for squeeze, but also more risk.
 
+VWAP (Intraday Institutional Benchmark) — if provided in PORTFOLIO RISK section:
+- VWAP = Volume-Weighted Average Price. Institutional algos benchmark every execution to VWAP.
+- above_vwap_strong (> +1.5%): Buyers in control. Strong confirmation signal for new longs.
+- above_vwap (0 to +1.5%): Favorable timing for new entries.
+- at_vwap (±0.3%): Neutral. Institutions at fair value. Neither strong buy nor sell.
+- below_vwap (-1.5% to 0): Caution for new entries. Sellers have edge intraday.
+- below_vwap_strong (< -1.5%): Avoid new longs today. If you hold this, monitor closely.
+- For held positions flagged ⚠ below VWAP: this is a timing warning, not a mandatory exit.
+  Combine with SMA/RSI trend signals — if trend is intact, VWAP below is temporary.
+  If VWAP below + price < SMA20 + RSI < 40, that's a convergence exit signal.
+
 RULES:
 - Only return valid JSON — no prose, no markdown, no explanation outside the JSON
 - Default is HOLD — only act on clear setups
