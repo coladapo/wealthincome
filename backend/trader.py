@@ -50,6 +50,12 @@ from core.options_flow import (
     build_options_flow_block_for_claude,
     save_options_flow_to_db,
 )
+from core.edgar_agent import (
+    get_insider_signals,
+    build_insider_block_for_claude,
+    save_insider_signals_to_db,
+    ensure_edgar_table,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -631,8 +637,25 @@ def run_cycle(alpaca: AlpacaClient):
             logger.warning(f"Options flow failed: {e}")
             options_context = ""
 
-        # Combine VWAP + Options into portfolio_risk_context
-        extra_context = "\n\n".join(filter(None, [vwap_context, options_context]))
+        # EDGAR Insider Signal Agent
+        insider_context = ""
+        try:
+            insider_syms = list(set(watchlist + list(positions.keys())))[:12]
+            insider_data = get_insider_signals(insider_syms)
+            insider_context = build_insider_block_for_claude(
+                insider_data,
+                positions=portfolio_snapshot["positions"],
+            )
+            save_insider_signals_to_db(insider_data)
+            strong = sum(1 for d in insider_data.values() if d.get("insider_signal") in ("strong_buy", "buy"))
+            if insider_context:
+                logger.info(f"Insider signals: {strong} buy signals out of {len(insider_data)} symbols")
+        except Exception as e:
+            logger.warning(f"EDGAR insider signals failed: {e}")
+            insider_context = ""
+
+        # Combine VWAP + Options + Insider into portfolio_risk_context
+        extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context]))
         if extra_context:
             portfolio_risk_context = (
                 (portfolio_risk_context + "\n\n" + extra_context).strip()
@@ -768,6 +791,7 @@ def main():
     os.makedirs("logs", exist_ok=True)
     init_db()
     ensure_tick_table()
+    ensure_edgar_table()
     set_config("trader_running", "true")
 
     alpaca = get_alpaca()

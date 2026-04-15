@@ -59,6 +59,15 @@ SHORT SQUEEZE SIGNALS:
   Be cautious — may indicate smart money is betting against this stock.
 - short_pct_float: shows % of float sold short. Higher = more fuel for squeeze, but also more risk.
 
+SEC INSIDER BUYING — if provided in PORTFOLIO RISK section:
+- Form 4 filings: C-suite executives/directors must report open-market purchases within 2 days.
+- Insider BUYS (not option exercises, not grants) = real money conviction.
+- CLUSTER BUY = 2+ insiders buying simultaneously = highest conviction signal.
+- strong_buy: total purchases > $500k in 30 days, or cluster + > $200k. Add +0.08 confidence boost if trend also aligned.
+- buy: $100k-$500k total. Add +0.04 confidence boost.
+- Never buy on insider signal alone — it confirms an existing trend setup, it doesn't create one.
+- Insider signals are especially valuable in beaten-down stocks where insider buying suggests the selloff is overdone.
+
 OPTIONS FLOW — if provided in PORTFOLIO RISK section:
 - Large options buyers often know something 1-5 days before a stock moves.
 - bullish_flow: Call volume unusually high vs open interest, low put/call ratio.
