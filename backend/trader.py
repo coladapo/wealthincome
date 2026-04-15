@@ -21,14 +21,22 @@ from backend.db import (
     record_ai_decision, increment_ai_decision_executed,
     record_order_group, record_order,
     open_position_lifecycle, get_open_position_by_symbol, close_position_lifecycle,
-    update_order_group_exit,
+    update_order_group_exit, update_position_trailing_stop,
     record_equity_snapshot, upsert_daily_summary,
+    get_performance_summary,
 )
 from core.alpaca_client import AlpacaClient, AlpacaOrderSide
 from core.claude_trader import run_claude_decision, SYSTEM_PROMPT
 from core.indicators import compute_all
 from core.market_regime import get_market_regime, regime_summary_for_claude
 from core.watchlist import build_watchlist
+from core.trade_analyzer import build_feedback_block_for_claude
+from core.economic_calendar import get_calendar_summary_for_claude, is_high_risk_window
+from core.news_sentiment import get_news_summary, build_news_block_for_claude
+from core.portfolio_risk import (
+    compute_correlation_matrix, check_entry_correlation,
+    build_correlation_heatmap_text, compute_portfolio_concentration,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,6 +139,7 @@ def execute_decision(
     cycle_id: int,
     ai_decision_id: int,
     market_data: Dict,
+    corr_matrix=None,
 ) -> Optional[int]:
     """Execute a single Claude decision. Returns trade_id or None."""
     symbol = d.get("symbol", "").upper()
@@ -163,6 +172,31 @@ def execute_decision(
             logger.info(f"Max positions ({max_pos}) reached — skipping {symbol}")
             return None
 
+        # Feature 5: Correlation guard — block if too correlated with open positions
+        if corr_matrix is not None and len(positions) > 0:
+            open_syms = list(positions.keys())
+            corr_check = check_entry_correlation(symbol, open_syms, corr_matrix, threshold=0.75)
+            if corr_check["blocked"]:
+                logger.info(f"Correlation block: {symbol} — {corr_check['reason']}")
+                record_error("correlation_blocked", f"{symbol}: {corr_check['reason']}", cycle_id)
+                return None
+
+        # Economic Calendar: check risk window before any buy
+        calendar_risk_flag = None
+        try:
+            cal_risk = is_high_risk_window(symbol)
+            if cal_risk["block_entry"]:
+                logger.info(f"Calendar block: {symbol} — {cal_risk['reason']}")
+                record_error("calendar_blocked", f"{symbol}: {cal_risk['reason']}", cycle_id)
+                return None
+            elif cal_risk["reduce_size_pct"] < 1.0:
+                # Reduce position size if near a macro event
+                position_size_pct = position_size_pct * cal_risk["reduce_size_pct"]
+                calendar_risk_flag = cal_risk["reason"]
+                logger.info(f"Calendar: reduced size for {symbol} ({cal_risk['reduce_size_pct']*100:.0f}%) — {cal_risk['reason']}")
+        except Exception as e:
+            logger.debug(f"Calendar risk check failed for {symbol}: {e}")
+
         if not alpaca.paper:
             day_trades = count_day_trades_today()
             if day_trades >= 3:
@@ -177,83 +211,81 @@ def execute_decision(
             logger.info(f"Insufficient cash for {symbol} @ ${current_price:.2f}")
             return None
 
-        take_profit = round(current_price * 1.07, 2)
-        stop_loss = round(current_price * 0.96, 2)
+        # MomentumHold strategy: market entry + ATR-based trailing stop
+        # NO fixed take-profit — we ride the trend until it breaks
+        sym_data = market_data.get(symbol, {})
+        atr_pct = sym_data.get("atr_pct", 2.0)
+        # Trail = 2.5x ATR, floored at 12%, capped at 25%
+        # Wider trail = lets winners run through normal volatility
+        trail_percent = round(max(12.0, min(25.0, atr_pct * 2.5)), 2)
 
-        order = alpaca.place_bracket_order(
+        # Step 1: Place market entry order
+        order = alpaca.place_market_order(
             symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
-            take_profit_price=take_profit, stop_loss_price=stop_loss,
         )
-        logger.info(f"BUY {qty} {symbol} @ ~${current_price:.2f} | {confidence:.0%} | {reasoning[:80]}")
+        logger.info(
+            f"BUY {qty} {symbol} @ ~${current_price:.2f} | {confidence:.0%} | "
+            f"trail={trail_percent}% | {reasoning[:70]}"
+        )
 
-        # Record trade (returns id now)
         trade_id = record_trade(cycle_id, {
             "symbol": symbol, "action": action, "qty": qty,
             "signal_price": current_price, "confidence": confidence,
             "reasoning": reasoning, "order_id": order.id,
             "order_status": order.status,
-            "take_profit": take_profit, "stop_loss": stop_loss,
+            "take_profit": None,          # no fixed TP — MomentumHold
+            "stop_loss": trail_percent,   # store trail% here for reference
             "ai_decision_id": ai_decision_id,
+            "trail_percent": trail_percent,
+            "calendar_risk_flag": calendar_risk_flag,
         })
 
-        # Extract TP/SL child order IDs from bracket legs
-        tp_order_id = None
-        sl_order_id = None
-        if order.legs:
-            for leg in order.legs:
-                leg_type = leg.get("type", "")
-                if leg_type == "limit":
-                    tp_order_id = leg["id"]
-                elif leg_type in ("stop", "stop_limit"):
-                    sl_order_id = leg["id"]
-
-        # Record order group (links parent + TP + SL)
         group_id = record_order_group(
             trade_id=trade_id, cycle_id=cycle_id, symbol=symbol,
             parent_order_id=order.id, parent_side="buy", parent_qty=qty,
-            tp_order_id=tp_order_id, tp_limit_price=take_profit,
-            sl_order_id=sl_order_id, sl_stop_price=stop_loss,
+            tp_order_id=None, tp_limit_price=None,
+            sl_order_id=None, sl_stop_price=None,
         )
 
-        # Record orders audit log
         record_order(
             alpaca_order_id=order.id, symbol=symbol, side="buy",
             order_type="market", qty=qty, status=order.status,
-            signal_price=current_price, order_class="bracket",
-            time_in_force="gtc", cycle_id=cycle_id, trade_id=trade_id,
+            signal_price=current_price, order_class="simple",
+            time_in_force="day", cycle_id=cycle_id, trade_id=trade_id,
             order_group_id=group_id,
             raw_json=json.dumps(order.raw) if order.raw else None,
         )
-        if tp_order_id:
-            record_order(
-                alpaca_order_id=tp_order_id, symbol=symbol, side="sell",
-                order_type="limit", qty=qty, status="held",
-                limit_price=take_profit, order_class="bracket",
-                time_in_force="gtc", trade_id=trade_id, order_group_id=group_id,
-            )
-        if sl_order_id:
-            record_order(
-                alpaca_order_id=sl_order_id, symbol=symbol, side="sell",
-                order_type="stop", qty=qty, status="held",
-                stop_price=stop_loss, order_class="bracket",
-                time_in_force="gtc", trade_id=trade_id, order_group_id=group_id,
-            )
 
-        # Open position lifecycle (entry price = signal_price placeholder; reconciler updates on fill)
-        sym_data = market_data.get(symbol, {})
         pos_id = open_position_lifecycle(
             symbol=symbol, entry_price=current_price,
             entry_qty=qty, cycle_id=cycle_id, trade_id=trade_id,
             order_group_id=group_id,
             entry_rsi=sym_data.get("rsi_14"),
             entry_macd_histogram=sym_data.get("macd", {}).get("histogram") if sym_data.get("macd") else None,
-            entry_atr_pct=sym_data.get("atr_pct"),
+            entry_atr_pct=atr_pct,
             entry_confidence=confidence,
         )
 
         update_trade_links(trade_id, order_group_id=group_id, position_lifecycle_id=pos_id)
-        increment_ai_decision_executed(ai_decision_id)
 
+        # Step 2: Place trailing stop order (placed immediately after entry)
+        # Reconciler will also monitor SMA50 exit condition as a second layer
+        try:
+            ts_order = alpaca.place_trailing_stop_order(
+                symbol=symbol, qty=qty, trail_percent=trail_percent
+            )
+            update_position_trailing_stop(pos_id, ts_order.id, trail_percent)
+            record_order(
+                alpaca_order_id=ts_order.id, symbol=symbol, side="sell",
+                order_type="trailing_stop", qty=qty, status=ts_order.status,
+                order_class="simple", time_in_force="gtc",
+                trade_id=trade_id, order_group_id=group_id,
+            )
+            logger.info(f"Trailing stop placed: {symbol} trail={trail_percent}% order={ts_order.id}")
+        except Exception as e:
+            logger.warning(f"Could not place trailing stop for {symbol}: {e} — reconciler will monitor")
+
+        increment_ai_decision_executed(ai_decision_id)
         return trade_id
 
     elif action == "sell":
@@ -458,6 +490,64 @@ def run_cycle(alpaca: AlpacaClient):
             ),
         }
 
+        # Economic Calendar — wired from pre-existing core/economic_calendar.py
+        try:
+            calendar_context = get_calendar_summary_for_claude(watchlist)
+            if calendar_context:
+                logger.info("Economic calendar events found — injected into Claude prompt")
+        except Exception as e:
+            logger.warning(f"Economic calendar failed: {e}")
+            calendar_context = ""
+
+        # Feature 3: Performance feedback loop
+        try:
+            perf_summary = get_performance_summary(lookback_days=30)
+            performance_feedback = build_feedback_block_for_claude(perf_summary)
+            if performance_feedback:
+                logger.info(f"Performance feedback: {perf_summary['total_closed']} closed trades, "
+                            f"win_rate={perf_summary['win_rate']:.0%}")
+        except Exception as e:
+            logger.warning(f"Performance feedback failed: {e}")
+            performance_feedback = ""
+
+        # Feature 4: News & Sentiment
+        try:
+            held_symbols = list(positions.keys())
+            news_symbols = list(set(watchlist + held_symbols))[:30]  # cap to limit yfinance calls
+            news_summary = get_news_summary(news_symbols)
+            news_context = build_news_block_for_claude(news_summary, positions=held_symbols)
+            if news_context:
+                logger.info(f"News context built for {len([s for s,d in news_summary.items() if d.get('has_news')])} symbols")
+        except Exception as e:
+            logger.warning(f"News sentiment failed: {e}")
+            news_context = ""
+
+        # Feature 5: Correlation & Portfolio Risk
+        corr_matrix = None
+        portfolio_risk_context = ""
+        try:
+            all_symbols_for_corr = list(set(watchlist + list(positions.keys())))[:25]
+            corr_matrix = compute_correlation_matrix(all_symbols_for_corr, lookback_days=60)
+            held_list = list(positions.keys())
+            heatmap_text = build_correlation_heatmap_text(corr_matrix, held_list)
+            conc = compute_portfolio_concentration(
+                [{"symbol": p.symbol, "market_value": p.market_value} for p in positions.values()],
+                account.portfolio_value,
+            )
+            conc_lines = []
+            if conc["warnings"]:
+                conc_lines = ["CONCENTRATION WARNINGS:"] + [f"  {w}" for w in conc["warnings"]]
+            portfolio_risk_context = "\n".join(
+                (["=== PORTFOLIO RISK ==="] if (heatmap_text or conc_lines) else [])
+                + ([heatmap_text] if heatmap_text else [])
+                + conc_lines
+            )
+            logger.info(f"Correlation matrix computed: {corr_matrix.shape if corr_matrix is not None else 'N/A'}")
+        except Exception as e:
+            logger.warning(f"Portfolio risk computation failed: {e}")
+            corr_matrix = None
+            portfolio_risk_context = ""
+
         logger.info(f"Asking Claude to analyze {len(watchlist)} symbols...")
         result = run_claude_decision(
             watchlist=watchlist,
@@ -465,6 +555,10 @@ def run_cycle(alpaca: AlpacaClient):
             portfolio=portfolio_snapshot,
             account=account_snapshot,
             regime_summary=regime_summary,
+            performance_feedback=performance_feedback,
+            news_context=news_context,
+            portfolio_risk_context=portfolio_risk_context,
+            calendar_context=calendar_context,
         )
 
         if not result:
@@ -498,7 +592,7 @@ def run_cycle(alpaca: AlpacaClient):
 
         for d in result.get("decisions", []):
             try:
-                execute_decision(d, account, positions, cfg, alpaca, cycle_id, ai_decision_id, market_data)
+                execute_decision(d, account, positions, cfg, alpaca, cycle_id, ai_decision_id, market_data, corr_matrix=corr_matrix)
             except Exception as e:
                 logger.error(f"Execution error {d.get('symbol')}: {e}")
                 record_error("execution_error", f"{d.get('symbol')}: {e}", cycle_id)

@@ -239,6 +239,28 @@ class AlpacaClient:
         data = self._post("/orders", body)
         return self._parse_order(data)
 
+    def place_trailing_stop_order(
+        self,
+        symbol: str,
+        qty: float,
+        trail_percent: float,
+    ) -> AlpacaOrder:
+        """
+        Sell-side trailing stop that trails trail_percent% below the high-water mark.
+        Replaces the fixed take-profit leg from bracket orders.
+        Alpaca preserves the high-water mark across market sessions (GTC).
+        """
+        body = {
+            "symbol": symbol,
+            "qty": str(int(qty)),
+            "side": "sell",
+            "type": "trailing_stop",
+            "trail_percent": str(round(trail_percent, 2)),
+            "time_in_force": "gtc",
+        }
+        data = self._post("/orders", body)
+        return self._parse_order(data)
+
     def cancel_order(self, order_id: str) -> bool:
         return self._delete(f"/orders/{order_id}")
 

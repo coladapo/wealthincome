@@ -25,7 +25,9 @@ def _reconcile_once(alpaca):
         get_open_positions_lifecycle, close_position_lifecycle,
         update_ai_decision_calibration, upsert_daily_summary,
         get_daily_summaries, DB_PATH,
+        record_trade_analysis,
     )
+    from core.trade_analyzer import analyze_closed_position
 
     # ── 1. Update status on all open orders ──────────────────────────────────
     open_orders = get_open_orders()
@@ -139,6 +141,17 @@ def _reconcile_once(alpaca):
                         )
                         # Update AI decision calibration
                         _update_calibration(group["parent_order_id"], realized_pnl, DB_PATH)
+                        # Feature 3: analyze closed position and record
+                        try:
+                            pos_for_analysis = dict(pos)
+                            pos_for_analysis["exit_price"] = exit_price
+                            pos_for_analysis["exit_qty"] = qty
+                            pos_for_analysis["closed_at"] = exit_at or datetime.now().isoformat()
+                            analysis = analyze_closed_position(pos_for_analysis)
+                            analysis["symbol"] = pos["symbol"]
+                            record_trade_analysis(pos["id"], analysis)
+                        except Exception as ae:
+                            logger.warning(f"Trade analysis failed for {pos['symbol']}: {ae}")
                         break
 
                 logger.info(
@@ -150,7 +163,15 @@ def _reconcile_once(alpaca):
         except Exception as e:
             logger.warning(f"Failed to reconcile group {group.get('id')} ({group.get('symbol')}): {e}")
 
-    # ── 3. Upsert daily summary for yesterday if missing ─────────────────────
+    # ── 3. SMA50 exit monitor (MomentumHold strategy) ────────────────────────
+    # Only run when market is open — avoid false triggers from after-hours prices
+    try:
+        if alpaca.is_market_open():
+            _check_sma50_exits(alpaca, DB_PATH)
+    except Exception as e:
+        logger.debug(f"SMA50 exit check error: {e}")
+
+    # ── 4. Upsert daily summary for yesterday if missing ─────────────────────
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         yesterday = (datetime.now().replace(hour=0, minute=0, second=0)
@@ -207,6 +228,147 @@ def _update_calibration(parent_order_id: str, realized_pnl: float, db_path: str)
         conn.close()
     except Exception as e:
         logger.warning(f"Could not update calibration for order {parent_order_id}: {e}")
+
+
+def _check_sma50_exits(alpaca, db_path: str):
+    """
+    MomentumHold exit rule: close position if price closes below SMA50 for 2+ bars.
+    Also cancels the trailing stop order so Alpaca doesn't double-exit.
+
+    Uses a persistent breach_count in position_lifecycle so restarts don't reset progress.
+    """
+    import yfinance as yf
+    import numpy as np
+    import warnings
+    warnings.filterwarnings("ignore")
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        open_positions = conn.execute(
+            "SELECT id, symbol, entry_price, entry_qty, sma50_breach_count, trailing_stop_order_id "
+            "FROM position_lifecycle WHERE status='open'"
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"SMA50 exit: DB read failed: {e}")
+        return
+
+    for pos in open_positions:
+        symbol = pos["symbol"]
+        try:
+            df = yf.download(symbol, period="10d", progress=False,
+                             timeout=8, auto_adjust=True)
+            if df.empty or len(df) < 3:
+                continue
+            if hasattr(df.columns, "get_level_values"):
+                df.columns = df.columns.get_level_values(0)
+
+            closes = list(df["Close"].dropna())
+            if len(closes) < 52:
+                # Not enough history for SMA50 — fetch more
+                df2 = yf.download(symbol, period="80d", progress=False,
+                                  timeout=8, auto_adjust=True)
+                if not df2.empty:
+                    if hasattr(df2.columns, "get_level_values"):
+                        df2.columns = df2.columns.get_level_values(0)
+                    closes = list(df2["Close"].dropna())
+
+            if len(closes) < 52:
+                continue
+
+            sma50 = float(np.mean(closes[-50:]))
+            last_close = closes[-1]
+            prev_close = closes[-2]
+
+            below_today = last_close < sma50
+            below_yesterday = prev_close < float(np.mean(closes[-51:-1]))
+
+            breach_count = pos["sma50_breach_count"] or 0
+
+            if below_today:
+                breach_count += 1
+            else:
+                if breach_count > 0:
+                    logger.info(f"SMA50 breach reset: {symbol} closed above SMA50 (${last_close:.2f} > ${sma50:.2f})")
+                breach_count = 0
+
+            # Persist the updated count
+            conn2 = sqlite3.connect(db_path)
+            conn2.execute("PRAGMA journal_mode=WAL")
+            conn2.execute(
+                "UPDATE position_lifecycle SET sma50_breach_count=? WHERE id=?",
+                (breach_count, pos["id"])
+            )
+            conn2.commit()
+            conn2.close()
+
+            logger.debug(
+                f"SMA50 check {symbol}: close=${last_close:.2f} sma50=${sma50:.2f} "
+                f"below={below_today} breach_count={breach_count}"
+            )
+
+            # EXIT: 2+ consecutive closes below SMA50
+            if breach_count >= 2:
+                logger.warning(
+                    f"SMA50 EXIT TRIGGERED: {symbol} — {breach_count} consecutive closes "
+                    f"below SMA50 (${last_close:.2f} < ${sma50:.2f})"
+                )
+
+                # Cancel trailing stop first to avoid double-exit
+                ts_order_id = pos["trailing_stop_order_id"]
+                if ts_order_id:
+                    try:
+                        alpaca.cancel_order(ts_order_id)
+                        logger.info(f"Cancelled trailing stop {ts_order_id[:8]}… for {symbol}")
+                    except Exception as e:
+                        logger.warning(f"Could not cancel trailing stop for {symbol}: {e}")
+
+                # Close the position via market order
+                try:
+                    alpaca.close_position(symbol)
+
+                    current_price = alpaca.get_current_price(symbol) or last_close
+                    from backend.db import (
+                        get_open_positions_lifecycle, close_position_lifecycle,
+                        get_open_positions_lifecycle,
+                    )
+                    open_pos_list = get_open_positions_lifecycle()
+                    for open_pos in open_pos_list:
+                        if open_pos["symbol"] == symbol:
+                            close_position_lifecycle(
+                                position_id=open_pos["id"],
+                                exit_price=current_price,
+                                exit_qty=open_pos["entry_qty"],
+                                close_reason="sma50_breach",
+                            )
+                            _update_calibration(
+                                open_pos.get("entry_order_group_id", ""),
+                                (current_price - open_pos["entry_price"]) * open_pos["entry_qty"],
+                                db_path,
+                            )
+                            # Feature 3: analyze closed position
+                            try:
+                                from backend.db import record_trade_analysis
+                                from core.trade_analyzer import analyze_closed_position
+                                pos_for_analysis = dict(open_pos)
+                                pos_for_analysis["exit_price"] = current_price
+                                pos_for_analysis["closed_at"] = datetime.now().isoformat()
+                                analysis = analyze_closed_position(pos_for_analysis)
+                                analysis["symbol"] = symbol
+                                record_trade_analysis(open_pos["id"], analysis)
+                            except Exception as ae:
+                                logger.warning(f"Trade analysis (sma50) failed for {symbol}: {ae}")
+                            break
+
+                    logger.info(f"SMA50 exit executed: {symbol} @ ~${current_price:.2f}")
+
+                except Exception as e:
+                    logger.error(f"Failed to execute SMA50 exit for {symbol}: {e}")
+
+        except Exception as e:
+            logger.warning(f"SMA50 check failed for {symbol}: {e}")
 
 
 def reconciler_loop(alpaca, interval_seconds: int = 30):

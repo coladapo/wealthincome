@@ -265,20 +265,48 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_pos_lifecycle_status ON position_lifecycle(status);
             CREATE INDEX IF NOT EXISTS idx_equity_snapshot_at ON equity_snapshots(snapshot_at);
             CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_summaries(date);
+
+            -- Trade analysis: per-closed-position performance metrics (Feature 3)
+            CREATE TABLE IF NOT EXISTS trade_analysis (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id         INTEGER REFERENCES position_lifecycle(id),
+                analyzed_at         TEXT NOT NULL,
+                symbol              TEXT NOT NULL,
+                entry_signal        TEXT NOT NULL,
+                pnl_pct             REAL,
+                hold_days           INTEGER,
+                was_profitable      INTEGER NOT NULL DEFAULT 0,
+                entry_price         REAL,
+                exit_price          REAL,
+                analysis_json       TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_analysis_position ON trade_analysis(position_id);
+            CREATE INDEX IF NOT EXISTS idx_trade_analysis_signal ON trade_analysis(entry_signal);
+            CREATE INDEX IF NOT EXISTS idx_trade_analysis_analyzed ON trade_analysis(analyzed_at);
         """)
 
         # Migrations — safe no-ops if column already exists
         migrations = [
-            ("cycles", "input_tokens",       "INTEGER"),
-            ("cycles", "output_tokens",      "INTEGER"),
-            ("cycles", "cache_read_tokens",  "INTEGER"),
-            ("cycles", "cache_write_tokens", "INTEGER"),
-            ("cycles", "duration_ms",        "INTEGER"),
-            ("trades", "order_group_id",     "INTEGER"),
-            ("trades", "position_lifecycle_id", "INTEGER"),
-            ("trades", "ai_decision_id",     "INTEGER"),
-            ("trades", "fill_price",         "REAL"),
-            ("trades", "slippage_pct",       "REAL"),
+            ("cycles",            "input_tokens",             "INTEGER"),
+            ("cycles",            "output_tokens",            "INTEGER"),
+            ("cycles",            "cache_read_tokens",        "INTEGER"),
+            ("cycles",            "cache_write_tokens",       "INTEGER"),
+            ("cycles",            "duration_ms",              "INTEGER"),
+            ("trades",            "order_group_id",           "INTEGER"),
+            ("trades",            "position_lifecycle_id",    "INTEGER"),
+            ("trades",            "ai_decision_id",           "INTEGER"),
+            ("trades",            "fill_price",               "REAL"),
+            ("trades",            "slippage_pct",             "REAL"),
+            ("trades",            "trail_percent",            "REAL"),
+            ("trades",            "news_sentiment_score",     "REAL"),
+            ("trades",            "correlation_with_portfolio", "REAL"),
+            ("trades",            "calendar_risk_flag",       "TEXT"),
+            ("position_lifecycle","trailing_stop_order_id",   "TEXT"),
+            ("position_lifecycle","trail_percent",            "REAL"),
+            ("position_lifecycle","sma50_breach_count",       "INTEGER DEFAULT 0"),
+            ("order_groups",      "ts_order_id",              "TEXT"),
+            ("order_groups",      "trail_percent",            "REAL"),
         ]
         for table, col, typedef in migrations:
             try:
@@ -802,6 +830,24 @@ def close_position_lifecycle(
         ))
 
 
+def update_position_trailing_stop(position_id: int, trailing_stop_order_id: str, trail_percent: float):
+    """Store the trailing stop order ID on the position lifecycle row."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE position_lifecycle SET trailing_stop_order_id=?, trail_percent=? WHERE id=?",
+            (trailing_stop_order_id, trail_percent, position_id)
+        )
+
+
+def update_position_sma50_breach(position_id: int, count: int):
+    """Increment or reset the consecutive SMA50 breach counter."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE position_lifecycle SET sma50_breach_count=? WHERE id=?",
+            (count, position_id)
+        )
+
+
 def get_open_positions_lifecycle() -> List[Dict]:
     with db() as conn:
         rows = conn.execute(
@@ -1094,3 +1140,112 @@ def get_errors(limit: int = 20) -> List[Dict]:
             "SELECT * FROM errors ORDER BY occurred_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ─── Trade Analysis (Feature 3) ──────────────────────────────────────────────
+
+def record_trade_analysis(position_id: int, analysis_dict: Dict) -> int:
+    """
+    Persist a trade analysis result to the trade_analysis table.
+    Returns the new row id.
+    """
+    symbol = analysis_dict.get("symbol", "")
+    # Try to get symbol from position_lifecycle if not in analysis_dict
+    if not symbol:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT symbol FROM position_lifecycle WHERE id=?", (position_id,)
+            ).fetchone()
+            symbol = row["symbol"] if row else ""
+
+    with db() as conn:
+        cur = conn.execute("""
+            INSERT INTO trade_analysis(
+                position_id, analyzed_at, symbol,
+                entry_signal, pnl_pct, hold_days, was_profitable,
+                entry_price, exit_price, analysis_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        """, (
+            position_id,
+            datetime.now().isoformat(),
+            symbol,
+            analysis_dict.get("entry_signal", "mixed"),
+            analysis_dict.get("pnl_pct"),
+            analysis_dict.get("hold_days"),
+            1 if analysis_dict.get("was_profitable") else 0,
+            analysis_dict.get("entry_price"),
+            analysis_dict.get("exit_price"),
+            json.dumps(analysis_dict),
+        ))
+        return cur.lastrowid
+
+
+def get_performance_summary(lookback_days: int = 30) -> Dict:
+    """
+    Aggregate closed trade analysis for the past N days.
+
+    Returns:
+        total_closed, win_rate, avg_pnl_pct, avg_hold_days,
+        best_signal, worst_signal, signal_breakdown
+    """
+    since = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT entry_signal, pnl_pct, hold_days, was_profitable
+            FROM trade_analysis
+            WHERE analyzed_at >= ?
+            ORDER BY analyzed_at DESC
+        """, (since,)).fetchall()
+
+    if not rows:
+        return {
+            "total_closed":   0,
+            "win_rate":       0.0,
+            "avg_pnl_pct":   0.0,
+            "avg_hold_days":  0.0,
+            "best_signal":    "N/A",
+            "worst_signal":   "N/A",
+            "signal_breakdown": {},
+        }
+
+    total = len(rows)
+    wins  = sum(1 for r in rows if r["was_profitable"])
+
+    pnl_list  = [r["pnl_pct"]   for r in rows if r["pnl_pct"]   is not None]
+    hold_list = [r["hold_days"] for r in rows if r["hold_days"] is not None]
+
+    avg_pnl  = sum(pnl_list)  / len(pnl_list)  if pnl_list  else 0.0
+    avg_hold = sum(hold_list) / len(hold_list) if hold_list else 0.0
+
+    # Per-signal breakdown
+    signal_data: Dict[str, Dict] = {}
+    for r in rows:
+        sig = r["entry_signal"] or "mixed"
+        if sig not in signal_data:
+            signal_data[sig] = {"count": 0, "wins": 0, "pnl_sum": 0.0}
+        signal_data[sig]["count"] += 1
+        signal_data[sig]["wins"]  += 1 if r["was_profitable"] else 0
+        signal_data[sig]["pnl_sum"] += r["pnl_pct"] or 0.0
+
+    signal_breakdown = {}
+    for sig, sd in signal_data.items():
+        cnt = sd["count"]
+        signal_breakdown[sig] = {
+            "count":       cnt,
+            "win_rate":    sd["wins"] / cnt if cnt else 0.0,
+            "avg_pnl_pct": sd["pnl_sum"] / cnt if cnt else 0.0,
+        }
+
+    # Best/worst signal by avg P&L
+    best_signal  = max(signal_breakdown, key=lambda s: signal_breakdown[s]["avg_pnl_pct"]) if signal_breakdown else "N/A"
+    worst_signal = min(signal_breakdown, key=lambda s: signal_breakdown[s]["avg_pnl_pct"]) if signal_breakdown else "N/A"
+
+    return {
+        "total_closed":     total,
+        "win_rate":         wins / total if total else 0.0,
+        "avg_pnl_pct":      round(avg_pnl, 4),
+        "avg_hold_days":    round(avg_hold, 1),
+        "best_signal":      best_signal,
+        "worst_signal":     worst_signal,
+        "signal_breakdown": signal_breakdown,
+    }

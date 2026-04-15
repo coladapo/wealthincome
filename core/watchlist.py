@@ -195,6 +195,34 @@ def score_symbol(ticker: str, days: int = 200) -> Optional[Dict]:
         if vs_sma50 > 0.25:   # >25% above SMA50 = stretched
             momentum_score *= 0.85
 
+        # Feature 6: Short Interest Signal
+        short_pct_float = 0.0
+        short_ratio     = 0.0
+        short_signal    = "none"
+        try:
+            info = yf.Ticker(ticker).info or {}
+            # shortPercentOfFloat is typically 0.15 for 15%
+            spf = info.get("shortPercentOfFloat")
+            sr  = info.get("shortRatio") or info.get("shortRatio")
+            short_pct_float = float(spf) if spf is not None else 0.0
+            short_ratio     = float(sr)  if sr  is not None else 0.0
+
+            # Classify short signal
+            if short_pct_float > 0.15:
+                # Check for squeeze potential: heavy short + recent price momentum
+                if ret_1m > 0.05:
+                    short_signal = "squeeze_potential"
+                else:
+                    short_signal = "high_short_interest"
+        except Exception:
+            pass  # short interest unavailable — keep defaults
+
+        # Apply squeeze bonus to momentum score
+        squeeze_bonus = 0.15 if short_pct_float > 0.15 and ret_1m > 0.05 else 0.0
+        if squeeze_bonus > 0:
+            momentum_score *= (1 + squeeze_bonus)
+            logger.debug(f"Squeeze bonus applied to {ticker}: +{squeeze_bonus*100:.0f}%")
+
         return {
             "ticker": ticker,
             "price": round(price, 2),
@@ -210,6 +238,10 @@ def score_symbol(ticker: str, days: int = 200) -> Optional[Dict]:
             "vol_ratio": round(vol_ratio, 2),
             "vs_sma50_pct": round(vs_sma50 * 100, 2),
             "momentum_score": round(momentum_score, 4),
+            # Feature 6 fields
+            "short_pct_float": round(short_pct_float * 100, 2),  # as percentage
+            "short_ratio":     round(short_ratio, 2),
+            "short_signal":    short_signal,
         }
 
     except Exception as e:
@@ -349,6 +381,12 @@ def build_watchlist(
         if benchmark not in symbols:
             symbols = [benchmark] + symbols
 
+    # Feature 6: identify squeeze candidates in the watchlist
+    squeeze_candidates = [
+        s["ticker"] for s in selected
+        if s.get("short_signal") == "squeeze_potential"
+    ]
+
     result = {
         "symbols": symbols[:top_n],
         "scored": selected,
@@ -358,6 +396,7 @@ def build_watchlist(
         "passed_filters": len(scored),
         "selected": len(selected),
         "sector_distribution": sector_counts,
+        "squeeze_candidates": squeeze_candidates,
     }
 
     _save_cache("watchlist", result)
@@ -380,6 +419,7 @@ def _default_watchlist() -> Dict[str, Any]:
         "passed_filters": 0,
         "selected": len(symbols),
         "sector_distribution": {},
+        "squeeze_candidates": [],
         "fallback": True,
     }
 

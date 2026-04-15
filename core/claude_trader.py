@@ -51,6 +51,14 @@ POSITION SIZING:
 - Reduce to 0.06 for positions 8-12 (concentration limit)
 - Never exceed 0.10 per position
 
+SHORT SQUEEZE SIGNALS:
+- short_signal = 'squeeze_potential': stock has >15% short float AND >5% 1-month return.
+  This combination can accelerate if price continues higher (shorts forced to cover).
+  Treat as a positive momentum amplifier — add a small confidence boost (+0.05) if other entry signals align.
+- short_signal = 'high_short_interest': >15% float shorted but no recent momentum.
+  Be cautious — may indicate smart money is betting against this stock.
+- short_pct_float: shows % of float sold short. Higher = more fuel for squeeze, but also more risk.
+
 RULES:
 - Only return valid JSON — no prose, no markdown, no explanation outside the JSON
 - Default is HOLD — only act on clear setups
@@ -84,6 +92,10 @@ def _build_prompt(
     portfolio: Dict[str, Any],
     account: Dict[str, Any],
     regime_summary: str = "",
+    performance_feedback: str = "",
+    news_context: str = "",
+    portfolio_risk_context: str = "",
+    calendar_context: str = "",
 ) -> str:
     """Build the user prompt with all market context"""
 
@@ -104,8 +116,28 @@ def _build_prompt(
 
 """ if regime_summary else ""
 
+    performance_block = f"""
+{performance_feedback}
+
+""" if performance_feedback else ""
+
+    news_block = f"""
+{news_context}
+
+""" if news_context else ""
+
+    risk_block = f"""
+{portfolio_risk_context}
+
+""" if portfolio_risk_context else ""
+
+    calendar_block = f"""
+{calendar_context}
+
+""" if calendar_context else ""
+
     return f"""TRADING CYCLE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}
-{regime_block}
+{regime_block}{performance_block}{calendar_block}{news_block}{risk_block}
 === ACCOUNT ===
 {account_str}
 
@@ -128,6 +160,10 @@ def run_claude_decision(
     portfolio: Dict[str, Any],
     account: Dict[str, Any],
     regime_summary: str = "",
+    performance_feedback: str = "",
+    news_context: str = "",
+    portfolio_risk_context: str = "",
+    calendar_context: str = "",
     timeout: int = 120,
 ) -> Optional[Dict[str, Any]]:
     """
@@ -136,7 +172,14 @@ def run_claude_decision(
     Returns None on failure.
     """
 
-    user_prompt = _build_prompt(watchlist, market_data, portfolio, account, regime_summary)
+    user_prompt = _build_prompt(
+        watchlist, market_data, portfolio, account,
+        regime_summary=regime_summary,
+        performance_feedback=performance_feedback,
+        news_context=news_context,
+        portfolio_risk_context=portfolio_risk_context,
+        calendar_context=calendar_context,
+    )
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         f.write(SYSTEM_PROMPT)
