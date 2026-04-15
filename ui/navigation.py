@@ -19,6 +19,7 @@ def render_navigation() -> str:
         {"name": "Risk Management", "icon": "🛡️", "description": "Risk monitoring and controls"},
         {"name": "News & Sentiment", "icon": "📰", "description": "Market news and sentiment analysis"},
         {"name": "Journal", "icon": "📓", "description": "Trading journal and notes"},
+        {"name": "Autonomous Trader", "icon": "🤖", "description": "Claude-managed live trading engine"},
         {"name": "Settings", "icon": "⚙️", "description": "Platform settings and preferences"},
     ]
     

@@ -6,3 +6,7 @@ yfinance
 plotly
 requests
 python-dateutil
+alpaca-py
+fastapi
+uvicorn[standard]
+python-dotenv

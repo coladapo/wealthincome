@@ -33,6 +33,9 @@ class AppConfig:
     ALPHA_VANTAGE_API_KEY: Optional[str] = None
     FINNHUB_API_KEY: Optional[str] = None
     NEWS_API_KEY: Optional[str] = None
+    ALPACA_API_KEY: Optional[str] = None
+    ALPACA_SECRET_KEY: Optional[str] = None
+    ALPACA_PAPER: bool = True
     
     # Data Sources
     DEFAULT_DATA_PROVIDER: str = "yfinance"  # yfinance, alpha_vantage, finnhub
@@ -110,6 +113,9 @@ class AppConfig:
             'ALPHA_VANTAGE_API_KEY': str,
             'FINNHUB_API_KEY': str,
             'NEWS_API_KEY': str,
+            'ALPACA_API_KEY': str,
+            'ALPACA_SECRET_KEY': str,
+            'ALPACA_PAPER': lambda x: x.lower() == 'true',
             'DEFAULT_DATA_PROVIDER': str,
             'DEFAULT_PORTFOLIO_VALUE': float,
             'CONFIDENCE_THRESHOLD': float,
@@ -146,6 +152,8 @@ class AppConfig:
             'alpha_vantage': self.ALPHA_VANTAGE_API_KEY,
             'finnhub': self.FINNHUB_API_KEY,
             'news': self.NEWS_API_KEY,
+            'alpaca': self.ALPACA_API_KEY,
+            'alpaca_secret': self.ALPACA_SECRET_KEY,
         }
         return key_mapping.get(provider.lower())
     

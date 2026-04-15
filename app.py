@@ -39,10 +39,15 @@ except ImportError as e:
 # Initialize configuration
 config = get_config()
 
-# Setup logging
+# Setup logging — file + console
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("logs/wealthincome.log"),
+        logging.StreamHandler(),
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -115,6 +120,9 @@ def main():
         elif selected_page == "Journal":
             from page_modules.journal import render_journal
             render_journal()
+        elif selected_page == "Autonomous Trader":
+            from page_modules.autonomous import render
+            render()
         elif selected_page == "Settings":
             from page_modules.settings import render_settings
             render_settings()
