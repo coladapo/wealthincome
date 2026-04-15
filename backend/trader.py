@@ -360,13 +360,22 @@ def execute_decision(
             # Resolve order group if one exists
             if open_pos.get("entry_order_group_id"):
                 realized_pnl = (current_price - open_pos["entry_price"]) * qty
-                update_order_group_exit(
-                    parent_order_id=open_pos.get("entry_order_group_id_str", ""),
-                    exit_trigger="manual_sell",
-                    exit_fill_price=current_price,
-                    exit_filled_at=datetime.now().isoformat(),
-                    realized_pnl=realized_pnl,
-                )
+                # Look up the parent_order_id string from the order_groups table
+                from backend.db import get_order_groups
+                groups = get_order_groups(limit=200)
+                parent_oid = None
+                for g in groups:
+                    if g.get("id") == open_pos["entry_order_group_id"]:
+                        parent_oid = g.get("parent_order_id")
+                        break
+                if parent_oid:
+                    update_order_group_exit(
+                        parent_order_id=parent_oid,
+                        exit_trigger="manual_sell",
+                        exit_fill_price=current_price,
+                        exit_filled_at=datetime.now().isoformat(),
+                        realized_pnl=realized_pnl,
+                    )
 
         increment_ai_decision_executed(ai_decision_id)
         return trade_id

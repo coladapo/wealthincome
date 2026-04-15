@@ -348,7 +348,6 @@ def _check_sma50_exits(alpaca, db_path: str):
                     current_price = alpaca.get_current_price(symbol) or last_close
                     from backend.db import (
                         get_open_positions_lifecycle, close_position_lifecycle,
-                        get_open_positions_lifecycle,
                     )
                     open_pos_list = get_open_positions_lifecycle()
                     for open_pos in open_pos_list:
