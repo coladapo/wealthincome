@@ -59,6 +59,15 @@ SHORT SQUEEZE SIGNALS:
   Be cautious — may indicate smart money is betting against this stock.
 - short_pct_float: shows % of float sold short. Higher = more fuel for squeeze, but also more risk.
 
+OPTIONS FLOW — if provided in PORTFOLIO RISK section:
+- Large options buyers often know something 1-5 days before a stock moves.
+- bullish_flow: Call volume unusually high vs open interest, low put/call ratio.
+  Use as a +0.05 confidence boost if trend indicators also align.
+- bearish_flow: Put volume unusually high, high put/call ratio. If you hold this stock,
+  treat as an early warning to tighten your exit criteria.
+- signal_strength: 0.0-1.0. Only weight this heavily at > 0.6.
+- Never buy based on options flow alone — it's a confirmation signal, not a primary one.
+
 VWAP (Intraday Institutional Benchmark) — if provided in PORTFOLIO RISK section:
 - VWAP = Volume-Weighted Average Price. Institutional algos benchmark every execution to VWAP.
 - above_vwap_strong (> +1.5%): Buyers in control. Strong confirmation signal for new longs.

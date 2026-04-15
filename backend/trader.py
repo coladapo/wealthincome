@@ -45,6 +45,11 @@ from core.tick_agent import (
     build_vwap_block_for_claude,
     run_tick_loop,
 )
+from core.options_flow import (
+    get_options_flow,
+    build_options_flow_block_for_claude,
+    save_options_flow_to_db,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -609,12 +614,29 @@ def run_cycle(alpaca: AlpacaClient):
             logger.warning(f"Tick/VWAP context failed: {e}")
             vwap_context = ""
 
-        # Combine vwap into news_context (or portfolio_risk_context)
-        # We append it to portfolio_risk_context since it's risk-adjacent
-        if vwap_context:
+        # Options Flow Agent
+        options_context = ""
+        try:
+            options_syms = list(set(watchlist + list(positions.keys())))[:15]
+            flow_data = get_options_flow(options_syms)
+            options_context = build_options_flow_block_for_claude(
+                flow_data,
+                positions=portfolio_snapshot["positions"],
+            )
+            save_options_flow_to_db(flow_data)
+            actionable = sum(1 for d in flow_data.values() if d.get("options_signal") not in ("neutral", "no_data"))
+            if options_context:
+                logger.info(f"Options flow: {actionable} actionable signals out of {len(flow_data)} symbols")
+        except Exception as e:
+            logger.warning(f"Options flow failed: {e}")
+            options_context = ""
+
+        # Combine VWAP + Options into portfolio_risk_context
+        extra_context = "\n\n".join(filter(None, [vwap_context, options_context]))
+        if extra_context:
             portfolio_risk_context = (
-                (portfolio_risk_context + "\n\n" + vwap_context).strip()
-                if portfolio_risk_context else vwap_context
+                (portfolio_risk_context + "\n\n" + extra_context).strip()
+                if portfolio_risk_context else extra_context
             )
 
         logger.info(f"Asking Claude to analyze {len(watchlist)} symbols...")
