@@ -363,6 +363,36 @@ def init_db():
                 params_json     TEXT,
                 results_json    TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS signal_calibration (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                computed_at              TEXT NOT NULL,
+                lookback_trades          INTEGER NOT NULL,
+                signal_type              TEXT NOT NULL,
+                total_trades_with_signal INTEGER NOT NULL DEFAULT 0,
+                winning_trades           INTEGER NOT NULL DEFAULT 0,
+                win_rate                 REAL NOT NULL DEFAULT 0.0,
+                avg_pnl_pct              REAL NOT NULL DEFAULT 0.0,
+                avg_hold_days            REAL NOT NULL DEFAULT 0.0,
+                bull_win_rate            REAL,
+                bear_win_rate            REAL,
+                caution_win_rate         REAL,
+                recommended_weight       REAL,
+                valid_from               TEXT NOT NULL,
+                valid_through            TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_cal_type_at
+                ON signal_calibration(signal_type, computed_at);
+            CREATE INDEX IF NOT EXISTS idx_signal_cal_type
+                ON signal_calibration(signal_type);
+
+            CREATE TABLE IF NOT EXISTS strategy_memos (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at  TEXT NOT NULL,
+                week_start  TEXT NOT NULL,
+                memo        TEXT NOT NULL
+            );
         """)
 
 

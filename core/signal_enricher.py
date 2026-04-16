@@ -140,6 +140,17 @@ def get_enriched_context(
         except Exception as e:
             logger.warning(f"Extended EDGAR enricher failed (non-fatal): {e}")
 
+    # ── Performance Intelligence (self-calibrating feedback loop) ───────────
+    try:
+        from core.performance_intelligence import build_performance_intelligence_block
+        perf_block = build_performance_intelligence_block(lookback_trades=30)
+        context["performance_intelligence_block"] = perf_block
+        if perf_block:
+            blocks.append(perf_block)
+            logger.info("Performance intelligence block injected into Claude context")
+    except Exception as e:
+        logger.warning(f"Performance intelligence enricher failed (non-fatal): {e}")
+
     context["combined_block"] = "\n\n".join(blocks)
     return context
 

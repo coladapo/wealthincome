@@ -162,6 +162,12 @@ def _reconcile_once(alpaca):
                             record_trade_analysis(pos["id"], analysis)
                         except Exception as ae:
                             logger.warning(f"Trade analysis failed for {pos['symbol']}: {ae}")
+                        # Recalibrate signal intelligence after every close
+                        try:
+                            from core.performance_intelligence import run_signal_calibration
+                            run_signal_calibration()
+                        except Exception:
+                            pass
                         break
 
                 logger.info(
@@ -358,6 +364,11 @@ def _reconcile_sell_fills(alpaca, db_path: str):
                 f"entry=${entry_price:.2f} exit=${exit_price:.2f} qty={qty} "
                 f"P&L={pnl_str} reason={close_reason}"
             )
+            try:
+                from core.performance_intelligence import run_signal_calibration
+                run_signal_calibration()
+            except Exception:
+                pass
 
     except Exception as e:
         logger.warning(f"_reconcile_sell_fills failed: {e}")
