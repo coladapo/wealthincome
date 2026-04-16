@@ -242,11 +242,34 @@ def execute_decision(
                 record_error("pdt_guard", f"Blocked buy {symbol} — {day_trades} day trades today", cycle_id)
                 return None
 
+        # Hard guard: never use margin — only deploy actual cash on hand
+        available_cash = max(float(account.cash), 0.0)
+        if available_cash < 1.0:
+            logger.info(f"No cash available (cash=${float(account.cash):,.0f}) — skipping {symbol}")
+            return None
+
+        # Hard guard: never deploy more than 80% of portfolio value
+        # Prevents over-concentration even if Claude requests a large position
+        MAX_DEPLOY_PCT = 0.80
+        long_market_value = float(getattr(account, "long_market_value", 0) or 0)
+        deployed_pct = long_market_value / float(account.portfolio_value) if account.portfolio_value else 0
+        if deployed_pct >= MAX_DEPLOY_PCT:
+            logger.info(
+                f"Portfolio at {deployed_pct:.0%} deployed (max {MAX_DEPLOY_PCT:.0%}) — "
+                f"skipping {symbol} to avoid over-concentration"
+            )
+            return None
+
+        # Size the position: 8% of portfolio, but capped to available cash (no margin)
         capped_pct = min(position_size_pct, max_pos_pct)
-        max_value = account.portfolio_value * capped_pct
-        qty = int(min(max_value, account.cash * 0.95) / current_price)
+        max_value = min(
+            account.portfolio_value * capped_pct,  # sizing rule
+            available_cash * 0.95,                  # cash constraint — never go negative
+            account.portfolio_value * (MAX_DEPLOY_PCT - deployed_pct),  # room left under 80% cap
+        )
+        qty = int(max_value / current_price)
         if qty < 1:
-            logger.info(f"Insufficient cash for {symbol} @ ${current_price:.2f}")
+            logger.info(f"Insufficient cash for {symbol} @ ${current_price:.2f} (available=${available_cash:,.0f})")
             return None
 
         # MomentumHold strategy: market entry + ATR-based trailing stop
