@@ -399,6 +399,25 @@ def init_db():
                 week_start  TEXT NOT NULL,
                 memo        TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS validation_results (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle_id        INTEGER REFERENCES cycles(id),
+                ai_decision_id  INTEGER REFERENCES ai_decisions(id),
+                validated_at    TEXT NOT NULL,
+                symbol          TEXT NOT NULL,
+                action          TEXT NOT NULL,
+                verdict         TEXT NOT NULL,
+                risk_score      INTEGER,
+                top_risks_json  TEXT,
+                block_reason    TEXT,
+                source          TEXT,
+                duration_ms     INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_validation_cycle   ON validation_results(cycle_id);
+            CREATE INDEX IF NOT EXISTS idx_validation_symbol  ON validation_results(symbol);
+            CREATE INDEX IF NOT EXISTS idx_validation_verdict ON validation_results(verdict);
         """)
 
 

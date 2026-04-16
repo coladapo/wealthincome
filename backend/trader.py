@@ -29,6 +29,8 @@ from backend.db import (
 from core.alpaca_client import AlpacaClient, AlpacaOrderSide, AlpacaTimeInForce
 from core.claude_trader import SYSTEM_PROMPT
 from core.llm_router import run_decision
+from core.validation_agent import validate_decisions, record_validation, BLOCK
+from core.trade_rag import build_portfolio_rag_block
 from core.indicators import compute_all
 from core.market_regime import get_market_regime, regime_summary_for_claude
 from core.watchlist import build_watchlist
@@ -748,8 +750,21 @@ def run_cycle(alpaca: AlpacaClient):
             enricher_context = ""
             _enricher_status = {"signal_enricher": {"ok": False, "error": str(e)[:100]}}
 
-        # Combine VWAP + Options + Insider + Enricher into portfolio_risk_context
-        extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context, enricher_context]))
+        # RAG — inject trade history context before LLM call
+        rag_context = ""
+        try:
+            wl_items = []
+            if 'wl_data' in dir() and wl_data:
+                wl_items = wl_data.get("scored", [])
+            if wl_items:
+                rag_context = build_portfolio_rag_block(wl_items, regime=regime)
+                if rag_context:
+                    logger.info(f"RAG: injected trade history context ({len(rag_context)} chars)")
+        except Exception as e:
+            logger.warning(f"RAG block failed (non-fatal): {e}")
+
+        # Combine VWAP + Options + Insider + Enricher + RAG into portfolio_risk_context
+        extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context, enricher_context, rag_context]))
         if extra_context:
             portfolio_risk_context = (
                 (portfolio_risk_context + "\n\n" + extra_context).strip()
@@ -804,6 +819,35 @@ def run_cycle(alpaca: AlpacaClient):
         logger.info(f"Market: {result.get('market_summary', '')}")
         finish_cycle(cycle_id, result, usage=usage, duration_ms=duration_ms, enricher_status=_enricher_status)
 
+        # Validation agent — second-pass check before any trade executes
+        raw_decisions = result.get("decisions", [])
+        validated_decisions = validate_decisions(
+            decisions=raw_decisions,
+            market_context=portfolio_risk_context,
+            positions={sym: {"symbol": sym} for sym in positions},
+            account=account_snapshot,
+        )
+
+        # Record validation outcomes to DB
+        for d in raw_decisions:
+            v = d.get("_validation", {})
+            if v:
+                try:
+                    record_validation(
+                        cycle_id=cycle_id,
+                        ai_decision_id=ai_decision_id,
+                        symbol=d.get("symbol", ""),
+                        action=d.get("action", ""),
+                        verdict=v.get("verdict", "pass"),
+                        risk_score=v.get("risk_score", 0),
+                        top_risks=v.get("top_risks", []),
+                        block_reason=v.get("block_reason"),
+                        source=v.get("_source", ""),
+                        duration_ms=v.get("_duration_ms", 0),
+                    )
+                except Exception:
+                    pass
+
         # Extract regime score for passing to execute_decision
         regime_score_val = regime_data.get("score") if 'regime_data' in dir() else None
 
@@ -816,7 +860,7 @@ def run_cycle(alpaca: AlpacaClient):
         except Exception:
             pass
 
-        for d in result.get("decisions", []):
+        for d in validated_decisions:
             try:
                 sym = d.get("symbol", "").upper()
                 sym_news = news_sentiments.get(sym)

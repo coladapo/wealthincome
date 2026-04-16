@@ -162,3 +162,90 @@ def render_analytics():
         r4.metric("Profit Factor", f"{perf.get('profit_factor', 0):.2f}" if perf.get('profit_factor') is not None else "—")
     else:
         st.info("Trade analysis will appear after first completed trades")
+
+    # ── Validation Agent Stats ────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Validation Agent")
+    try:
+        import sys
+        sys.path.insert(0, ".")
+        from backend.db import get_connection
+        conn = get_connection()
+
+        val_rows = conn.execute("""
+            SELECT verdict, source, symbol, action, risk_score, block_reason, validated_at
+            FROM validation_results
+            ORDER BY validated_at DESC
+            LIMIT 100
+        """).fetchall()
+
+        if val_rows:
+            total   = len(val_rows)
+            passed  = sum(1 for r in val_rows if r[0] == "pass")
+            warned  = sum(1 for r in val_rows if r[0] == "warn")
+            blocked = sum(1 for r in val_rows if r[0] == "block")
+
+            v1, v2, v3, v4 = st.columns(4)
+            v1.metric("Total Validated", total)
+            v2.metric("Passed", passed, delta=f"{passed/total:.0%}" if total else None)
+            v3.metric("Warned", warned)
+            v4.metric("Blocked", blocked, delta=f"-{blocked} trades prevented" if blocked else None)
+
+            # Recent validations table
+            val_df = pd.DataFrame([dict(r) for r in val_rows[:20]])
+            val_df["validated_at"] = pd.to_datetime(val_df["validated_at"]).dt.strftime("%m-%d %H:%M")
+            val_df = val_df.rename(columns={
+                "validated_at": "Time", "symbol": "Symbol", "action": "Action",
+                "verdict": "Verdict", "risk_score": "Risk", "block_reason": "Block Reason", "source": "Source"
+            })
+            def color_verdict(v):
+                if v == "block": return "background-color: #ff4444; color: white"
+                if v == "warn":  return "background-color: #ffaa00; color: black"
+                return "background-color: #22aa44; color: white"
+            styled = val_df[["Time","Symbol","Action","Verdict","Risk","Block Reason"]].style.applymap(
+                color_verdict, subset=["Verdict"]
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+        else:
+            st.info("No validation results yet — will populate once trading starts")
+
+        conn.close()
+    except Exception as e:
+        st.warning(f"Could not load validation stats: {e}")
+
+    # ── Token / Cost / Data Quality ───────────────────────────────────────────
+    st.divider()
+    st.subheader("AI Cost & Data Quality")
+    try:
+        from backend.db import get_token_usage
+        u = get_token_usage()
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Today Cost", f"${u.get('today_cost_usd', 0):.4f}")
+        c2.metric("Alltime Cost", f"${u.get('alltime_cost_usd', 0):.4f}")
+        c3.metric("Total Cycles", u.get("alltime_cycles", 0))
+        c4.metric("Errored Cycles", u.get("errored_cycles", 0))
+        c5.metric("Avg Data Quality", f"{(u.get('avg_data_quality') or 0):.0%}")
+    except Exception as e:
+        st.warning(f"Could not load cost stats: {e}")
+
+    # ── LLM Provider ─────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("LLM Provider")
+    try:
+        from backend.db import get_config, set_config
+        cfg = get_config()
+        cur_provider = cfg.get("llm_provider", "anthropic_cli")
+        cur_model    = cfg.get("llm_model", "claude-sonnet-4-6")
+
+        p1, p2 = st.columns(2)
+        providers = ["anthropic_cli", "anthropic_api", "openai", "gemini", "grok", "ollama"]
+        new_provider = p1.selectbox("Provider", providers, index=providers.index(cur_provider) if cur_provider in providers else 0)
+        new_model    = p2.text_input("Model", value=cur_model)
+
+        if st.button("Update Provider / Model"):
+            set_config("llm_provider", new_provider)
+            set_config("llm_model", new_model)
+            st.success(f"Updated: {new_provider} / {new_model} — takes effect on next cycle")
+            st.rerun()
+    except Exception as e:
+        st.warning(f"Could not load provider config: {e}")
