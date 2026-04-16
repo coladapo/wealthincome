@@ -72,7 +72,7 @@ def render():
                 if err:
                     st.error(err)
                 else:
-                    st.success("Daemon started — run `python backend/trader.py` in terminal")
+                    st.success("Daemon started")
                     st.rerun()
 
     with col2:

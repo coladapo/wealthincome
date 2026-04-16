@@ -23,6 +23,16 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
+# Load .env explicitly
+_env_path = os.path.join(current_dir, ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
 # Import core modules
 try:
     from config import AppConfig, get_config
@@ -84,12 +94,6 @@ def main():
     
     # Render header
     render_header()
-    
-    # Check authentication
-    if not auth_manager.is_authenticated():
-        # Show login page
-        auth_manager.render_login()
-        return
     
     # Render main navigation
     selected_page = render_navigation()

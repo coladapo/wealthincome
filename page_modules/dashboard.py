@@ -1,391 +1,238 @@
 """
-Dashboard Page - Main overview with AI insights and market summary
+Dashboard Page — all data from real backend API and yfinance.
+Zero hardcoded or random values.
 """
 
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Any
-import logging
+import requests
+from datetime import datetime
+import yfinance as yf
 
-from ui.components import (
-    render_metric_card, render_confidence_indicator, 
-    render_stock_ticker, render_alert_banner, render_loading_spinner
-)
-from ui.navigation import render_page_header, render_quick_actions
 
-logger = logging.getLogger(__name__)
+@st.cache_data(ttl=300)
+def _fetch_indices():
+    symbols = ["SPY", "QQQ", "DIA", "IWM"]
+    names = {"SPY": "S&P 500", "QQQ": "NASDAQ", "DIA": "DOW", "IWM": "Russell 2000"}
+    results = []
+    try:
+        tickers = yf.Tickers(" ".join(symbols))
+        for sym in symbols:
+            try:
+                info = tickers.tickers[sym].fast_info
+                price = info.last_price
+                prev = info.previous_close
+                chg = ((price - prev) / prev * 100) if price and prev else 0
+                results.append((names.get(sym, sym), price, chg))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return results
+
+API_BASE = "http://localhost:8000"
+
+
+def _api(path, params=None):
+    try:
+        r = requests.get(f"{API_BASE}{path}", params=params, timeout=8)
+        r.raise_for_status()
+        return r.json(), None
+    except requests.exceptions.ConnectionError:
+        return None, "Backend API not running"
+    except Exception as e:
+        return None, str(e)
+
 
 def render_dashboard():
-    """Render main dashboard page"""
-    
-    # Page header
-    render_page_header(
-        "🏠 Dashboard",
-        "AI-powered market insights and portfolio overview",
-        actions=[
-            {"label": "🔄 Refresh", "key": "refresh_dashboard", "callback": lambda: st.cache_data.clear()}
-        ]
-    )
-    
-    # Get managers from session
-    data_manager = st.session_state.get('data_manager')
-    config = st.session_state.get('config')
-    
-    if not data_manager or not config:
-        st.error("System not properly initialized. Please refresh the page.")
+    st.title("Dashboard")
+
+    status_data, err = _api("/status")
+    if err:
+        st.error(err)
         return
-    
-    # Market overview section
-    render_market_overview(data_manager)
-    
-    st.markdown("---")
-    
-    # AI insights section
-    render_ai_insights(data_manager, config)
-    
-    st.markdown("---")
-    
-    # Portfolio summary
-    render_portfolio_summary(data_manager)
-    
-    st.markdown("---")
-    
-    # Top opportunities
-    render_top_opportunities(data_manager, config)
-    
-    st.markdown("---")
-    
-    # Quick actions
-    render_quick_actions()
 
-def render_market_overview(data_manager):
-    """Render market overview section"""
-    
-    st.markdown("### 🌍 Market Overview")
-    
-    try:
-        # Get market indices
-        with st.spinner("Loading market data..."):
-            indices_data = data_manager.get_market_indices()
-        
-        if indices_data:
-            # Display market indices
-            cols = st.columns(4)
-            index_names = {
-                'SPY': 'S&P 500',
-                'QQQ': 'NASDAQ',
-                'DIA': 'DOW',
-                'IWM': 'Russell 2000'
-            }
-            
-            for i, (symbol, data) in enumerate(indices_data.items()):
-                with cols[i % 4]:
-                    delta_color = "normal" if data.change_percent >= 0 else "inverse"
-                    st.metric(
-                        index_names.get(symbol, symbol),
-                        f"${data.price:.2f}",
-                        f"{data.change_percent:+.2f}%",
-                        delta_color=delta_color
-                    )
+    account = status_data.get("account") or {}
+    positions = status_data.get("positions") or []
+    clock = status_data.get("clock") or {}
+    last_cycle = status_data.get("last_cycle") or {}
+    cfg = status_data.get("config") or {}
+    trader_running = status_data.get("trader_running", False)
+
+    perf_data, _ = _api("/performance")
+    equity_data, _ = _api("/equity-curve", {"days": 30})
+    trades_data, _ = _api("/trades", {"limit": 10})
+
+    perf = perf_data or {}
+    snapshots = (equity_data or {}).get("snapshots", [])
+    recent_trades = (trades_data or {}).get("trades", [])
+
+    # ── Status bar ───────────────────────────────────────────────────────────
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        if trader_running:
+            st.success("Daemon Running")
         else:
-            st.warning("Market data temporarily unavailable")
-            
-    except Exception as e:
-        logger.error(f"Error loading market overview: {e}")
-        st.error("Unable to load market data")
+            st.warning("Daemon Stopped")
+    with col_s2:
+        if clock.get("is_open"):
+            st.success("Market Open")
+        else:
+            st.info(f"Market Closed — opens {clock.get('next_open', '—')[:16]}")
+    with col_s3:
+        paper = account.get("paper", True)
+        st.info("PAPER MODE" if paper else "⚠️ LIVE MODE")
 
-def render_ai_insights(data_manager, config):
-    """Render AI insights section"""
-    
-    st.markdown("### 🧠 AI Market Intelligence")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Market sentiment analysis
-        st.markdown("#### 📊 Market Sentiment")
-        
-        # Simulated AI sentiment data
-        sentiment_data = {
-            'Overall Market': 0.72,
-            'Tech Sector': 0.85,
-            'Financial Sector': 0.65,
-            'Energy Sector': 0.58,
-            'Healthcare': 0.71
-        }
-        
-        # Create sentiment chart
-        fig = go.Figure()
-        
-        sectors = list(sentiment_data.keys())
-        sentiments = list(sentiment_data.values())
-        colors = ['#00ff00' if s >= 0.7 else '#FFD700' if s >= 0.5 else '#ff6b6b' for s in sentiments]
-        
-        fig.add_trace(go.Bar(
-            x=sectors,
-            y=sentiments,
-            marker_color=colors,
-            text=[f"{s:.0%}" for s in sentiments],
-            textposition='auto',
-        ))
-        
-        fig.update_layout(
-            title="AI Sentiment Analysis",
-            xaxis_title="Sectors",
-            yaxis_title="Sentiment Score",
-            yaxis=dict(range=[0, 1]),
-            template="plotly_dark",
-            height=300
+    st.markdown("---")
+
+    # ── Account metrics ──────────────────────────────────────────────────────
+    st.subheader("Account")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    portfolio_value = float(account.get("portfolio_value", 0))
+    cash = float(account.get("cash", 0))
+    buying_power = float(account.get("buying_power", 0))
+    raw_pnl = account.get("daily_pnl")
+    raw_pct = account.get("daily_pnl_pct")
+    daily_pnl = float(raw_pnl) if raw_pnl is not None else 0.0
+    daily_pnl_pct = float(raw_pct) if raw_pct is not None else 0.0
+
+    c1.metric("Portfolio Value", f"${portfolio_value:,.2f}")
+
+    # Show buying power when cash is negative (margin in use)
+    if cash < 0:
+        c2.metric(
+            "Buying Power",
+            f"${buying_power:,.2f}",
+            f"Margin: ${cash:,.0f}",
+            delta_color="off",
         )
-        
+    else:
+        c2.metric("Cash", f"${cash:,.2f}")
+
+    if raw_pnl is not None:
+        c3.metric(
+            "Today's P&L",
+            f"${daily_pnl:+,.2f}",
+            f"{daily_pnl_pct:+.2f}%",
+            delta_color="normal" if daily_pnl >= 0 else "inverse",
+        )
+    else:
+        c3.metric("Today's P&L", "—", "no baseline yet")
+
+    c4.metric("Open Positions", len(positions))
+    c5.metric(
+        "Win Rate",
+        f"{float(perf['win_rate'])*100:.0f}%" if perf.get("win_rate") is not None else "—",
+    )
+
+    st.markdown("---")
+
+    # ── Market indices ────────────────────────────────────────────────────────
+    st.subheader("Market")
+
+    indices = _fetch_indices()
+    if indices:
+        cols = st.columns(len(indices))
+        for i, (name, price, chg) in enumerate(indices):
+            cols[i].metric(name, f"${price:.2f}", f"{chg:+.2f}%",
+                delta_color="normal" if chg >= 0 else "inverse")
+    else:
+        st.info("Market data temporarily unavailable")
+
+    st.markdown("---")
+
+    # ── Equity curve ─────────────────────────────────────────────────────────
+    st.subheader("Equity Curve (30 days)")
+    if snapshots:
+        import pandas as pd
+        df = pd.DataFrame(snapshots)
+        df["snapshot_at"] = pd.to_datetime(df["snapshot_at"])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df["snapshot_at"],
+            y=df["portfolio_value"],
+            mode="lines",
+            line=dict(color="#1f77b4", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(31,119,180,0.1)",
+        ))
+        fig.update_layout(
+            template="plotly_dark",
+            height=250,
+            margin=dict(t=10, b=30),
+            xaxis_title="Date",
+            yaxis_title="Value ($)",
+        )
         st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # AI confidence indicator
-        st.markdown("#### 🎯 AI Confidence")
-        
-        # Overall AI confidence (simulated)
-        overall_confidence = 0.78
-        render_confidence_indicator(overall_confidence, size="large")
-        
-        # Key insights
-        st.markdown("#### 💡 Key Insights")
-        insights = [
-            "🔥 Tech sector showing strong momentum",
-            "📈 RSI indicates oversold conditions in energy",
-            "🎯 High volume in growth stocks suggests institutional buying",
-            "⚠️ Watch for potential volatility around Fed announcements"
-        ]
-        
-        for insight in insights:
-            st.markdown(f"• {insight}")
+    else:
+        st.info("Equity curve will appear after first trading cycles")
 
-def render_portfolio_summary(data_manager):
-    """Render portfolio summary section"""
-    
-    st.markdown("### 💼 Portfolio Summary")
-    
-    try:
-        # Get portfolio data
-        portfolio_data = data_manager.get_portfolio_data()
-        performance_data = data_manager.analyze_portfolio_performance()
-        
-        if portfolio_data:
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                total_value = portfolio_data.get('total_value', 0)
-                render_metric_card(
-                    "Total Value",
-                    f"${total_value:,.0f}",
-                    icon="💰"
-                )
-            
-            with col2:
-                daily_return = portfolio_data.get('performance', {}).get('daily_return_percent', 0)
-                render_metric_card(
-                    "Daily Return",
-                    f"{daily_return:+.2f}%",
-                    delta=f"${portfolio_data.get('performance', {}).get('daily_return', 0):+.0f}",
-                    delta_color="normal" if daily_return >= 0 else "inverse",
-                    icon="📈"
-                )
-            
-            with col3:
-                if performance_data and performance_data.get('total_trades', 0) > 0:
-                    win_rate = performance_data.get('win_rate', 0) * 100
-                    render_metric_card(
-                        "Win Rate",
-                        f"{win_rate:.0f}%",
-                        icon="🎯"
-                    )
+    st.markdown("---")
+
+    # ── Last Claude cycle ─────────────────────────────────────────────────────
+    st.subheader("Last Claude Cycle")
+    if last_cycle:
+        import json
+        cycle_time = last_cycle.get("started_at", "")[:19]
+        cycle_status = last_cycle.get("status", "")
+        raw_json = last_cycle.get("raw_json")
+
+        st.caption(f"{cycle_time} — {cycle_status}")
+
+        if raw_json:
+            try:
+                output = json.loads(raw_json)
+                st.markdown(f"**Market:** {output.get('market_summary', '—')}")
+                st.markdown(f"**Notes:** {output.get('cycle_notes', '—')}")
+                decisions = output.get("decisions", [])
+                if decisions:
+                    for d in decisions:
+                        action = d.get("action", "").upper()
+                        symbol = d.get("symbol", "")
+                        conf = float(d.get("confidence", 0))
+                        color = "green" if action == "BUY" else "red" if action == "SELL" else "gray"
+                        st.markdown(
+                            f"<span style='color:{color};font-weight:bold'>{action}</span> "
+                            f"**{symbol}** — {conf:.0%} | {d.get('reasoning','')[:80]}",
+                            unsafe_allow_html=True,
+                        )
                 else:
-                    render_metric_card(
-                        "Win Rate",
-                        "N/A",
-                        icon="🎯"
-                    )
-            
-            with col4:
-                cash_amount = portfolio_data.get('cash', 0)
-                render_metric_card(
-                    "Available Cash",
-                    f"${cash_amount:,.0f}",
-                    icon="💵"
-                )
-            
-            # Portfolio chart
-            if portfolio_data.get('positions'):
-                render_portfolio_chart(portfolio_data['positions'])
-                
-        else:
-            st.info("Portfolio data will appear here once you start trading")
-            
-    except Exception as e:
-        logger.error(f"Error loading portfolio summary: {e}")
-        st.error("Unable to load portfolio data")
+                    st.markdown("No trades — holding cash")
+            except Exception:
+                st.caption("Could not parse last cycle output")
+    else:
+        st.info("No cycles run yet — daemon will execute first cycle when market opens")
 
-def render_portfolio_chart(positions: Dict[str, Any]):
-    """Render portfolio allocation chart"""
-    
-    if not positions:
-        return
-    
-    # Prepare data for pie chart
-    symbols = list(positions.keys())
-    values = [pos.get('market_value', 0) for pos in positions.values()]
-    
-    if sum(values) == 0:
-        return
-    
-    # Create pie chart
-    fig = px.pie(
-        values=values,
-        names=symbols,
-        title="Portfolio Allocation"
-    )
-    
-    fig.update_layout(
-        template="plotly_dark",
-        height=300
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("---")
 
-def render_top_opportunities(data_manager, config):
-    """Render top AI-selected opportunities"""
-    
-    st.markdown("### 🎯 Today's Top Opportunities")
-    st.caption("AI-selected stocks with highest confidence scores")
-    
-    try:
-        # Get watchlist
-        watchlist = data_manager.get_watchlist()
-        
-        if not watchlist:
-            st.info("Add stocks to your watchlist to see AI opportunities")
-            return
-        
-        with st.spinner("🤖 AI analyzing opportunities..."):
-            # Get stock data for watchlist
-            stock_data = data_manager.get_stock_data(watchlist[:8], period="5d")
-        
-        if not stock_data:
-            st.warning("Unable to load stock data for analysis")
-            return
-        
-        # Simulate AI analysis and ranking
-        opportunities = []
-        
-        for symbol, data in stock_data.items():
-            if not data:
-                continue
-                
-            info = data.get('info', {})
-            price = info.get('regularMarketPrice', 0)
-            change_percent = info.get('regularMarketChangePercent', 0)
-            
-            # Simulate confidence score based on various factors
-            confidence = calculate_mock_confidence(info, data)
-            
-            opportunities.append({
-                'symbol': symbol,
-                'name': info.get('shortName', symbol),
-                'price': price,
-                'change_percent': change_percent,
-                'confidence': confidence,
-                'volume': info.get('regularMarketVolume', 0),
-                'market_cap': info.get('marketCap', 0)
-            })
-        
-        # Sort by confidence
-        opportunities.sort(key=lambda x: x['confidence'], reverse=True)
-        
-        # Display top opportunities
-        for i, opp in enumerate(opportunities[:4]):
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                # Stock info
-                st.markdown(f"**{opp['symbol']} - {opp['name']}**")
-                
-                # Price and change
-                delta_color = "🟢" if opp['change_percent'] >= 0 else "🔴"
-                st.markdown(f"${opp['price']:.2f} {delta_color} {opp['change_percent']:+.2f}%")
-                
-                # Confidence indicator
-                confidence_color = "#00ff00" if opp['confidence'] >= 0.8 else "#FFD700" if opp['confidence'] >= 0.6 else "#ff6b6b"
-                st.markdown(f"🎯 **AI Confidence: {opp['confidence']*100:.0f}%**")
-                
-                # Volume info
-                if opp['volume'] > 0:
-                    st.caption(f"Volume: {opp['volume']:,}")
-            
-            with col2:
-                # Action buttons
-                if st.button(f"📈 Trade {opp['symbol']}", key=f"trade_{opp['symbol']}", use_container_width=True):
-                    st.session_state['current_page'] = "Trading"
-                    st.session_state['selected_symbol'] = opp['symbol']
-                    st.rerun()
-                
-                if st.button(f"📊 Analysis", key=f"analyze_{opp['symbol']}", use_container_width=True):
-                    st.session_state['current_page'] = "Analytics"
-                    st.session_state['selected_symbol'] = opp['symbol']
-                    st.rerun()
-            
-            if i < len(opportunities) - 1:
-                st.markdown("---")
-                
-    except Exception as e:
-        logger.error(f"Error loading opportunities: {e}")
-        st.error("Unable to load trading opportunities")
+    # ── Open positions ────────────────────────────────────────────────────────
+    st.subheader("Open Positions")
+    if positions:
+        import pandas as pd
+        df = pd.DataFrame(positions)
+        if "unrealized_pl" in df.columns:
+            df["unrealized_pl"] = df["unrealized_pl"].apply(lambda x: f"${float(x):+,.2f}")
+        if "unrealized_plpc" in df.columns:
+            df["unrealized_plpc"] = df["unrealized_plpc"].apply(lambda x: f"{float(x):+.2%}")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No open positions")
 
-def calculate_mock_confidence(info: Dict[str, Any], data: Dict[str, Any]) -> float:
-    """Calculate mock confidence score for demonstration"""
-    
-    # Base confidence
-    confidence = 0.5
-    
-    # Factor in market cap (larger = more stable)
-    market_cap = info.get('marketCap', 0)
-    if market_cap > 100e9:  # > 100B
-        confidence += 0.1
-    elif market_cap > 10e9:  # > 10B
-        confidence += 0.05
-    
-    # Factor in volume
-    volume = info.get('regularMarketVolume', 0)
-    avg_volume = info.get('averageVolume', 1)
-    if volume > avg_volume * 1.5:  # High volume
-        confidence += 0.1
-    
-    # Factor in price movement
-    change_percent = info.get('regularMarketChangePercent', 0)
-    if 0 < change_percent < 5:  # Moderate positive movement
-        confidence += 0.15
-    elif change_percent > 5:  # Strong positive movement
-        confidence += 0.05
-    
-    # Factor in technical indicators (simulated)
-    # In real implementation, this would use actual technical analysis
-    confidence += np.random.uniform(-0.1, 0.2)
-    
-    return max(0.3, min(0.95, confidence))  # Clamp between 30% and 95%
+    st.markdown("---")
 
-# Additional helper functions
-import numpy as np
-
-def get_market_summary():
-    """Get AI-generated market summary"""
-    summaries = [
-        "Markets showing strong momentum with tech leading gains. AI confidence remains high.",
-        "Mixed signals across sectors. Recommend focusing on high-conviction plays.",
-        "Volatility increasing. Consider defensive positions and tight risk management.",
-        "Strong institutional buying detected. Momentum likely to continue short-term.",
-        "Market consolidation phase. Look for breakout opportunities in quality names."
-    ]
-    
-    return np.random.choice(summaries)
+    # ── Recent trades ─────────────────────────────────────────────────────────
+    st.subheader("Recent Trades")
+    if recent_trades:
+        import pandas as pd
+        df = pd.DataFrame(recent_trades)
+        cols = ["executed_at", "symbol", "action", "qty", "signal_price", "confidence", "order_status", "pnl"]
+        cols = [c for c in cols if c in df.columns]
+        if "signal_price" in df.columns:
+            df["signal_price"] = df["signal_price"].apply(lambda x: f"${float(x):.2f}" if x else "—")
+        if "confidence" in df.columns:
+            df["confidence"] = df["confidence"].apply(lambda x: f"{float(x):.0%}" if x else "—")
+        if "pnl" in df.columns:
+            df["pnl"] = df["pnl"].apply(lambda x: f"${float(x):+.2f}" if x is not None else "—")
+        st.dataframe(df[cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("No trades yet")

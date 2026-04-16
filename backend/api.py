@@ -17,6 +17,16 @@ from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Load .env explicitly so the API works regardless of how it was launched
+_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
 from backend.db import (
     get_config, set_config, set_config_many, get_cycles, get_last_cycle,
     get_trades, get_errors, get_token_usage, init_db,
@@ -122,13 +132,61 @@ def health():
     return {"ok": True}
 
 
+def _is_trader_running() -> bool:
+    """Ground truth: check PID file and whether that process is alive."""
+    pid_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trader.pid")
+    if not os.path.exists(pid_file):
+        return False
+    try:
+        pid = int(open(pid_file).read().strip())
+        os.kill(pid, 0)  # signal 0 = existence check only
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _compute_daily_pnl(current_portfolio_value: float) -> dict:
+    """Compute today's P&L using the first equity snapshot of the day as the baseline."""
+    try:
+        from backend.db import DB_PATH
+        import sqlite3
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT portfolio_value FROM equity_snapshots WHERE snapshot_at LIKE ? ORDER BY snapshot_at ASC LIMIT 1",
+            (f"{today}%",)
+        ).fetchone()
+        conn.close()
+        if row and row["portfolio_value"]:
+            baseline = float(row["portfolio_value"])
+            daily_pnl = current_portfolio_value - baseline
+            daily_pnl_pct = daily_pnl / baseline * 100 if baseline else 0
+            return {"daily_pnl": round(daily_pnl, 2), "daily_pnl_pct": round(daily_pnl_pct, 4)}
+    except Exception:
+        pass
+    return {"daily_pnl": None, "daily_pnl_pct": None}
+
+
 @app.get("/status")
 def status():
     cfg = get_config()
     last_cycle = get_last_cycle()
     account, clock, positions = _get_alpaca_status()
+    running = _is_trader_running()
+    # Keep DB flag in sync with reality
+    if not running and cfg.get("trader_running", "false") == "true":
+        set_config("trader_running", "false")
+
+    # Enrich account with daily P&L computed from equity snapshots
+    if account and account.get("portfolio_value"):
+        pnl_data = _compute_daily_pnl(account["portfolio_value"])
+        account["daily_pnl"] = pnl_data["daily_pnl"]
+        account["daily_pnl_pct"] = pnl_data["daily_pnl_pct"]
+
     return {
-        "trader_running": cfg.get("trader_running", "false") == "true",
+        "trader_running": running,
         "account": account,
         "clock": clock,
         "positions": positions,
@@ -173,12 +231,28 @@ def update_config(body: ConfigUpdate):
 
 @app.post("/start")
 def start_trader():
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "start_trader.sh")
+    try:
+        result = subprocess.run(["bash", script], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"start_trader.sh failed: {result.stderr[:300]}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="start_trader.sh timed out")
     set_config("trader_running", "true")
     return {"ok": True, "trader_running": True}
 
 
 @app.post("/stop")
 def stop_trader():
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "stop_trader.sh")
+    try:
+        result = subprocess.run(["bash", script], capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            logger.warning(f"stop_trader.sh returned non-zero: {result.stderr[:300]}")
+    except subprocess.TimeoutExpired:
+        logger.warning("stop_trader.sh timed out")
     set_config("trader_running", "false")
     return {"ok": True, "trader_running": False}
 
@@ -248,6 +322,73 @@ def position_history(limit: int = 100, symbol: str = None):
 @app.get("/positions/open")
 def positions_open():
     return {"positions": get_open_positions_lifecycle()}
+
+
+# ─── Direct order placement (manual, bypasses Claude cycle) ─────────────────
+
+class DirectOrderRequest(BaseModel):
+    symbol: str
+    side: str          # "buy" or "sell"
+    qty: float
+    order_type: str = "market"
+    limit_price: float = None
+
+@app.post("/order")
+def place_direct_order(req: DirectOrderRequest):
+    """Place a market or limit order directly on Alpaca — no Claude cycle."""
+    from core.alpaca_client import AlpacaClient, AlpacaOrderSide
+    api_key = os.environ.get("ALPACA_API_KEY")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    paper = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
+    if not api_key or not secret_key:
+        raise HTTPException(status_code=500, detail="Alpaca credentials not configured")
+
+    alpaca = AlpacaClient(api_key=api_key, secret_key=secret_key, paper=paper)
+    side = AlpacaOrderSide.BUY if req.side.lower() == "buy" else AlpacaOrderSide.SELL
+
+    try:
+        if req.order_type == "limit" and req.limit_price:
+            order = alpaca.place_limit_order(symbol=req.symbol.upper(), qty=req.qty, side=side, limit_price=req.limit_price)
+        else:
+            order = alpaca.place_market_order(symbol=req.symbol.upper(), qty=req.qty, side=side)
+
+        if not order:
+            raise HTTPException(status_code=500, detail="Order returned None from Alpaca")
+
+        logger.info(f"Direct order placed: {req.side.upper()} {req.qty} {req.symbol} — alpaca_id={order.id}")
+        return {
+            "ok": True,
+            "order_id": order.id,
+            "symbol": req.symbol.upper(),
+            "side": req.side,
+            "qty": req.qty,
+            "status": order.status,
+        }
+    except Exception as e:
+        logger.error(f"Direct order failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/orders/cancel-all")
+def cancel_all_open_orders():
+    """Cancel all open orders on Alpaca."""
+    from core.alpaca_client import AlpacaClient
+    api_key = os.environ.get("ALPACA_API_KEY")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    paper = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
+    alpaca = AlpacaClient(api_key=api_key, secret_key=secret_key, paper=paper)
+    try:
+        open_orders = alpaca.get_orders(status="open", limit=200)
+        cancelled = []
+        for o in open_orders:
+            try:
+                alpaca._delete(f"/orders/{o.id}")
+                cancelled.append(o.id)
+            except Exception as e:
+                logger.warning(f"Could not cancel order {o.id}: {e}")
+        return {"ok": True, "cancelled": len(cancelled), "order_ids": cancelled}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── Order tracking ──────────────────────────────────────────────────────────

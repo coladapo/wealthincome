@@ -1,299 +1,154 @@
 """
-Trading Page - Execute trades and manage positions
+Trading Page — manual order entry via Alpaca API.
+All data from live backend; no in-memory engine.
 """
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import requests
 from datetime import datetime
-from typing import Dict, List, Any, Optional
 
-from core.trading_engine import TradingEngine, OrderType, OrderSide
-from ui.components import render_metric_card, render_alert_banner
-from ui.navigation import render_page_header
+API_BASE = "http://localhost:8000"
+
+
+def _api(method, path, **kwargs):
+    try:
+        r = requests.request(method, f"{API_BASE}{path}", timeout=10, **kwargs)
+        r.raise_for_status()
+        return r.json(), None
+    except requests.exceptions.ConnectionError:
+        return None, "Backend API not running"
+    except requests.exceptions.HTTPError as e:
+        return None, f"API error {e.response.status_code}: {e.response.text[:200]}"
+    except Exception as e:
+        return None, str(e)
+
+
+def _place_order(symbol, side, qty, order_type="market", limit_price=None):
+    """Submit order directly to Alpaca."""
+    try:
+        from core.alpaca_client import AlpacaClient, AlpacaOrderSide
+        api_key = os.environ.get("ALPACA_API_KEY")
+        secret_key = os.environ.get("ALPACA_SECRET_KEY")
+        paper = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
+        if not api_key or not secret_key:
+            return None, "Alpaca API keys not configured"
+        alpaca = AlpacaClient(api_key=api_key, secret_key=secret_key, paper=paper)
+        order_side = AlpacaOrderSide.BUY if side == "buy" else AlpacaOrderSide.SELL
+        if order_type == "limit" and limit_price:
+            order = alpaca.place_limit_order(symbol=symbol, qty=qty, side=order_side, limit_price=limit_price)
+        else:
+            order = alpaca.place_market_order(symbol=symbol, qty=qty, side=order_side)
+        return order, None
+    except Exception as e:
+        return None, str(e)
+
 
 def render_trading():
-    """Render trading page"""
-    
-    render_page_header(
-        "📈 Trading",
-        "Execute trades and manage your portfolio",
-        actions=[
-            {"label": "🔄 Refresh", "key": "refresh_trading", "callback": refresh_trading_data}
-        ]
-    )
-    
-    # Get trading engine from session
-    trading_engine = st.session_state.get('trading_engine')
-    data_manager = st.session_state.get('data_manager')
-    
-    if not trading_engine:
-        st.error("Trading engine not initialized")
+    st.title("Trading")
+
+    status_data, err = _api("GET", "/status")
+    if err:
+        st.error(err)
         return
-    
-    # Portfolio Overview
-    render_portfolio_overview(trading_engine)
-    
+
+    account = status_data.get("account") or {}
+    positions = status_data.get("positions") or []
+    clock = status_data.get("clock") or {}
+    paper = account.get("paper", True)
+
+    portfolio_value = float(account.get("portfolio_value", 0))
+    cash = float(account.get("cash", 0))
+    buying_power = float(account.get("buying_power", 0))
+
+    # Status bar
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        st.info("PAPER MODE" if paper else "⚠️ LIVE MODE")
+    with col_s2:
+        if clock.get("is_open"):
+            st.success("Market Open")
+        else:
+            st.warning(f"Market Closed — opens {str(clock.get('next_open', ''))[:16]}")
+    with col_s3:
+        st.metric("Buying Power", f"${buying_power:,.2f}")
+
     st.markdown("---")
-    
-    # Trading Interface
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        render_trading_form(trading_engine, data_manager)
-    
-    with col2:
-        render_current_positions(trading_engine)
-    
+
+    # ── Account summary ──────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Portfolio Value", f"${portfolio_value:,.2f}")
+    c2.metric("Cash", f"${cash:,.2f}")
+    c3.metric("Open Positions", len(positions))
+
     st.markdown("---")
-    
-    # Recent Orders and Transactions
-    render_order_history(trading_engine)
 
-def render_portfolio_overview(trading_engine: TradingEngine):
-    """Render portfolio overview section"""
-    
-    st.markdown("### 💼 Portfolio Overview")
-    
-    portfolio_summary = trading_engine.get_portfolio_summary()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        render_metric_card(
-            "Total Value",
-            f"${portfolio_summary['total_value']:,.2f}",
-            delta=f"{portfolio_summary['total_return_pct']:+.2f}%",
-            icon="💰"
-        )
-    
-    with col2:
-        render_metric_card(
-            "Cash Available",
-            f"${portfolio_summary['cash']:,.2f}",
-            icon="💵"
-        )
-    
-    with col3:
-        render_metric_card(
-            "Total P&L",
-            f"${portfolio_summary['total_pnl']:,.2f}",
-            delta="Unrealized + Realized",
-            icon="📊"
-        )
-    
-    with col4:
-        render_metric_card(
-            "Positions",
-            str(portfolio_summary['positions_count']),
-            delta=f"{portfolio_summary['active_orders']} active orders",
-            icon="📋"
-        )
+    # ── Order form ───────────────────────────────────────────────────────────
+    col_form, col_positions = st.columns([1, 1])
 
-def render_trading_form(trading_engine: TradingEngine, data_manager):
-    """Render trading order form"""
-    
-    st.markdown("### 🎯 Place Order")
-    
-    with st.form("trading_form"):
-        # Symbol selection
-        symbol = st.text_input(
-            "Symbol",
-            value=st.session_state.get('selected_symbol', ''),
-            placeholder="Enter stock symbol (e.g., AAPL)"
-        ).upper()
-        
-        # Order side
-        side = st.selectbox(
-            "Order Type",
-            ["Buy", "Sell"],
-            index=0 if st.session_state.get('suggested_action') == 'buy' else 1
-        )
-        
-        # Quantity
-        quantity = st.number_input(
-            "Quantity",
-            min_value=1,
-            value=100,
-            step=1
-        )
-        
-        # Order type
-        order_type = st.selectbox(
-            "Order Method",
-            ["Market Order", "Limit Order"],
-            help="Market orders execute immediately at current price"
-        )
-        
-        # Limit price (if limit order)
-        limit_price = None
-        if order_type == "Limit Order":
-            limit_price = st.number_input(
-                "Limit Price",
-                min_value=0.01,
-                value=100.00,
-                step=0.01,
-                format="%.2f"
-            )
-        
-        # Current price display
-        if symbol and data_manager:
-            try:
-                stock_data = data_manager.get_stock_data([symbol])
-                if symbol in stock_data and stock_data[symbol]:
-                    current_price = stock_data[symbol].get('info', {}).get('regularMarketPrice', 0)
-                    if current_price:
-                        st.info(f"Current Price: **${current_price:.2f}**")
-                        
-                        # Estimate order value
-                        estimated_value = quantity * (limit_price if limit_price else current_price)
-                        st.caption(f"Estimated Order Value: ${estimated_value:,.2f}")
-            except Exception as e:
-                st.warning(f"Could not fetch current price: {e}")
-        
-        # Submit button
-        submitted = st.form_submit_button("🚀 Place Order", type="primary")
-        
-        if submitted:
-            if not symbol:
-                st.error("Please enter a stock symbol")
-            else:
-                # Place the order
-                order_side = OrderSide.BUY if side == "Buy" else OrderSide.SELL
-                order_type_enum = OrderType.MARKET if order_type == "Market Order" else OrderType.LIMIT
-                
-                try:
-                    order_id = trading_engine.place_order(
-                        symbol=symbol,
-                        side=order_side,
-                        quantity=quantity,
-                        order_type=order_type_enum,
-                        price=limit_price
-                    )
-                    
-                    st.success(f"Order placed successfully! Order ID: {order_id}")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Failed to place order: {e}")
+    with col_form:
+        st.subheader("Place Order")
+        with st.form("order_form"):
+            symbol = st.text_input("Symbol", placeholder="e.g. AAPL").upper().strip()
+            side = st.selectbox("Side", ["buy", "sell"])
+            qty = st.number_input("Quantity (shares)", min_value=1, value=1, step=1)
+            order_type = st.selectbox("Order Type", ["market", "limit"])
+            limit_price = None
+            if order_type == "limit":
+                limit_price = st.number_input("Limit Price", min_value=0.01, value=100.00, step=0.01, format="%.2f")
 
-def render_current_positions(trading_engine: TradingEngine):
-    """Render current positions"""
-    
-    st.markdown("### 📊 Current Positions")
-    
-    positions = trading_engine.get_positions()
-    
-    if not positions:
-        st.info("No current positions")
-        return
-    
-    for symbol, position in positions.items():
-        with st.container():
-            col1, col2, col3 = st.columns([2, 1, 1])
-            
-            with col1:
-                st.markdown(f"**{symbol}**")
-                st.caption(f"{position.quantity} shares @ ${position.avg_price:.2f}")
-            
-            with col2:
-                st.metric(
-                    "Current Price",
-                    f"${position.current_price:.2f}",
-                    delta=f"${position.current_price - position.avg_price:.2f}"
-                )
-            
-            with col3:
-                pnl_color = "normal" if position.unrealized_pnl >= 0 else "inverse"
-                st.metric(
-                    "Unrealized P&L",
-                    f"${position.unrealized_pnl:.2f}",
-                    delta=f"{(position.unrealized_pnl/position.cost_basis)*100:.1f}%" if position.cost_basis > 0 else "0%",
-                    delta_color=pnl_color
-                )
-            
-            # Quick action buttons
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button(f"Sell Half", key=f"sell_half_{symbol}"):
-                    try:
-                        trading_engine.place_order(
-                            symbol=symbol,
-                            side=OrderSide.SELL,
-                            quantity=position.quantity / 2,
-                            order_type=OrderType.MARKET
-                        )
-                        st.success("Sell order placed")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-            
-            with col2:
-                if st.button(f"Sell All", key=f"sell_all_{symbol}"):
-                    try:
-                        trading_engine.place_order(
-                            symbol=symbol,
-                            side=OrderSide.SELL,
-                            quantity=position.quantity,
-                            order_type=OrderType.MARKET
-                        )
-                        st.success("Sell order placed")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-            
-            st.markdown("---")
+            submitted = st.form_submit_button("Submit Order", type="primary")
 
-def render_order_history(trading_engine: TradingEngine):
-    """Render order history and transactions"""
-    
-    st.markdown("### 📋 Order History")
-    
-    # Recent orders
-    orders = trading_engine.get_orders()
-    
+            if submitted:
+                if not symbol:
+                    st.error("Symbol required")
+                elif not clock.get("is_open") and order_type == "market":
+                    st.warning("Market is closed — market orders will queue for next open")
+                    order, err2 = _place_order(symbol, side, qty, order_type, limit_price)
+                    if err2:
+                        st.error(f"Order failed: {err2}")
+                    else:
+                        st.success(f"Order queued: {side.upper()} {qty} {symbol}")
+                else:
+                    order, err2 = _place_order(symbol, side, qty, order_type, limit_price)
+                    if err2:
+                        st.error(f"Order failed: {err2}")
+                    else:
+                        st.success(f"Order submitted: {side.upper()} {qty} {symbol}")
+
+    with col_positions:
+        st.subheader("Open Positions")
+        if positions:
+            rows = []
+            for p in positions:
+                mv = float(p.get("market_value", 0))
+                rows.append({
+                    "Symbol": p.get("symbol"),
+                    "Qty": p.get("qty"),
+                    "Entry": f"${float(p.get('avg_entry_price', 0)):.2f}",
+                    "Current": f"${float(p.get('current_price', 0)):.2f}",
+                    "Market Value": f"${mv:,.2f}",
+                    "Unrealized P&L": f"${float(p.get('unrealized_pl', 0)):+,.2f}",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No open positions")
+
+    st.markdown("---")
+
+    # ── Recent orders from DB ────────────────────────────────────────────────
+    st.subheader("Order History")
+    orders_data, _ = _api("GET", "/orders", params={"limit": 50})
+    orders = (orders_data or {}).get("orders", [])
+
     if orders:
-        orders_data = []
-        for order in orders[:10]:  # Show last 10 orders
-            orders_data.append({
-                "Time": order.created_at.strftime("%Y-%m-%d %H:%M"),
-                "Symbol": order.symbol,
-                "Side": order.side.value.upper(),
-                "Quantity": f"{order.quantity:,.0f}",
-                "Type": order.order_type.value.upper(),
-                "Price": f"${order.price:.2f}" if order.price else "Market",
-                "Status": order.status.value.upper(),
-                "Filled": f"${order.filled_price:.2f}" if order.filled_price else "-"
-            })
-        
-        df = pd.DataFrame(orders_data)
-        st.dataframe(df, use_container_width=True)
+        df = pd.DataFrame(orders)
+        display_cols = ["submitted_at", "symbol", "side", "order_type", "qty",
+                        "limit_price", "fill_price", "status"]
+        display_cols = [c for c in display_cols if c in df.columns]
+        for col in ["limit_price", "fill_price"]:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: f"${float(x):.2f}" if x is not None else "—")
+        st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
     else:
         st.info("No orders yet")
-    
-    # Transaction history
-    if st.expander("📊 Transaction History", expanded=False):
-        transactions = trading_engine.get_transaction_history(days=30)
-        
-        if transactions:
-            tx_data = []
-            for tx in transactions:
-                tx_data.append({
-                    "Date": tx['timestamp'].strftime("%Y-%m-%d") if hasattr(tx['timestamp'], 'strftime') else str(tx['timestamp']),
-                    "Symbol": tx['symbol'],
-                    "Side": tx['side'].upper(),
-                    "Quantity": f"{tx['quantity']:,.0f}",
-                    "Price": f"${tx['price']:.2f}",
-                    "Total": f"${tx['total']:,.2f}"
-                })
-            
-            df_tx = pd.DataFrame(tx_data)
-            st.dataframe(df_tx, use_container_width=True)
-        else:
-            st.info("No transactions yet")
-
-def refresh_trading_data():
-    """Refresh trading data"""
-    st.cache_data.clear()
-    st.success("Trading data refreshed!")
-    st.rerun()

@@ -173,7 +173,16 @@ def _reconcile_once(alpaca):
         except Exception as e:
             logger.warning(f"Failed to reconcile group {group.get('id')} ({group.get('symbol')}): {e}")
 
-    # ── 3. SMA50 exit monitor (MomentumHold strategy) ────────────────────────
+    # ── 3. Reconcile plain sell fills → close position_lifecycle ────────────────
+    # Handles manual sells and Claude market-sell orders that aren't bracket exits.
+    # Looks at all filled SELL orders on Alpaca and closes any open position_lifecycle
+    # records that don't already have a close event.
+    try:
+        _reconcile_sell_fills(alpaca, DB_PATH)
+    except Exception as e:
+        logger.warning(f"Sell fill reconciliation error: {e}")
+
+    # ── 4. SMA50 exit monitor (MomentumHold strategy) ────────────────────────
     # Only run when market is open — avoid false triggers from after-hours prices
     try:
         if alpaca.is_market_open():
@@ -215,7 +224,20 @@ def _backfill_entry_price(symbol: str, fill_price: float, filled_qty: float, db_
                 "UPDATE position_lifecycle SET entry_price=?, entry_cost_basis=? WHERE id=?",
                 (fill_price, fill_price * filled_qty, pos["id"])
             )
-            conn.commit()
+        # Also backfill fill_price on the trades record so dashboard shows actuals
+        conn.execute(
+            """UPDATE trades SET fill_price=?,
+               slippage_pct=CASE WHEN signal_price > 0
+                                 THEN ROUND((? - signal_price) / signal_price * 100, 4)
+                                 ELSE NULL END
+               WHERE id = (
+                   SELECT id FROM trades
+                   WHERE symbol=? AND action='buy' AND fill_price IS NULL
+                   ORDER BY executed_at DESC LIMIT 1
+               )""",
+            (fill_price, fill_price, symbol)
+        )
+        conn.commit()
         conn.close()
     except Exception as e:
         logger.warning(f"Could not back-fill entry price for {symbol}: {e}")
@@ -244,6 +266,101 @@ def _update_calibration(parent_order_id: str, realized_pnl: float, db_path: str)
         conn.close()
     except Exception as e:
         logger.warning(f"Could not update calibration for order {parent_order_id}: {e}")
+
+
+def _reconcile_sell_fills(alpaca, db_path: str):
+    """
+    Close any open position_lifecycle records where Alpaca shows the position
+    is no longer held (filled sell orders).
+
+    Covers three cases:
+      1. Manual sells placed via /order endpoint (no trade record at all)
+      2. Claude market-sell orders (trade recorded, but position_lifecycle not closed)
+      3. Overnight bug cleanup — positions closed but lifecycle still shows open
+
+    Strategy: fetch all filled SELL orders from Alpaca (last 100), cross-reference
+    with open position_lifecycle records. If a symbol has a filled sell and an open
+    lifecycle, close it.
+    """
+    from backend.db import get_open_positions_lifecycle, close_position_lifecycle, record_post_exit
+
+    try:
+        # Get all currently open positions on Alpaca
+        alpaca_positions = {p.symbol for p in alpaca.get_positions()}
+
+        # Get our open lifecycle records
+        open_lifecycles = get_open_positions_lifecycle()
+        if not open_lifecycles:
+            return
+
+        # Find lifecycle records for symbols no longer held on Alpaca
+        for pos in open_lifecycles:
+            symbol = pos["symbol"]
+            if symbol in alpaca_positions:
+                continue  # Still held — nothing to close
+
+            # Symbol is no longer on Alpaca but lifecycle is still open
+            # Find the fill price from recent filled sell orders
+            exit_price = None
+            exit_at = None
+            close_reason = "manual_sell"
+
+            try:
+                # Look for a recent filled sell order for this symbol
+                # Alpaca status="all" returns filled, cancelled, and open orders
+                recent_orders = alpaca.get_orders(status="all", limit=200)
+                for o in recent_orders:
+                    if o.symbol == symbol and o.side == "sell" and o.status == "filled":
+                        exit_price = o.filled_avg_price
+                        exit_at = o.filled_at
+                        close_reason = "sell_filled"
+                        break
+            except Exception:
+                pass
+
+            # Fallback: use entry price if we can't find fill (marks at cost, not ideal but correct)
+            if not exit_price:
+                try:
+                    current = alpaca.get_current_price(symbol)
+                    if current:
+                        exit_price = current
+                        close_reason = "position_closed"
+                except Exception:
+                    pass
+
+            if not exit_price:
+                exit_price = pos.get("entry_price", 0)
+
+            entry_price = pos.get("entry_price") or 0
+            qty = pos.get("entry_qty") or 0
+            realized_pnl = (exit_price - entry_price) * qty if entry_price else None
+
+            close_position_lifecycle(
+                position_id=pos["id"],
+                exit_price=exit_price,
+                exit_qty=qty,
+                close_reason=close_reason,
+            )
+
+            try:
+                record_post_exit(
+                    position_id=pos["id"],
+                    symbol=symbol,
+                    exit_price=exit_price,
+                    exit_date=(exit_at or datetime.now().isoformat())[:10],
+                )
+            except Exception:
+                pass
+
+            pnl_str = f"${realized_pnl:+.2f}" if realized_pnl is not None else "unknown"
+            logger.info(
+                f"Lifecycle closed via sell reconciliation: {symbol} "
+                f"entry=${entry_price:.2f} exit=${exit_price:.2f} qty={qty} "
+                f"P&L={pnl_str} reason={close_reason}"
+            )
+
+    except Exception as e:
+        logger.warning(f"_reconcile_sell_fills failed: {e}")
 
 
 def _check_sma50_exits(alpaca, db_path: str):

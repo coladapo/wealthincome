@@ -68,6 +68,60 @@ SEC INSIDER BUYING — if provided in PORTFOLIO RISK section:
 - Never buy on insider signal alone — it confirms an existing trend setup, it doesn't create one.
 - Insider signals are especially valuable in beaten-down stocks where insider buying suggests the selloff is overdone.
 
+MACRO CONTEXT (FRED) — if provided:
+- Yield curve (2s10s): if inverted (<0), we are in a historically elevated recession-risk environment.
+  Action: tighten position sizing to 0.05 max, avoid adding new cyclical (XLY, XLF, XLI) exposure.
+  A deeply inverted curve (< -0.5%) = maximum caution, only highest-conviction setups.
+- VIX: fear gauge.
+  <15 = low fear (watch for complacency). 15-20 = normal. 20-25 = elevated, reduce sizing.
+  >25 = reduce all new entry sizes by 25%. >35 = only take the single best setup per cycle, if any.
+- HY Credit Spread (OAS): credit stress leads equity stress by 2-4 weeks.
+  <300bps = healthy risk-on. 300-400 = normal. 400-500 = caution, stress building.
+  >500bps = real stress — treat as VIX>25 equivalent. >650bps = near-crisis, avoid new longs.
+
+FED POLICY (CME FedWatch) — if provided:
+- cut_expected (≥70% cut probability): Rate cut is nearly certain. Easing reduces discount rates,
+  expanding multiples on growth/tech names. Lean toward entries in high-duration stocks (NVDA, MSFT, etc.)
+  A cut also relieves pressure on HY credit — positive for risk-on positioning.
+- cut_leaning (55-70% cut): Moderate tailwind. Favor entries but don't over-leverage.
+- hold_expected: Neutral policy. Other signals dominate.
+- hike_leaning (55-70% hike): Mild headwind. Be selective. Avoid adding to extended valuations.
+- hike_expected (≥70% hike): Clear tightening. Reduce position_size_pct to 0.05 max.
+  Avoid entering new longs in high-multiple tech or HY-sensitive names.
+- uncertain (<55% for any outcome): Market doesn't know what Fed will do. Treat as elevated uncertainty —
+  similar to VIX 20-25: reduce sizing on new entries, focus on exits.
+
+EARNINGS CALENDAR — if provided:
+- "imminent" (≤3 days): DO NOT enter new positions. Gap risk is binary and cannot be hedged.
+  If you hold a position with imminent earnings, note it in cycle_notes but do not sell based on
+  earnings alone — only sell if the trend signals also say exit.
+- "this_week" (4-7 days): reduce position_size_pct by 50% if entering.
+- Whisper vs consensus: if whisper > consensus, the stock needs to beat a HIGHER bar to rally.
+  Factor into confidence — if whisper is significantly above consensus, discount bullish setups.
+
+SEC 13D ACTIVIST ACCUMULATION — if provided:
+- Schedule 13D must be filed within 10 days of crossing 5% ownership with activist intent.
+  Unlike Form 4 insider buys, 13D signals a large fund with resources to push for change.
+- known_activist (Elliott, Starboard, Pershing Square, ValueAct, Jana, Trian, etc.):
+  These funds have a proven track record of forcing buybacks, spin-offs, or strategic reviews.
+  Add +0.07 confidence boost if trend entry signals also align. This is a high-conviction signal.
+- activist_accumulation (unknown/smaller filer): Still bullish — someone sees enough value to
+  take a 5%+ position publicly. Add +0.04 confidence boost if trend aligns.
+- new_filing (filed ≤10 days ago): Weight more heavily — they just crossed the threshold.
+- Never buy on activist signal alone — the trend must also support entry (price > SMA50).
+
+SEC 8-K MATERIAL EVENTS — if provided:
+- 8-K filings report material events within 4 days. These move stocks.
+- Positive signals (sentiment_score > 0): e.g. major contract signed (Item 1.01).
+  If you were on the fence about entering, positive 8-K tips the scale. +0.04 boost.
+- Negative signals (sentiment_score < -0.3): e.g. impairment charge (Item 2.06),
+  CEO departure (Item 5.02), regulatory investigation. Treat as a caution flag.
+  If already holding, review vs exit criteria. Do NOT enter new positions.
+- Very negative (sentiment_score < -0.6): If held, sell unless trend is strongly intact.
+  If not held, skip this cycle regardless of other signals.
+- Neutral (score -0.3 to +0.2): acknowledge in cycle_notes, no action change.
+- Only weight 8-K signals if the filing is ≤5 days old.
+
 OPTIONS FLOW — if provided in PORTFOLIO RISK section:
 - Large options buyers often know something 1-5 days before a stock moves.
 - bullish_flow: Call volume unusually high vs open interest, low put/call ratio.

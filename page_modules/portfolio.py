@@ -1,393 +1,168 @@
 """
-Portfolio Page - Portfolio management and performance tracking
+Portfolio Page — all data from real backend API and Alpaca.
+Zero hardcoded or random values.
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
-from typing import Dict, List, Any
-import numpy as np
+import requests
 
-from ui.components import render_metric_card, render_confidence_indicator
-from ui.navigation import render_page_header
+API_BASE = "http://localhost:8000"
+
+
+def _api(path, params=None):
+    try:
+        r = requests.get(f"{API_BASE}{path}", params=params, timeout=8)
+        r.raise_for_status()
+        return r.json(), None
+    except requests.exceptions.ConnectionError:
+        return None, "Backend API not running"
+    except Exception as e:
+        return None, str(e)
+
 
 def render_portfolio():
-    """Render portfolio management page"""
-    
-    render_page_header(
-        "💼 Portfolio",
-        "Manage your portfolio and track performance",
-        actions=[
-            {"label": "🔄 Refresh", "key": "refresh_portfolio", "callback": refresh_portfolio_data},
-            {"label": "📊 Export Report", "key": "export_portfolio", "callback": export_portfolio_report}
-        ]
-    )
-    
-    trading_engine = st.session_state.get('trading_engine')
-    data_manager = st.session_state.get('data_manager')
-    
-    if not trading_engine:
-        st.error("Trading engine not initialized")
+    st.title("Portfolio")
+
+    status_data, err = _api("/status")
+    if err:
+        st.error(err)
         return
-    
-    # Portfolio Summary
-    render_portfolio_summary(trading_engine)
-    
-    st.markdown("---")
-    
-    # Performance Charts
-    render_performance_charts(trading_engine)
-    
-    st.markdown("---")
-    
-    # Holdings Analysis
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        render_holdings_table(trading_engine, data_manager)
-    
-    with col2:
-        render_allocation_charts(trading_engine)
-    
-    st.markdown("---")
-    
-    # Performance Analytics
-    render_performance_analytics(trading_engine)
 
-def render_portfolio_summary(trading_engine):
-    """Render portfolio summary metrics"""
-    
-    st.markdown("### 📊 Portfolio Summary")
-    
-    portfolio_summary = trading_engine.get_portfolio_summary()
-    
-    # Key metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        render_metric_card(
-            "Total Value",
-            f"${portfolio_summary['total_value']:,.2f}",
-            icon="💰"
-        )
-    
-    with col2:
-        render_metric_card(
-            "Cash",
-            f"${portfolio_summary['cash']:,.2f}",
-            delta=f"{(portfolio_summary['cash']/portfolio_summary['total_value'])*100:.1f}% allocation",
-            icon="💵"
-        )
-    
-    with col3:
-        pnl_color = "normal" if portfolio_summary['total_pnl'] >= 0 else "inverse"
-        render_metric_card(
-            "Total P&L",
-            f"${portfolio_summary['total_pnl']:,.2f}",
-            delta=f"{portfolio_summary['total_return_pct']:+.2f}%",
-            icon="📈" if portfolio_summary['total_pnl'] >= 0 else "📉"
-        )
-    
-    with col4:
-        render_metric_card(
-            "Positions",
-            str(portfolio_summary['positions_count']),
-            icon="📋"
-        )
-    
-    with col5:
-        render_metric_card(
-            "Buying Power",
-            f"${portfolio_summary['buying_power']:,.2f}",
-            icon="🛒"
-        )
+    account = status_data.get("account") or {}
+    positions = status_data.get("positions") or []
+    perf_data, _ = _api("/performance")
+    equity_data, _ = _api("/equity-curve", {"days": 90})
+    closed_data, _ = _api("/positions/history", {"limit": 100})
 
-def render_performance_charts(trading_engine):
-    """Render portfolio performance charts"""
-    
-    st.markdown("### 📈 Performance History")
-    
-    # Generate mock historical data for demonstration
-    dates = pd.date_range(start='2024-01-01', end=datetime.now(), freq='D')
-    portfolio_summary = trading_engine.get_portfolio_summary()
-    
-    # Simulate portfolio value history
-    np.random.seed(42)  # For consistent results
-    initial_value = 100000
-    returns = np.random.normal(0.0008, 0.02, len(dates))  # Daily returns
-    cumulative_returns = np.cumprod(1 + returns)
-    portfolio_values = initial_value * cumulative_returns
-    
-    # Adjust final value to match current portfolio
-    portfolio_values = portfolio_values * (portfolio_summary['total_value'] / portfolio_values[-1])
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Portfolio value over time
+    perf = perf_data or {}
+    snapshots = (equity_data or {}).get("snapshots", [])
+    closed = (closed_data or {}).get("positions", [])
+
+    portfolio_value = float(account.get("portfolio_value", 0))
+    cash = float(account.get("cash", 0))
+    daily_pnl = float(account.get("daily_pnl", 0))
+    daily_pnl_pct = float(account.get("daily_pnl_pct", 0))
+    buying_power = float(account.get("buying_power", 0))
+
+    # ── Summary metrics ──────────────────────────────────────────────────────
+    st.subheader("Summary")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Portfolio Value", f"${portfolio_value:,.2f}")
+    c2.metric("Cash", f"${cash:,.2f}")
+    c3.metric(
+        "Today's P&L",
+        f"${daily_pnl:+,.2f}",
+        f"{daily_pnl_pct:+.2f}%",
+        delta_color="normal" if daily_pnl >= 0 else "inverse",
+    )
+    c4.metric("Open Positions", len(positions))
+    c5.metric("Buying Power", f"${buying_power:,.2f}")
+
+    st.markdown("---")
+
+    # ── Equity curve ─────────────────────────────────────────────────────────
+    st.subheader("Equity Curve")
+    if snapshots:
+        df_eq = pd.DataFrame(snapshots)
+        df_eq["snapshot_at"] = pd.to_datetime(df_eq["snapshot_at"])
         fig = go.Figure()
-        
         fig.add_trace(go.Scatter(
-            x=dates,
-            y=portfolio_values,
-            mode='lines',
-            name='Portfolio Value',
-            line=dict(color='#1f77b4', width=2),
-            fill='tonexty',
-            fillcolor='rgba(31, 119, 180, 0.1)'
+            x=df_eq["snapshot_at"],
+            y=df_eq["portfolio_value"],
+            mode="lines",
+            name="Portfolio Value",
+            line=dict(color="#1f77b4", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(31,119,180,0.1)",
         ))
-        
         fig.update_layout(
-            title="Portfolio Value Over Time",
+            template="plotly_dark",
+            height=320,
+            margin=dict(t=10),
             xaxis_title="Date",
-            yaxis_title="Portfolio Value ($)",
-            template="plotly_dark",
-            height=400
+            yaxis_title="Value ($)",
         )
-        
-        st.plotly_chart(fig, use_container_width=True, key="portfolio_value_chart")
-    
-    with col2:
-        # Monthly returns
-        monthly_returns = pd.Series(returns, index=dates).resample('M').apply(lambda x: (1 + x).prod() - 1)
-        monthly_returns = monthly_returns * 100  # Convert to percentage
-        
-        fig_monthly = go.Figure()
-        
-        colors = ['green' if x >= 0 else 'red' for x in monthly_returns]
-        
-        fig_monthly.add_trace(go.Bar(
-            x=monthly_returns.index,
-            y=monthly_returns,
-            marker_color=colors,
-            name='Monthly Returns'
-        ))
-        
-        fig_monthly.update_layout(
-            title="Monthly Returns (%)",
-            xaxis_title="Month",
-            yaxis_title="Return (%)",
-            template="plotly_dark",
-            height=400
-        )
-        
-        st.plotly_chart(fig_monthly, use_container_width=True, key="monthly_returns_chart")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Equity curve will appear after first trading cycles")
 
-def render_holdings_table(trading_engine, data_manager):
-    """Render detailed holdings table"""
-    
-    st.markdown("### 📋 Current Holdings")
-    
-    positions = trading_engine.get_positions()
-    
-    if not positions:
-        st.info("No current positions")
-        return
-    
-    # Update market prices
-    if data_manager and positions:
-        symbols = list(positions.keys())
-        try:
-            stock_data = data_manager.get_stock_data(symbols)
-            price_data = {}
-            for symbol in symbols:
-                if symbol in stock_data and stock_data[symbol]:
-                    price_data[symbol] = stock_data[symbol].get('info', {}).get('regularMarketPrice', 0)
-            
-            trading_engine.update_market_prices(price_data)
-        except Exception as e:
-            st.warning(f"Could not update prices: {e}")
-    
-    # Create holdings dataframe
-    holdings_data = []
-    for symbol, position in positions.items():
-        pnl_pct = (position.unrealized_pnl / position.cost_basis * 100) if position.cost_basis > 0 else 0
-        
-        holdings_data.append({
-            "Symbol": symbol,
-            "Quantity": f"{position.quantity:,.0f}",
-            "Avg Price": f"${position.avg_price:.2f}",
-            "Current Price": f"${position.current_price:.2f}",
-            "Market Value": f"${position.market_value:,.2f}",
-            "Unrealized P&L": f"${position.unrealized_pnl:,.2f}",
-            "Return %": f"{pnl_pct:+.2f}%",
-            "Weight %": f"{(position.market_value / trading_engine.get_portfolio_summary()['total_value']) * 100:.1f}%"
-        })
-    
-    if holdings_data:
-        df = pd.DataFrame(holdings_data)
-        st.dataframe(df, use_container_width=True)
-        
-        # Position actions
-        st.markdown("#### Quick Actions")
-        selected_symbol = st.selectbox("Select position for actions:", list(positions.keys()))
-        
-        if selected_symbol:
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("📈 Add More", key=f"add_{selected_symbol}"):
-                    st.session_state['current_page'] = "Trading"
-                    st.session_state['selected_symbol'] = selected_symbol
-                    st.session_state['suggested_action'] = 'buy'
-                    st.rerun()
-            
-            with col2:
-                if st.button("📉 Reduce Position", key=f"reduce_{selected_symbol}"):
-                    st.session_state['current_page'] = "Trading"
-                    st.session_state['selected_symbol'] = selected_symbol
-                    st.session_state['suggested_action'] = 'sell'
-                    st.rerun()
-            
-            with col3:
-                if st.button("🔍 Analyze", key=f"analyze_{selected_symbol}"):
-                    st.session_state['current_page'] = "Analytics"
-                    st.session_state['selected_symbol'] = selected_symbol
-                    st.rerun()
+    st.markdown("---")
 
-def render_allocation_charts(trading_engine):
-    """Render portfolio allocation charts"""
-    
-    st.markdown("### 🥧 Allocation")
-    
-    positions = trading_engine.get_positions()
-    portfolio_summary = trading_engine.get_portfolio_summary()
-    
-    if not positions:
-        st.info("No positions to show allocation")
-        return
-    
-    # Asset allocation pie chart
-    allocation_data = []
-    for symbol, position in positions.items():
-        weight = (position.market_value / portfolio_summary['total_value']) * 100
-        allocation_data.append({
-            'Symbol': symbol,
-            'Value': position.market_value,
-            'Weight': weight
-        })
-    
-    # Add cash allocation
-    cash_weight = (portfolio_summary['cash'] / portfolio_summary['total_value']) * 100
-    allocation_data.append({
-        'Symbol': 'Cash',
-        'Value': portfolio_summary['cash'],
-        'Weight': cash_weight
-    })
-    
-    df_allocation = pd.DataFrame(allocation_data)
-    
-    # Pie chart
-    fig_pie = px.pie(
-        df_allocation,
-        values='Weight',
-        names='Symbol',
-        title="Portfolio Allocation (%)"
-    )
-    
-    fig_pie.update_layout(
-        template="plotly_dark",
-        height=300
-    )
-    
-    st.plotly_chart(fig_pie, use_container_width=True, key="allocation_pie_chart")
-    
-    # Top holdings
-    st.markdown("#### Top Holdings")
-    top_holdings = df_allocation.nlargest(5, 'Weight')[['Symbol', 'Weight']]
-    for _, row in top_holdings.iterrows():
-        st.write(f"**{row['Symbol']}**: {row['Weight']:.1f}%")
-
-def render_performance_analytics(trading_engine):
-    """Render detailed performance analytics"""
-    
-    st.markdown("### 📊 Performance Analytics")
-    
-    with st.expander("📈 Risk & Return Metrics", expanded=False):
-        col1, col2 = st.columns(2)
-        
+    # ── Open positions ────────────────────────────────────────────────────────
+    st.subheader("Open Positions")
+    if positions:
+        col1, col2 = st.columns([2, 1])
         with col1:
-            st.markdown("#### Risk Metrics")
-            
-            # Mock risk metrics for demonstration
-            risk_metrics = {
-                "Portfolio Beta": 1.15,
-                "Sharpe Ratio": 1.23,
-                "Max Drawdown": -8.5,
-                "Volatility (Annual)": 18.2
-            }
-            
-            for metric, value in risk_metrics.items():
-                if isinstance(value, float):
-                    if "%" in metric or "Drawdown" in metric:
-                        st.metric(metric, f"{value:.1f}%")
-                    else:
-                        st.metric(metric, f"{value:.2f}")
-                else:
-                    st.metric(metric, str(value))
-        
-        with col2:
-            st.markdown("#### Return Metrics")
-            
-            portfolio_summary = trading_engine.get_portfolio_summary()
-            
-            # Calculate return metrics
-            return_metrics = {
-                "Total Return": portfolio_summary['total_return_pct'],
-                "Annualized Return": portfolio_summary['total_return_pct'] * 2,  # Mock calculation
-                "1M Return": np.random.uniform(-5, 8),  # Mock
-                "3M Return": np.random.uniform(-10, 15)  # Mock
-            }
-            
-            for metric, value in return_metrics.items():
-                color = "normal" if value >= 0 else "inverse"
-                st.metric(metric, f"{value:+.2f}%", delta_color=color)
-    
-    with st.expander("🎯 Performance Attribution", expanded=False):
-        positions = trading_engine.get_positions()
-        
-        if positions:
-            # Performance contribution by position
-            contrib_data = []
-            total_pnl = sum(pos.unrealized_pnl for pos in positions.values())
-            
-            for symbol, position in positions.items():
-                contribution = (position.unrealized_pnl / total_pnl * 100) if total_pnl != 0 else 0
-                contrib_data.append({
-                    'Symbol': symbol,
-                    'P&L': position.unrealized_pnl,
-                    'Contribution': contribution
+            rows = []
+            for p in positions:
+                mv = float(p.get("market_value", 0))
+                rows.append({
+                    "Symbol": p.get("symbol"),
+                    "Qty": p.get("qty"),
+                    "Avg Entry": f"${float(p.get('avg_entry_price', 0)):.2f}",
+                    "Current": f"${float(p.get('current_price', 0)):.2f}",
+                    "Market Value": f"${mv:,.2f}",
+                    "Unrealized P&L": f"${float(p.get('unrealized_pl', 0)):+,.2f}",
+                    "P&L %": f"{float(p.get('unrealized_plpc', 0)):+.2%}",
+                    "Weight": f"{mv/portfolio_value*100:.1f}%" if portfolio_value > 0 else "—",
                 })
-            
-            df_contrib = pd.DataFrame(contrib_data)
-            df_contrib = df_contrib.sort_values('Contribution', ascending=False)
-            
-            # Bar chart of contributions
-            fig_contrib = px.bar(
-                df_contrib,
-                x='Symbol',
-                y='Contribution',
-                title="Performance Contribution by Position (%)",
-                color='Contribution',
-                color_continuous_scale='RdYlGn'
-            )
-            
-            fig_contrib.update_layout(
-                template="plotly_dark",
-                height=300
-            )
-            
-            st.plotly_chart(fig_contrib, use_container_width=True, key="contribution_chart")
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-def refresh_portfolio_data():
-    """Refresh portfolio data"""
-    st.cache_data.clear()
-    st.success("Portfolio data refreshed!")
-    st.rerun()
+        with col2:
+            # Allocation pie
+            labels = [p.get("symbol") for p in positions]
+            values = [float(p.get("market_value", 0)) for p in positions]
+            if cash > 0:
+                labels.append("CASH")
+                values.append(cash)
+            fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.4))
+            fig.update_layout(template="plotly_dark", height=300, margin=dict(t=10))
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No open positions")
 
-def export_portfolio_report():
-    """Export portfolio report"""
-    st.info("Portfolio report export feature would be implemented here")
-    # In a real implementation, this would generate and download a PDF/Excel report
+    st.markdown("---")
+
+    # ── Performance metrics ───────────────────────────────────────────────────
+    st.subheader("Performance")
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("Total Return", f"{float(perf.get('total_return_pct', 0)):+.2f}%" if perf.get("total_return_pct") is not None else "—")
+    p2.metric("Sharpe Ratio", f"{float(perf.get('sharpe_ratio', 0)):.2f}" if perf.get("sharpe_ratio") is not None else "—")
+    p3.metric("Max Drawdown", f"{float(perf.get('max_drawdown_pct', 0)):.1f}%" if perf.get("max_drawdown_pct") is not None else "—")
+    p4.metric("Win Rate", f"{float(perf.get('win_rate', 0))*100:.0f}%" if perf.get("win_rate") is not None else "—")
+    p5.metric("Total Trades", perf.get("total_trades", "—"))
+
+    st.markdown("---")
+
+    # ── Closed positions history ──────────────────────────────────────────────
+    st.subheader("Closed Positions")
+    if closed:
+        df_c = pd.DataFrame(closed)
+        display = ["closed_at", "symbol", "action", "qty", "entry_price", "exit_price", "pnl", "pnl_pct", "hold_days"]
+        display = [c for c in display if c in df_c.columns]
+        for col in ["entry_price", "exit_price"]:
+            if col in df_c.columns:
+                df_c[col] = df_c[col].apply(lambda x: f"${float(x):.2f}" if x else "—")
+        if "pnl" in df_c.columns:
+            df_c["pnl"] = df_c["pnl"].apply(lambda x: f"${float(x):+.2f}" if x is not None else "—")
+        if "pnl_pct" in df_c.columns:
+            df_c["pnl_pct"] = df_c["pnl_pct"].apply(lambda x: f"{float(x):+.2f}%" if x is not None else "—")
+        st.dataframe(df_c[display], use_container_width=True, hide_index=True)
+
+        # P&L by symbol
+        df_raw = pd.DataFrame(closed)
+        if "pnl" in df_raw.columns and "symbol" in df_raw.columns:
+            df_raw["pnl"] = df_raw["pnl"].astype(float)
+            by_sym = df_raw.groupby("symbol")["pnl"].sum().reset_index().sort_values("pnl")
+            fig = px.bar(
+                by_sym, x="symbol", y="pnl",
+                color="pnl", color_continuous_scale="RdYlGn",
+                title="Total P&L by Symbol",
+            )
+            fig.update_layout(template="plotly_dark", height=280, margin=dict(t=40))
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No closed positions yet")

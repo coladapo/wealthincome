@@ -26,7 +26,7 @@ from backend.db import (
     record_equity_snapshot, upsert_daily_summary,
     get_performance_summary,
 )
-from core.alpaca_client import AlpacaClient, AlpacaOrderSide
+from core.alpaca_client import AlpacaClient, AlpacaOrderSide, AlpacaTimeInForce
 from core.claude_trader import run_claude_decision, SYSTEM_PROMPT
 from core.indicators import compute_all
 from core.market_regime import get_market_regime, regime_summary_for_claude
@@ -56,13 +56,13 @@ from core.edgar_agent import (
     save_insider_signals_to_db,
     ensure_edgar_table,
 )
+from core.signal_enricher import get_enriched_context
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     handlers=[
         logging.FileHandler("logs/trader.log"),
-        logging.StreamHandler(),
     ]
 )
 logging.getLogger("yfinance").setLevel(logging.WARNING)
@@ -192,6 +192,20 @@ def execute_decision(
         if symbol in positions:
             logger.info(f"Already holding {symbol} — skipping")
             return None
+
+        # Guard: check for pending/open orders on this symbol — prevents double-buying
+        # when orders are queued but not yet filled (e.g. pre-market, between cycles)
+        try:
+            open_orders = alpaca.get_orders(status="open", limit=100)
+            pending_syms = {o.symbol for o in open_orders}
+            if symbol in pending_syms:
+                logger.info(f"Open order already exists for {symbol} — skipping to prevent duplicate")
+                return None
+        except Exception as e:
+            # Fail closed — if we can't verify no duplicate, don't place the order
+            logger.warning(f"Could not check open orders for {symbol}: {e} — skipping buy to avoid duplicate")
+            return None
+
         if len(positions) >= max_pos:
             logger.info(f"Max positions ({max_pos}) reached — skipping {symbol}")
             return None
@@ -243,14 +257,31 @@ def execute_decision(
         # Wider trail = lets winners run through normal volatility
         trail_percent = round(max(12.0, min(25.0, atr_pct * 2.5)), 2)
 
-        # Step 1: Place market entry order
-        order = alpaca.place_market_order(
-            symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
-        )
-        logger.info(
-            f"BUY {qty} {symbol} @ ~${current_price:.2f} | {confidence:.0%} | "
-            f"trail={trail_percent}% | {reasoning[:70]}"
-        )
+        # Step 1: Place IOC limit entry at signal price + 0.1% slippage allowance.
+        # IOC (Immediate-Or-Cancel): fills at limit price or better, cancels any unfilled
+        # portion instantly — no lingering open orders that can queue up between cycles.
+        # Fallback to market if limit placement itself fails.
+        limit_price = round(current_price * 1.001, 2)  # allow 0.1% above signal
+        order = None
+        order_type_used = "limit_ioc"
+        try:
+            order = alpaca.place_limit_order(
+                symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
+                limit_price=limit_price,
+                time_in_force=AlpacaTimeInForce.IOC,
+            )
+            logger.info(
+                f"BUY {qty} {symbol} limit=${limit_price:.2f} (signal=${current_price:.2f} +0.1%) IOC | "
+                f"{confidence:.0%} | trail={trail_percent}% | {reasoning[:60]}"
+            )
+        except Exception as e:
+            logger.warning(f"Limit order failed for {symbol}: {e} — falling back to market")
+            order = alpaca.place_market_order(symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY)
+            order_type_used = "market"
+            logger.info(
+                f"BUY {qty} {symbol} MARKET @ ~${current_price:.2f} | "
+                f"{confidence:.0%} | trail={trail_percent}% | {reasoning[:60]}"
+            )
 
         trade_id = record_trade(cycle_id, {
             "symbol": symbol, "action": action, "qty": qty,
@@ -276,9 +307,10 @@ def execute_decision(
 
         record_order(
             alpaca_order_id=order.id, symbol=symbol, side="buy",
-            order_type="market", qty=qty, status=order.status,
+            order_type=order_type_used, qty=qty, status=order.status,
             signal_price=current_price, order_class="simple",
-            time_in_force="day", cycle_id=cycle_id, trade_id=trade_id,
+            time_in_force="ioc" if order_type_used == "limit_ioc" else "day",
+            cycle_id=cycle_id, trade_id=trade_id,
             order_group_id=group_id,
             raw_json=json.dumps(order.raw) if order.raw else None,
         )
@@ -456,7 +488,20 @@ def run_cycle(alpaca: AlpacaClient):
             fail_cycle(cycle_id, "market_closed")
             return
 
-        account = alpaca.get_account()
+        # Hard failsafe: even if trade_only_market_hours is off, never place new BUY orders
+        # when market is closed — orders queue and execute all at once at open, causing
+        # position over-concentration (the same symbol gets bought N times before fills land)
+        _buys_allowed = market_open
+
+        try:
+            account = alpaca.get_account()
+            positions = {p.symbol: p for p in alpaca.get_positions()}
+        except Exception as e:
+            logger.error(f"Alpaca API error at cycle start: {e}")
+            record_error("alpaca_api_error", str(e), cycle_id)
+            fail_cycle(cycle_id, "alpaca_error")
+            return
+
         if account.trading_blocked:
             logger.warning("Account trading blocked")
             fail_cycle(cycle_id, "account_blocked")
@@ -467,8 +512,6 @@ def run_cycle(alpaca: AlpacaClient):
             record_error("daily_loss_limit", f"Portfolio: ${account.portfolio_value:.2f}", cycle_id)
             fail_cycle(cycle_id, "daily_loss_limit")
             return
-
-        positions = {p.symbol: p for p in alpaca.get_positions()}
 
         # Equity snapshot at cycle start
         unrealized_pnl = sum(p.unrealized_pl for p in positions.values())
@@ -654,8 +697,32 @@ def run_cycle(alpaca: AlpacaClient):
             logger.warning(f"EDGAR insider signals failed: {e}")
             insider_context = ""
 
-        # Combine VWAP + Options + Insider into portfolio_risk_context
-        extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context]))
+        # Signal Enricher — macro (FRED), earnings calendar, options flow (Barchart)
+        enricher_context = ""
+        try:
+            enrich_syms = list(set(watchlist + list(positions.keys())))[:15]
+            enriched = get_enriched_context(
+                symbols=enrich_syms,
+                positions=portfolio_snapshot["positions"],
+                include_options=True,
+                include_earnings=True,
+                include_macro=True,
+                include_insider=False,  # insider already handled above by edgar_agent
+            )
+            enricher_context = enriched.get("combined_block", "")
+            if enricher_context:
+                logger.info(
+                    f"Signal enricher: macro VIX={enriched.get('macro', {}).get('vix')} "
+                    f"yield_curve={enriched.get('macro', {}).get('yield_curve_2s10s')} | "
+                    f"earnings blocks={bool(enriched.get('earnings_block'))} | "
+                    f"options blocks={bool(enriched.get('options_block'))}"
+                )
+        except Exception as e:
+            logger.warning(f"Signal enricher failed (non-fatal): {e}")
+            enricher_context = ""
+
+        # Combine VWAP + Options + Insider + Enricher into portfolio_risk_context
+        extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context, enricher_context]))
         if extra_context:
             portfolio_risk_context = (
                 (portfolio_risk_context + "\n\n" + extra_context).strip()
@@ -741,6 +808,12 @@ def run_cycle(alpaca: AlpacaClient):
                 except Exception:
                     pass
 
+                # Hard failsafe: never open new positions when market is closed
+                # (prevents queued orders from all filling at once at open)
+                if d.get("action", "").lower() == "buy" and not _buys_allowed:
+                    logger.info(f"Market closed — suppressing BUY for {sym} (would queue and over-concentrate)")
+                    continue
+
                 execute_decision(
                     d, account, positions, cfg, alpaca, cycle_id, ai_decision_id, market_data,
                     corr_matrix=corr_matrix,
@@ -792,6 +865,11 @@ def main():
     init_db()
     ensure_tick_table()
     ensure_edgar_table()
+    try:
+        from core.edgar_signals import ensure_extended_edgar_tables
+        ensure_extended_edgar_tables()
+    except Exception as _e:
+        logger.warning(f"Could not init extended EDGAR tables (non-fatal): {_e}")
     set_config("trader_running", "true")
 
     alpaca = get_alpaca()
