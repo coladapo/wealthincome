@@ -321,6 +321,10 @@ def init_db():
             ("daily_summaries",   "cost_usd",                 "REAL"),
             ("cycles",            "enricher_status_json",     "TEXT"),
             ("cycles",            "data_quality_score",       "REAL"),
+            ("cycles",            "llm_provider",             "TEXT"),
+            ("cycles",            "llm_model",                "TEXT"),
+            ("ai_decisions",      "llm_provider",             "TEXT"),
+            ("ai_decisions",      "llm_model",                "TEXT"),
         ]
         for table, col, typedef in migrations:
             try:
@@ -400,26 +404,16 @@ def init_db():
 
 # ─── Token cost ──────────────────────────────────────────────────────────────
 
-# Pricing for claude-sonnet-4-6 (USD per 1M tokens)
-_INPUT_COST_PER_M   = 3.00
-_OUTPUT_COST_PER_M  = 15.00
-_CACHE_READ_PER_M   = 0.30
-_CACHE_WRITE_PER_M  = 3.75
-
-
 def compute_token_cost(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    model: str = "claude-sonnet-4-6",
 ) -> float:
-    """Return USD cost for a claude-sonnet-4-6 API call."""
-    return (
-        (input_tokens       * _INPUT_COST_PER_M   / 1_000_000)
-        + (output_tokens    * _OUTPUT_COST_PER_M  / 1_000_000)
-        + (cache_read_tokens  * _CACHE_READ_PER_M   / 1_000_000)
-        + (cache_write_tokens * _CACHE_WRITE_PER_M  / 1_000_000)
-    )
+    """Return USD cost for an LLM call. Model-aware — uses llm_pricing table."""
+    from core.llm_pricing import compute_cost  # deferred to avoid circular import
+    return compute_cost(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
 
 # ─── Config ─────────────────────────────────────────────────────────────────
@@ -433,6 +427,9 @@ DEFAULT_CONFIG = {
     "trade_only_market_hours": "true",
     "watchlist": "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,SPY,QQQ,AMD",
     "trader_running": "false",
+    # LLM provider config — swap model/provider without restarting the daemon
+    "llm_provider": "anthropic_cli",   # anthropic_cli | anthropic_api | openai | gemini | grok | ollama
+    "llm_model":    "claude-sonnet-4-6",
 }
 
 
@@ -480,11 +477,14 @@ def finish_cycle(
     enricher_status: Dict = None,
 ):
     usage = usage or {}
+    model    = usage.get("_model",    "claude-sonnet-4-6")
+    provider = usage.get("_provider", "anthropic_cli")
     cost = compute_token_cost(
         input_tokens=usage.get("input_tokens", 0) or 0,
         output_tokens=usage.get("output_tokens", 0) or 0,
         cache_read_tokens=usage.get("cache_read_tokens", 0) or 0,
         cache_write_tokens=usage.get("cache_write_tokens", 0) or 0,
+        model=model,
     )
     # Data quality score: fraction of enrichers that succeeded (0.0–1.0)
     dq_score = None
@@ -511,7 +511,9 @@ def finish_cycle(
                 duration_ms = ?,
                 cost_usd = ?,
                 enricher_status_json = ?,
-                data_quality_score = ?
+                data_quality_score = ?,
+                llm_provider = ?,
+                llm_model = ?
             WHERE id = ?
         """, (
             datetime.now().isoformat(),
@@ -527,6 +529,8 @@ def finish_cycle(
             cost,
             enricher_json,
             dq_score,
+            provider,
+            model,
             cycle_id,
         ))
 
@@ -664,11 +668,14 @@ def record_ai_decision(
     non_holds = [d for d in parsed_decisions if d.get("action", "hold") != "hold"]
     avg_conf = (sum(d.get("confidence", 0) for d in non_holds) / len(non_holds)
                 if non_holds else None)
+    model    = usage.get("_model",    "claude-sonnet-4-6")
+    provider = usage.get("_provider", "anthropic_cli")
     cost = compute_token_cost(
         input_tokens=usage.get("input_tokens", 0) or 0,
         output_tokens=usage.get("output_tokens", 0) or 0,
         cache_read_tokens=usage.get("cache_read_tokens", 0) or 0,
         cache_write_tokens=usage.get("cache_write_tokens", 0) or 0,
+        model=model,
     )
     with db() as conn:
         cur = conn.execute("""
@@ -678,8 +685,8 @@ def record_ai_decision(
                 raw_response, parsed_decisions_json,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms,
                 decisions_made, decisions_executed, avg_confidence,
-                cost_usd, agent_name
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                cost_usd, agent_name, llm_provider, llm_model
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             cycle_id,
             datetime.now().isoformat(),
@@ -700,6 +707,8 @@ def record_ai_decision(
             avg_conf,
             cost,
             agent_name,
+            provider,
+            model,
         ))
         return cur.lastrowid
 

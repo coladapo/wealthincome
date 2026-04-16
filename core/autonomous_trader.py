@@ -15,7 +15,7 @@ from core.alpaca_client import (
     AlpacaOrderSide,
     AlpacaTimeInForce,
 )
-from core.claude_trader import run_claude_decision
+from core.llm_router import run_decision
 
 logger = logging.getLogger(__name__)
 
@@ -186,9 +186,9 @@ class AutonomousTrader:
             ),
         }
 
-        # 7. Ask Claude what to do
-        logger.info(f"Asking Claude to analyze {len(self.watchlist)} symbols...")
-        result = run_claude_decision(
+        # 7. Ask LLM what to do (provider set in DB config: llm_provider / llm_model)
+        logger.info(f"Asking LLM to analyze {len(self.watchlist)} symbols...")
+        result = run_decision(
             watchlist=self.watchlist,
             market_data=market_data,
             portfolio=portfolio_snapshot,

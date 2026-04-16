@@ -27,7 +27,8 @@ from backend.db import (
     get_performance_summary,
 )
 from core.alpaca_client import AlpacaClient, AlpacaOrderSide, AlpacaTimeInForce
-from core.claude_trader import run_claude_decision, SYSTEM_PROMPT
+from core.claude_trader import SYSTEM_PROMPT
+from core.llm_router import run_decision
 from core.indicators import compute_all
 from core.market_regime import get_market_regime, regime_summary_for_claude
 from core.watchlist import build_watchlist
@@ -755,8 +756,11 @@ def run_cycle(alpaca: AlpacaClient):
                 if portfolio_risk_context else extra_context
             )
 
-        logger.info(f"Asking Claude to analyze {len(watchlist)} symbols...")
-        result = run_claude_decision(
+        cfg = get_config()
+        provider = cfg.get("llm_provider", "anthropic_cli")
+        model    = cfg.get("llm_model", "claude-sonnet-4-6")
+        logger.info(f"Asking {provider}/{model} to analyze {len(watchlist)} symbols...")
+        result = run_decision(
             watchlist=watchlist,
             market_data=market_data,
             portfolio=portfolio_snapshot,
@@ -769,16 +773,19 @@ def run_cycle(alpaca: AlpacaClient):
         )
 
         if not result:
-            logger.warning("Claude returned no decision")
-            record_error("claude_no_decision", "Empty response", cycle_id)
-            fail_cycle(cycle_id, "claude_error")
+            logger.warning("LLM returned no decision")
+            record_error("llm_no_decision", "Empty response", cycle_id)
+            fail_cycle(cycle_id, "llm_error")
             return
 
         # Extract metadata before storing
         usage = result.pop("_usage", {})
-        duration_ms = result.pop("_duration_ms", None)
+        duration_ms  = result.pop("_duration_ms", None)
         raw_response = result.pop("_raw_response", "")
-        user_prompt = result.pop("_user_prompt", "")
+        user_prompt  = result.pop("_user_prompt", "")
+        # Attach provider/model onto usage so db.py cost functions get them
+        usage["_provider"] = result.pop("_provider", provider)
+        usage["_model"]    = result.pop("_model", model)
 
         # Record full AI decision with complete context
         ai_decision_id = record_ai_decision(

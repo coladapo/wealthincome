@@ -1,14 +1,11 @@
 """
-Claude Trader — Uses Claude Code CLI (Max subscription) as the trading brain.
-Shells out to `claude -p` with live market context, gets back structured decisions.
-No Anthropic API key needed — uses your Max subscription.
+Claude Trader — System prompt and prompt-builder for the trading brain.
+Provider-agnostic: SYSTEM_PROMPT and _build_prompt() are shared by all LLM providers.
+The actual LLM call is dispatched by core/llm_router.py.
 """
 
-import subprocess
 import json
 import logging
-import tempfile
-import os
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
@@ -237,117 +234,5 @@ Only act on high-conviction setups that match the regime's risk posture.
 """
 
 
-def run_claude_decision(
-    watchlist: List[str],
-    market_data: Dict[str, Any],
-    portfolio: Dict[str, Any],
-    account: Dict[str, Any],
-    regime_summary: str = "",
-    performance_feedback: str = "",
-    news_context: str = "",
-    portfolio_risk_context: str = "",
-    calendar_context: str = "",
-    timeout: int = 120,
-) -> Optional[Dict[str, Any]]:
-    """
-    Shell out to `claude -p` with market context.
-    Returns dict with keys: decisions, market_summary, cycle_notes, usage, duration_ms
-    Returns None on failure.
-    """
-
-    user_prompt = _build_prompt(
-        watchlist, market_data, portfolio, account,
-        regime_summary=regime_summary,
-        performance_feedback=performance_feedback,
-        news_context=news_context,
-        portfolio_risk_context=portfolio_risk_context,
-        calendar_context=calendar_context,
-    )
-
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-        f.write(SYSTEM_PROMPT)
-        system_file = f.name
-
-    try:
-        import time
-        t0 = time.time()
-
-        proc = subprocess.run(
-            [
-                'claude',
-                '-p',
-                '--output-format', 'json',
-                '--model', 'claude-sonnet-4-6',
-                '--system-prompt-file', system_file,
-            ],
-            input=user_prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-        duration_ms = int((time.time() - t0) * 1000)
-
-        if proc.returncode != 0:
-            logger.error(f"Claude CLI error: {proc.stderr[:500]}")
-            return None
-
-        # Parse the outer CLI envelope
-        envelope = json.loads(proc.stdout)
-
-        # Extract token usage from CLI envelope
-        usage = {}
-        if "usage" in envelope:
-            u = envelope["usage"]
-            usage = {
-                "input_tokens":       u.get("input_tokens", 0),
-                "output_tokens":      u.get("output_tokens", 0),
-                "cache_read_tokens":  u.get("cache_read_input_tokens", 0),
-                "cache_write_tokens": u.get("cache_creation_input_tokens", 0),
-            }
-            total = usage["input_tokens"] + usage["output_tokens"]
-            logger.info(
-                f"Token usage — input: {usage['input_tokens']:,} | "
-                f"output: {usage['output_tokens']:,} | "
-                f"cache_read: {usage['cache_read_tokens']:,} | "
-                f"cache_write: {usage['cache_write_tokens']:,} | "
-                f"total: {total:,} | "
-                f"duration: {duration_ms}ms"
-            )
-
-        # The actual model text is in envelope["result"]
-        text_output = envelope.get("result", "").strip()
-
-        # Strip markdown fences if present
-        if '```' in text_output:
-            start = text_output.find('```')
-            end = text_output.rfind('```')
-            if start != end:
-                inner = text_output[start+3:end].strip()
-                if inner.startswith('json'):
-                    inner = inner[4:].strip()
-                text_output = inner
-
-        result = json.loads(text_output)
-        result["_usage"] = usage
-        result["_duration_ms"] = duration_ms
-        result["_raw_response"] = text_output
-        result["_user_prompt"] = user_prompt
-
-        logger.info(
-            f"Claude decisions: {len(result.get('decisions', []))} | "
-            f"summary: {result.get('market_summary', '')[:80]}"
-        )
-        return result
-
-    except subprocess.TimeoutExpired:
-        logger.error("Claude CLI timed out")
-        return None
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Claude output: {e}\nRaw: {proc.stdout[:300]}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error calling Claude CLI: {e}")
-        return None
-    finally:
-        os.unlink(system_file)
+# run_claude_decision has been removed.
+# Use core.llm_router.run_decision() instead — it dispatches to any configured provider.
