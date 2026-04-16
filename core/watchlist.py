@@ -45,11 +45,14 @@ def get_sp500_tickers() -> List[str]:
 
     try:
         import pandas as pd
+        import requests
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        tables = pd.read_html(resp.text)
         df = tables[0]
         tickers = df["Symbol"].tolist()
-        # Clean up: replace dots with dashes (BRK.B → BRK-B)
         tickers = [t.replace(".", "-") for t in tickers]
         logger.info(f"Fetched {len(tickers)} S&P 500 tickers from Wikipedia")
         _save_cache(cache_key, tickers)
@@ -196,26 +199,32 @@ def score_symbol(ticker: str, days: int = 200) -> Optional[Dict]:
             momentum_score *= 0.85
 
         # Feature 6: Short Interest Signal
+        # ETFs don't have short interest fundamentals — skip .info to avoid yfinance 404s
+        _ETF_SYMBOLS = {
+            "SPY", "QQQ", "IWM", "DIA", "XLK", "XLE", "XLF", "XLV", "XLI",
+            "XLU", "XLP", "XLB", "XLRE", "XLY", "XLC", "GLD", "SLV", "TLT",
+            "HYG", "LQD", "EEM", "EFA", "VTI", "VNQ", "ARKK", "SQQQ", "TQQQ",
+        }
         short_pct_float = 0.0
         short_ratio     = 0.0
         short_signal    = "none"
-        try:
-            info = yf.Ticker(ticker).info or {}
-            # shortPercentOfFloat is typically 0.15 for 15%
-            spf = info.get("shortPercentOfFloat")
-            sr  = info.get("shortRatio") or info.get("shortRatio")
-            short_pct_float = float(spf) if spf is not None else 0.0
-            short_ratio     = float(sr)  if sr  is not None else 0.0
+        if ticker not in _ETF_SYMBOLS:
+            try:
+                info = yf.Ticker(ticker).info or {}
+                spf = info.get("shortPercentOfFloat")
+                sr  = info.get("shortRatio")
+                short_pct_float = float(spf) if spf is not None else 0.0
+                short_ratio     = float(sr)  if sr  is not None else 0.0
 
-            # Classify short signal
-            if short_pct_float > 0.15:
-                # Check for squeeze potential: heavy short + recent price momentum
-                if ret_1m > 0.05:
-                    short_signal = "squeeze_potential"
-                else:
-                    short_signal = "high_short_interest"
-        except Exception:
-            pass  # short interest unavailable — keep defaults
+                # Classify short signal
+                if short_pct_float > 0.15:
+                    # Check for squeeze potential: heavy short + recent price momentum
+                    if ret_1m > 0.05:
+                        short_signal = "squeeze_potential"
+                    else:
+                        short_signal = "high_short_interest"
+            except Exception:
+                pass  # short interest unavailable — keep defaults
 
         # Apply squeeze bonus to momentum score
         squeeze_bonus = 0.15 if short_pct_float > 0.15 and ret_1m > 0.05 else 0.0

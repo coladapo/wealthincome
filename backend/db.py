@@ -319,6 +319,8 @@ def init_db():
             ("ai_decisions",      "cost_usd",                 "REAL"),
             ("ai_decisions",      "agent_name",               "TEXT DEFAULT 'main_trader'"),
             ("daily_summaries",   "cost_usd",                 "REAL"),
+            ("cycles",            "enricher_status_json",     "TEXT"),
+            ("cycles",            "data_quality_score",       "REAL"),
         ]
         for table, col, typedef in migrations:
             try:
@@ -470,7 +472,13 @@ def start_cycle(market_open: bool) -> int:
         return cur.lastrowid
 
 
-def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: int = None):
+def finish_cycle(
+    cycle_id: int,
+    result: Dict,
+    usage: Dict = None,
+    duration_ms: int = None,
+    enricher_status: Dict = None,
+):
     usage = usage or {}
     cost = compute_token_cost(
         input_tokens=usage.get("input_tokens", 0) or 0,
@@ -478,6 +486,15 @@ def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: i
         cache_read_tokens=usage.get("cache_read_tokens", 0) or 0,
         cache_write_tokens=usage.get("cache_write_tokens", 0) or 0,
     )
+    # Data quality score: fraction of enrichers that succeeded (0.0–1.0)
+    dq_score = None
+    enricher_json = None
+    if enricher_status:
+        total = len(enricher_status)
+        passed = sum(1 for v in enricher_status.values() if v.get("ok"))
+        dq_score = round(passed / total, 2) if total else None
+        enricher_json = json.dumps(enricher_status)
+
     with db() as conn:
         conn.execute("""
             UPDATE cycles SET
@@ -492,7 +509,9 @@ def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: i
                 cache_read_tokens = ?,
                 cache_write_tokens = ?,
                 duration_ms = ?,
-                cost_usd = ?
+                cost_usd = ?,
+                enricher_status_json = ?,
+                data_quality_score = ?
             WHERE id = ?
         """, (
             datetime.now().isoformat(),
@@ -506,16 +525,43 @@ def finish_cycle(cycle_id: int, result: Dict, usage: Dict = None, duration_ms: i
             usage.get("cache_write_tokens"),
             duration_ms,
             cost,
+            enricher_json,
+            dq_score,
             cycle_id,
         ))
 
 
-def fail_cycle(cycle_id: int, error: str):
-    with db() as conn:
-        conn.execute(
-            "UPDATE cycles SET finished_at=?, status='error', cycle_notes=? WHERE id=?",
-            (datetime.now().isoformat(), error, cycle_id)
+def fail_cycle(cycle_id: int, error: str, usage: Dict = None, enricher_status: Dict = None):
+    """Record a failed/skipped cycle. Preserves token usage even on failures."""
+    usage = usage or {}
+    cost = None
+    if usage:
+        cost = compute_token_cost(
+            input_tokens=usage.get("input_tokens", 0) or 0,
+            output_tokens=usage.get("output_tokens", 0) or 0,
+            cache_read_tokens=usage.get("cache_read_tokens", 0) or 0,
+            cache_write_tokens=usage.get("cache_write_tokens", 0) or 0,
         )
+    enricher_json = json.dumps(enricher_status) if enricher_status else None
+    dq_score = None
+    if enricher_status:
+        total = len(enricher_status)
+        passed = sum(1 for v in enricher_status.values() if v.get("ok"))
+        dq_score = round(passed / total, 2) if total else None
+
+    with db() as conn:
+        fields = ["finished_at=?", "status='error'", "cycle_notes=?"]
+        vals = [datetime.now().isoformat(), error]
+        if cost is not None:
+            fields += ["cost_usd=?", "input_tokens=?", "output_tokens=?",
+                       "cache_read_tokens=?", "cache_write_tokens=?"]
+            vals += [cost, usage.get("input_tokens"), usage.get("output_tokens"),
+                     usage.get("cache_read_tokens"), usage.get("cache_write_tokens")]
+        if enricher_json:
+            fields += ["enricher_status_json=?", "data_quality_score=?"]
+            vals += [enricher_json, dq_score]
+        vals.append(cycle_id)
+        conn.execute(f"UPDATE cycles SET {', '.join(fields)} WHERE id=?", vals)
 
 
 def get_cycles(limit: int = 20) -> List[Dict]:
@@ -1247,21 +1293,45 @@ def compute_risk_metrics(days: int = 252) -> Dict:
 def get_token_usage(days: int = 1) -> Dict:
     since = (datetime.now() - timedelta(days=days)).isoformat()
     with db() as conn:
+        # All cycles — including errored/skipped, to capture full cost
         row = conn.execute("""
             SELECT
-                COUNT(*)                              AS cycles,
-                COALESCE(SUM(input_tokens), 0)        AS input_tokens,
-                COALESCE(SUM(output_tokens), 0)       AS output_tokens,
-                COALESCE(SUM(cache_read_tokens), 0)   AS cache_read_tokens,
-                COALESCE(SUM(cache_write_tokens), 0)  AS cache_write_tokens,
-                COALESCE(AVG(duration_ms), 0)         AS avg_duration_ms,
-                COALESCE(SUM(cost_usd), 0.0)          AS total_cost_usd
+                COUNT(*)                                        AS total_cycles,
+                SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS successful_cycles,
+                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errored_cycles,
+                COALESCE(SUM(input_tokens), 0)                  AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)                 AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0)             AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0)            AS cache_write_tokens,
+                COALESCE(AVG(CASE WHEN status='done' THEN duration_ms END), 0) AS avg_duration_ms,
+                COALESCE(SUM(cost_usd), 0.0)                    AS total_cost_usd,
+                AVG(data_quality_score)                         AS avg_data_quality
             FROM cycles
-            WHERE started_at >= ? AND status = 'done'
+            WHERE started_at >= ?
         """, (since,)).fetchone()
         d = dict(row)
-        d["total_tokens"] = d["input_tokens"] + d["output_tokens"]
+        d["total_tokens"] = d["input_tokens"] + d["output_tokens"] + d["cache_read_tokens"] + d["cache_write_tokens"]
         d["days"] = days
+
+        # All-time totals
+        alltime = conn.execute("""
+            SELECT COALESCE(SUM(cost_usd), 0.0) AS total_cost_usd,
+                   COUNT(*) AS total_cycles,
+                   MIN(started_at) AS first_cycle
+            FROM cycles WHERE cost_usd IS NOT NULL
+        """).fetchone()
+        d["alltime_cost_usd"] = round(float(alltime["total_cost_usd"]), 4)
+        d["alltime_cycles"] = alltime["total_cycles"]
+        d["first_cycle"] = alltime["first_cycle"]
+
+        # Today specifically
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_row = conn.execute("""
+            SELECT COALESCE(SUM(cost_usd), 0.0) AS cost
+            FROM cycles WHERE started_at LIKE ?
+        """, (f"{today}%",)).fetchone()
+        d["today_cost_usd"] = round(float(today_row["cost"]), 4)
+
         return d
 
 

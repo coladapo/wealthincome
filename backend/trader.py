@@ -504,6 +504,7 @@ def run_cycle(alpaca: AlpacaClient):
 
     market_open = alpaca.is_market_open()
     cycle_id = start_cycle(market_open)
+    _enricher_status = {}  # populated by signal enricher, passed to finish_cycle/fail_cycle
 
     try:
         if trade_hours_only and not market_open:
@@ -733,6 +734,7 @@ def run_cycle(alpaca: AlpacaClient):
                 include_insider=False,  # insider already handled above by edgar_agent
             )
             enricher_context = enriched.get("combined_block", "")
+            _enricher_status = enriched.get("enricher_status", {})
             if enricher_context:
                 logger.info(
                     f"Signal enricher: macro VIX={enriched.get('macro', {}).get('vix')} "
@@ -743,6 +745,7 @@ def run_cycle(alpaca: AlpacaClient):
         except Exception as e:
             logger.warning(f"Signal enricher failed (non-fatal): {e}")
             enricher_context = ""
+            _enricher_status = {"signal_enricher": {"ok": False, "error": str(e)[:100]}}
 
         # Combine VWAP + Options + Insider + Enricher into portfolio_risk_context
         extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context, enricher_context]))
@@ -792,7 +795,7 @@ def run_cycle(alpaca: AlpacaClient):
         )
 
         logger.info(f"Market: {result.get('market_summary', '')}")
-        finish_cycle(cycle_id, result, usage=usage, duration_ms=duration_ms)
+        finish_cycle(cycle_id, result, usage=usage, duration_ms=duration_ms, enricher_status=_enricher_status)
 
         # Extract regime score for passing to execute_decision
         regime_score_val = regime_data.get("score") if 'regime_data' in dir() else None
@@ -864,7 +867,7 @@ def run_cycle(alpaca: AlpacaClient):
     except Exception as e:
         logger.error(f"Cycle error: {e}", exc_info=True)
         record_error("cycle_error", str(e), cycle_id)
-        fail_cycle(cycle_id, str(e))
+        fail_cycle(cycle_id, str(e), enricher_status=_enricher_status)
 
 
 # ─── Main loop ────────────────────────────────────────────────────────────────

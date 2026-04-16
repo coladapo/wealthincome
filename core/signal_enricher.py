@@ -58,10 +58,13 @@ def get_enriched_context(
         "activist_signals": {},
         "eightk_signals": {},
         "edgar_extended_block": "",
+        "performance_intelligence_block": "",
         "combined_block": "",
+        "enricher_status": {},   # tracks ok/error per enricher for data quality scoring
     }
 
     blocks = []
+    enricher_status = context["enricher_status"]
 
     # ── FRED Macro ──────────────────────────────────────────────────────────
     if include_macro:
@@ -74,14 +77,16 @@ def get_enriched_context(
             if block:
                 blocks.append(block)
             logger.info(f"Macro enricher: VIX={macro.get('vix')} yield_curve={macro.get('yield_curve_2s10s')} hy={macro.get('hy_spread_bps')}")
+            enricher_status["macro"] = {"ok": True, "fields": list(macro.keys())}
         except Exception as e:
             logger.warning(f"Macro enricher failed (non-fatal): {e}")
+            enricher_status["macro"] = {"ok": False, "error": str(e)[:100]}
 
     # ── Earnings Calendar ───────────────────────────────────────────────────
     if include_earnings and symbols:
         try:
             from core.earnings_scraper import get_earnings_calendar, build_earnings_block_for_claude
-            earnings = get_earnings_calendar(symbols[:15])  # cap to avoid slow fetches
+            earnings = get_earnings_calendar(symbols[:15])
             context["earnings"] = earnings
             block = build_earnings_block_for_claude(earnings, positions=positions)
             context["earnings_block"] = block
@@ -90,8 +95,10 @@ def get_enriched_context(
             imminent = [s for s, d in earnings.items() if d.get("earnings_risk") in ("today", "imminent")]
             if imminent:
                 logger.info(f"Earnings enricher: IMMINENT earnings for {imminent}")
+            enricher_status["earnings"] = {"ok": True, "symbols": len(earnings)}
         except Exception as e:
             logger.warning(f"Earnings enricher failed (non-fatal): {e}")
+            enricher_status["earnings"] = {"ok": False, "error": str(e)[:100]}
 
     # ── Options Flow ────────────────────────────────────────────────────────
     if include_options and symbols:
@@ -106,8 +113,10 @@ def get_enriched_context(
             bullish = [s for s, d in flow.items() if d.get("flow_signal") == "bullish_flow"]
             if bullish:
                 logger.info(f"Options enricher: bullish flow in {bullish}")
+            enricher_status["options_flow"] = {"ok": True, "symbols": len(flow)}
         except Exception as e:
             logger.warning(f"Options enricher failed (non-fatal): {e}")
+            enricher_status["options_flow"] = {"ok": False, "error": str(e)[:100]}
 
     # ── CME FedWatch ─────────────────────────────────────────────────────────
     if include_fedwatch:
@@ -120,8 +129,10 @@ def get_enriched_context(
             if block:
                 blocks.append(block)
             logger.info(f"FedWatch enricher: regime={fw.get('regime')} source={fw.get('source')}")
+            enricher_status["fedwatch"] = {"ok": True, "regime": fw.get("regime"), "source": fw.get("source")}
         except Exception as e:
             logger.warning(f"FedWatch enricher failed (non-fatal): {e}")
+            enricher_status["fedwatch"] = {"ok": False, "error": str(e)[:100]}
 
     # ── Extended EDGAR (13D activists + 8-K material events) ────────────────
     if include_edgar_extended and symbols:
@@ -137,8 +148,10 @@ def get_enriched_context(
             activists = [s for s, d in context["activist_signals"].items() if d.get("signal") in ("known_activist", "activist_accumulation")]
             if activists:
                 logger.info(f"EDGAR activist enricher: signals for {activists}")
+            enricher_status["edgar_extended"] = {"ok": True, "symbols": len(context["activist_signals"])}
         except Exception as e:
             logger.warning(f"Extended EDGAR enricher failed (non-fatal): {e}")
+            enricher_status["edgar_extended"] = {"ok": False, "error": str(e)[:100]}
 
     # ── Performance Intelligence (self-calibrating feedback loop) ───────────
     try:
@@ -148,8 +161,10 @@ def get_enriched_context(
         if perf_block:
             blocks.append(perf_block)
             logger.info("Performance intelligence block injected into Claude context")
+        enricher_status["performance_intelligence"] = {"ok": True, "has_data": bool(perf_block)}
     except Exception as e:
         logger.warning(f"Performance intelligence enricher failed (non-fatal): {e}")
+        enricher_status["performance_intelligence"] = {"ok": False, "error": str(e)[:100]}
 
     context["combined_block"] = "\n\n".join(blocks)
     return context

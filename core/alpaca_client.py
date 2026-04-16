@@ -3,6 +3,7 @@ Alpaca API Client - Live and paper trading via Alpaca Markets
 """
 
 import logging
+import time
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -94,22 +95,42 @@ class AlpacaClient:
             "Content-Type": "application/json",
         }
 
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        """HTTP request with exponential backoff for transient SSL/network errors."""
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = requests.request(method, url, headers=self.headers, timeout=15, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                last_exc = e
+                if attempt < 2:
+                    time.sleep(2 ** attempt)  # 1s, 2s
+                    logger.warning(f"Alpaca {method} {url} retry {attempt + 1}/3 after: {e}")
+            except requests.exceptions.HTTPError:
+                raise
+        raise last_exc
+
     def _get(self, path: str, params: Dict = None) -> Dict:
         url = f"{self.base_url}{path}"
-        resp = requests.get(url, headers=self.headers, params=params, timeout=10)
-        resp.raise_for_status()
+        resp = self._request_with_retry("GET", url, params=params)
         return resp.json()
 
     def _post(self, path: str, body: Dict) -> Dict:
         url = f"{self.base_url}{path}"
-        resp = requests.post(url, headers=self.headers, json=body, timeout=10)
-        resp.raise_for_status()
+        resp = self._request_with_retry("POST", url, json=body)
         return resp.json()
 
     def _delete(self, path: str) -> bool:
         url = f"{self.base_url}{path}"
-        resp = requests.delete(url, headers=self.headers, timeout=10)
-        return resp.status_code in (200, 204)
+        try:
+            resp = self._request_with_retry("DELETE", url)
+            return resp.status_code in (200, 204)
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code in (200, 204):
+                return True
+            return False
 
     # ─── Account ────────────────────────────────────────────────────────────
 
@@ -305,13 +326,16 @@ class AlpacaClient:
 
     # ─── Market Data ────────────────────────────────────────────────────────
 
+    def _data_get(self, path: str, params: Dict = None) -> Dict:
+        """GET against the data API endpoint with retry."""
+        url = f"{DATA_BASE_URL}{path}"
+        resp = self._request_with_retry("GET", url, params=params)
+        return resp.json()
+
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
         """Get latest bid/ask quote"""
         try:
-            url = f"{DATA_BASE_URL}/stocks/{symbol}/quotes/latest"
-            resp = requests.get(url, headers=self.headers, timeout=10)
-            resp.raise_for_status()
-            return resp.json().get("quote")
+            return self._data_get(f"/stocks/{symbol}/quotes/latest").get("quote")
         except Exception as e:
             logger.error(f"Error getting quote for {symbol}: {e}")
             return None
@@ -319,10 +343,7 @@ class AlpacaClient:
     def get_latest_trade(self, symbol: str) -> Optional[Dict]:
         """Get latest trade price"""
         try:
-            url = f"{DATA_BASE_URL}/stocks/{symbol}/trades/latest"
-            resp = requests.get(url, headers=self.headers, timeout=10)
-            resp.raise_for_status()
-            return resp.json().get("trade")
+            return self._data_get(f"/stocks/{symbol}/trades/latest").get("trade")
         except Exception as e:
             logger.error(f"Error getting trade for {symbol}: {e}")
             return None
@@ -335,11 +356,7 @@ class AlpacaClient:
     ) -> List[Dict]:
         """Get OHLCV bars"""
         try:
-            url = f"{DATA_BASE_URL}/stocks/{symbol}/bars"
-            params = {"timeframe": timeframe, "limit": limit}
-            resp = requests.get(url, headers=self.headers, params=params, timeout=10)
-            resp.raise_for_status()
-            return resp.json().get("bars", [])
+            return self._data_get(f"/stocks/{symbol}/bars", params={"timeframe": timeframe, "limit": limit}).get("bars", [])
         except Exception as e:
             logger.error(f"Error getting bars for {symbol}: {e}")
             return []
