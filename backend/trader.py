@@ -27,7 +27,7 @@ from backend.db import (
     get_performance_summary,
 )
 from core.alpaca_client import AlpacaClient, AlpacaOrderSide, AlpacaTimeInForce
-from core.claude_trader import SYSTEM_PROMPT
+from core.claude_trader import SYSTEM_PROMPT, build_session_feedback_block
 from core.llm_router import run_decision
 from core.validation_agent import validate_decisions, record_validation, BLOCK
 from core.trade_rag import build_portfolio_rag_block
@@ -86,6 +86,14 @@ def get_alpaca() -> AlpacaClient:
 
 # ─── Market data ─────────────────────────────────────────────────────────────
 
+# ETFs don't have earnings calendars — calling .calendar on them triggers yfinance 404 every cycle
+_ETF_SYMBOLS = {
+    "SPY", "QQQ", "IWM", "DIA", "XLK", "XLE", "XLF", "XLV", "XLI",
+    "XLU", "XLP", "XLB", "XLRE", "XLY", "XLC", "GLD", "SLV", "TLT",
+    "HYG", "LQD", "EEM", "EFA", "VTI", "VNQ", "ARKK", "SQQQ", "TQQQ",
+}
+
+
 def fetch_market_data(watchlist: list, alpaca: AlpacaClient) -> Dict[str, Any]:
     import yfinance as yf
     data = {}
@@ -110,15 +118,17 @@ def fetch_market_data(watchlist: list, alpaca: AlpacaClient) -> Dict[str, Any]:
 
             indicators = compute_all(bars)
 
-            try:
-                cal = ticker.calendar
-                next_earnings = None
-                if cal is not None and not cal.empty:
-                    dates = cal.columns.tolist() if hasattr(cal, "columns") else []
-                    if dates:
-                        next_earnings = str(dates[0])
-            except Exception:
-                next_earnings = None
+            # Skip calendar fetch for ETFs — they have no earnings and yfinance returns 404
+            next_earnings = None
+            if symbol not in _ETF_SYMBOLS:
+                try:
+                    cal = ticker.calendar
+                    if cal is not None and not cal.empty:
+                        dates = cal.columns.tolist() if hasattr(cal, "columns") else []
+                        if dates:
+                            next_earnings = str(dates[0])
+                except Exception:
+                    pass
 
             data[symbol] = {
                 **indicators,
@@ -167,13 +177,32 @@ def execute_decision(
     news_sentiment: float = None,
     correlation_score: float = None,
     momentum_score: float = None,
+    days_until_earnings: int = None,
 ) -> Optional[int]:
     """Execute a single Claude decision. Returns trade_id or None."""
-    symbol = d.get("symbol", "").upper()
-    action = d.get("action", "hold").lower()
-    confidence = float(d.get("confidence", 0))
-    reasoning = d.get("reasoning", "")
-    position_size_pct = float(d.get("position_size_pct", float(cfg["max_position_pct"])))
+    def _safe_float(value, default):
+        # The LLM occasionally returns explicit None for numeric fields.
+        # float(None) raises and silently kills the trade — coerce to default.
+        try:
+            return float(value if value is not None else default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    symbol = (d.get("symbol") or "").upper()
+    action = (d.get("action") or "hold").lower()
+    confidence = _safe_float(d.get("confidence"), 0)
+    reasoning = d.get("reasoning") or ""
+    position_size_pct = _safe_float(d.get("position_size_pct"), cfg["max_position_pct"])
+    reduce_pct = _safe_float(d.get("reduce_pct"), 1.0)  # fraction of position to sell
+
+    # Catalyst risk assessment — tiered framework for stops and sizing
+    try:
+        from core.catalyst_risk import get_catalyst_risk
+        catalyst = get_catalyst_risk(symbol, days_until_earnings=days_until_earnings)
+    except Exception as _ce:
+        logger.warning(f"Catalyst risk check failed for {symbol}: {_ce} — defaulting to clear")
+        from core.catalyst_risk import _clear
+        catalyst = _clear()
 
     if action == "hold" or not symbol:
         return None
@@ -222,21 +251,19 @@ def execute_decision(
                 record_error("correlation_blocked", f"{symbol}: {corr_check['reason']}", cycle_id)
                 return None
 
-        # Economic Calendar: check risk window before any buy
+        # Catalyst risk — tiered framework (earnings, FOMC, CPI, NFP, ex-div, rebalance)
         calendar_risk_flag = None
-        try:
-            cal_risk = is_high_risk_window(symbol)
-            if cal_risk["block_entry"]:
-                logger.info(f"Calendar block: {symbol} — {cal_risk['reason']}")
-                record_error("calendar_blocked", f"{symbol}: {cal_risk['reason']}", cycle_id)
-                return None
-            elif cal_risk["reduce_size_pct"] < 1.0:
-                # Reduce position size if near a macro event
-                position_size_pct = position_size_pct * cal_risk["reduce_size_pct"]
-                calendar_risk_flag = cal_risk["reason"]
-                logger.info(f"Calendar: reduced size for {symbol} ({cal_risk['reduce_size_pct']*100:.0f}%) — {cal_risk['reason']}")
-        except Exception as e:
-            logger.debug(f"Calendar risk check failed for {symbol}: {e}")
+        if catalyst.block_new_entry:
+            logger.info(f"Catalyst block [tier {catalyst.tier}]: {symbol} — {catalyst.primary_reason}")
+            record_error("calendar_blocked", f"{symbol}: {catalyst.primary_reason}", cycle_id)
+            return None
+        if catalyst.position_size_multiplier < 1.0:
+            position_size_pct = position_size_pct * catalyst.position_size_multiplier
+            calendar_risk_flag = catalyst.primary_reason
+            logger.info(
+                f"Catalyst size reduction [tier {catalyst.tier}]: {symbol} "
+                f"×{catalyst.position_size_multiplier:.1f} — {catalyst.primary_reason}"
+            )
 
         if not alpaca.paper:
             day_trades = count_day_trades_today()
@@ -263,8 +290,11 @@ def execute_decision(
             )
             return None
 
-        # Size the position: 8% of portfolio, but capped to available cash (no margin)
-        capped_pct = min(position_size_pct, max_pos_pct)
+        # Hard concentration cap: no single position may exceed 25% of portfolio
+        # This is the primary risk control per quant industry research — position sizing
+        # beats stop placement as the core risk lever.
+        MAX_SINGLE_POSITION_PCT = 0.25
+        capped_pct = min(position_size_pct, max_pos_pct, MAX_SINGLE_POSITION_PCT)
         max_value = min(
             account.portfolio_value * capped_pct,  # sizing rule
             available_cash * 0.95,                  # cash constraint — never go negative
@@ -367,22 +397,42 @@ def execute_decision(
 
         update_trade_links(trade_id, order_group_id=group_id, position_lifecycle_id=pos_id)
 
-        # Step 2: Place trailing stop order (placed immediately after entry)
-        # Reconciler will also monitor SMA50 exit condition as a second layer
-        try:
-            ts_order = alpaca.place_trailing_stop_order(
-                symbol=symbol, qty=qty, trail_percent=trail_percent
+        # Step 2: Trailing stop — tiered catalyst framework
+        # Tier 0 (clear):          place stop at ATR-based trail_percent
+        # Tier 1 (widen):          place stop at trail_percent * widen_multiplier
+        # Tier 2 (suspend):        skip stop; AI + SMA50 monitoring as backup
+        # Tier 3 (reduce+suspend): skip stop (entry was already blocked or heavily sized down)
+        if catalyst.suspend_trailing_stop:
+            logger.info(
+                f"Trailing stop suspended [tier {catalyst.tier}] for {symbol} — "
+                f"{catalyst.primary_reason}; SMA50 + AI monitoring active"
             )
-            update_position_trailing_stop(pos_id, ts_order.id, trail_percent)
-            record_order(
-                alpaca_order_id=ts_order.id, symbol=symbol, side="sell",
-                order_type="trailing_stop", qty=qty, status=ts_order.status,
-                order_class="simple", time_in_force="gtc",
-                trade_id=trade_id, order_group_id=group_id,
-            )
-            logger.info(f"Trailing stop placed: {symbol} trail={trail_percent}% order={ts_order.id}")
-        except Exception as e:
-            logger.warning(f"Could not place trailing stop for {symbol}: {e} — reconciler will monitor")
+        else:
+            effective_trail = round(trail_percent * catalyst.widen_stop_multiplier, 2)
+            if catalyst.widen_stop_multiplier > 1.0:
+                logger.info(
+                    f"Trailing stop widened [tier {catalyst.tier}] for {symbol}: "
+                    f"{trail_percent}% → {effective_trail}% — {catalyst.primary_reason}"
+                )
+            try:
+                ts_order = alpaca.place_trailing_stop_order(
+                    symbol=symbol, qty=qty, trail_percent=effective_trail
+                )
+                update_position_trailing_stop(pos_id, ts_order.id, effective_trail)
+                record_order(
+                    alpaca_order_id=ts_order.id, symbol=symbol, side="sell",
+                    order_type="trailing_stop", qty=qty, status=ts_order.status,
+                    order_class="simple", time_in_force="gtc",
+                    trade_id=trade_id, order_group_id=group_id,
+                )
+                logger.info(f"Trailing stop placed: {symbol} trail={effective_trail}% order={ts_order.id}")
+            except Exception as e:
+                logger.warning(f"Could not place trailing stop for {symbol}: {e} — reconciler will monitor")
+                record_error(
+                    "trailing_stop_failed",
+                    f"{symbol}: {e} — position {pos_id} has no stop, trail={effective_trail}%",
+                    cycle_id,
+                )
 
         increment_ai_decision_executed(ai_decision_id)
         return trade_id
@@ -392,13 +442,17 @@ def execute_decision(
             logger.info(f"Not holding {symbol} — skipping sell")
             return None
 
-        qty = positions[symbol].qty
+        full_qty = int(positions[symbol].qty)
+        reduce_pct_clamped = max(0.0, min(1.0, reduce_pct))
+        qty = max(1, round(full_qty * reduce_pct_clamped))
+        is_partial = qty < full_qty
         order = alpaca.place_market_order(
             symbol=symbol, qty=qty, side=AlpacaOrderSide.SELL
         )
         take_profit = None
         stop_loss = None
-        logger.info(f"SELL {qty} {symbol} @ ~${current_price:.2f} | {confidence:.0%} | {reasoning[:80]}")
+        sell_label = f"PARTIAL SELL ({reduce_pct_clamped:.0%})" if is_partial else "SELL"
+        logger.info(f"{sell_label} {qty}/{full_qty} {symbol} @ ~${current_price:.2f} | {confidence:.0%} | {reasoning[:80]}")
 
         trade_id = record_trade(cycle_id, {
             "symbol": symbol, "action": action, "qty": qty,
@@ -415,9 +469,9 @@ def execute_decision(
             signal_price=current_price, cycle_id=cycle_id, trade_id=trade_id,
         )
 
-        # Close position lifecycle
+        # Close position lifecycle only on full exits
         open_pos = get_open_position_by_symbol(symbol)
-        if open_pos:
+        if open_pos and not is_partial:
             close_position_lifecycle(
                 position_id=open_pos["id"],
                 exit_price=current_price,
@@ -445,6 +499,8 @@ def execute_decision(
                         exit_filled_at=datetime.now().isoformat(),
                         realized_pnl=realized_pnl,
                     )
+        elif open_pos and is_partial:
+            logger.info(f"Partial sell {qty}/{full_qty} {symbol} — position lifecycle remains open")
 
         increment_ai_decision_executed(ai_decision_id)
         return trade_id
@@ -686,9 +742,12 @@ def run_cycle(alpaca: AlpacaClient):
             )
             if vwap_context:
                 logger.info(f"VWAP context: {len(vwap_snaps)} symbols snapped")
+            _enricher_status["vwap"] = {"ok": True, "symbols": len(vwap_snaps)}
         except Exception as e:
             logger.warning(f"Tick/VWAP context failed: {e}")
             vwap_context = ""
+            _enricher_status["vwap"] = {"ok": False, "error": str(e)[:100]}
+            record_error("enricher_vwap_failed", str(e)[:200], cycle_id)
 
         # Options Flow Agent
         options_context = ""
@@ -703,9 +762,12 @@ def run_cycle(alpaca: AlpacaClient):
             actionable = sum(1 for d in flow_data.values() if d.get("options_signal") not in ("neutral", "no_data"))
             if options_context:
                 logger.info(f"Options flow: {actionable} actionable signals out of {len(flow_data)} symbols")
+            _enricher_status["options_flow_agent"] = {"ok": True, "symbols": len(flow_data)}
         except Exception as e:
             logger.warning(f"Options flow failed: {e}")
             options_context = ""
+            _enricher_status["options_flow_agent"] = {"ok": False, "error": str(e)[:100]}
+            record_error("enricher_options_failed", str(e)[:200], cycle_id)
 
         # EDGAR Insider Signal Agent
         insider_context = ""
@@ -720,9 +782,12 @@ def run_cycle(alpaca: AlpacaClient):
             strong = sum(1 for d in insider_data.values() if d.get("insider_signal") in ("strong_buy", "buy"))
             if insider_context:
                 logger.info(f"Insider signals: {strong} buy signals out of {len(insider_data)} symbols")
+            _enricher_status["insider_agent"] = {"ok": True, "symbols": len(insider_data)}
         except Exception as e:
             logger.warning(f"EDGAR insider signals failed: {e}")
             insider_context = ""
+            _enricher_status["insider_agent"] = {"ok": False, "error": str(e)[:100]}
+            record_error("enricher_insider_failed", str(e)[:200], cycle_id)
 
         # Signal Enricher — macro (FRED), earnings calendar, options flow (Barchart)
         enricher_context = ""
@@ -737,7 +802,8 @@ def run_cycle(alpaca: AlpacaClient):
                 include_insider=False,  # insider already handled above by edgar_agent
             )
             enricher_context = enriched.get("combined_block", "")
-            _enricher_status = enriched.get("enricher_status", {})
+            # Merge signal_enricher's per-sub-enricher status into our overall status dict
+            _enricher_status.update(enriched.get("enricher_status", {}))
             if enricher_context:
                 logger.info(
                     f"Signal enricher: macro VIX={enriched.get('macro', {}).get('vix')} "
@@ -748,7 +814,27 @@ def run_cycle(alpaca: AlpacaClient):
         except Exception as e:
             logger.warning(f"Signal enricher failed (non-fatal): {e}")
             enricher_context = ""
-            _enricher_status = {"signal_enricher": {"ok": False, "error": str(e)[:100]}}
+            _enricher_status["signal_enricher"] = {"ok": False, "error": str(e)[:100]}
+            record_error("enricher_signal_failed", str(e)[:200], cycle_id)
+
+        # Session feedback — tell Claude which BUY decisions it already proposed today
+        # that didn't execute (prevents TGT-style repeat loops costing $0.14/cycle each)
+        session_feedback_context = ""
+        try:
+            MAX_DEPLOY_PCT = 0.80
+            long_market_value = float(getattr(account, "long_market_value", 0) or 0)
+            deployed_pct = long_market_value / float(account.portfolio_value) if account.portfolio_value else 0
+            session_feedback_context = build_session_feedback_block(
+                deployed_pct=deployed_pct,
+                max_deploy_pct=MAX_DEPLOY_PCT,
+            )
+            if session_feedback_context:
+                logger.info(
+                    f"Session feedback: portfolio at {deployed_pct:.0%} deployed — "
+                    f"injecting repeat-proposal warning into prompt"
+                )
+        except Exception as e:
+            logger.warning(f"Session feedback block failed (non-fatal): {e}")
 
         # RAG — inject trade history context before LLM call
         rag_context = ""
@@ -763,8 +849,8 @@ def run_cycle(alpaca: AlpacaClient):
         except Exception as e:
             logger.warning(f"RAG block failed (non-fatal): {e}")
 
-        # Combine VWAP + Options + Insider + Enricher + RAG into portfolio_risk_context
-        extra_context = "\n\n".join(filter(None, [vwap_context, options_context, insider_context, enricher_context, rag_context]))
+        # Combine VWAP + Options + Insider + Enricher + RAG + Session feedback into portfolio_risk_context
+        extra_context = "\n\n".join(filter(None, [session_feedback_context, vwap_context, options_context, insider_context, enricher_context, rag_context]))
         if extra_context:
             portfolio_risk_context = (
                 (portfolio_risk_context + "\n\n" + extra_context).strip()
@@ -891,6 +977,16 @@ def run_cycle(alpaca: AlpacaClient):
                     logger.info(f"Market closed — suppressing BUY for {sym} (would queue and over-concentrate)")
                     continue
 
+                # Compute days_until_earnings from market_data for trailing stop decision
+                sym_days_to_earnings = None
+                try:
+                    ne = market_data.get(sym, {}).get("next_earnings")
+                    if ne:
+                        from datetime import date as _date
+                        sym_days_to_earnings = (_date.fromisoformat(str(ne)[:10]) - _date.today()).days
+                except Exception:
+                    pass
+
                 execute_decision(
                     d, account, positions, cfg, alpaca, cycle_id, ai_decision_id, market_data,
                     corr_matrix=corr_matrix,
@@ -899,6 +995,7 @@ def run_cycle(alpaca: AlpacaClient):
                     news_sentiment=sym_news,
                     correlation_score=sym_corr,
                     momentum_score=sym_momentum,
+                    days_until_earnings=sym_days_to_earnings,
                 )
             except Exception as e:
                 logger.error(f"Execution error {d.get('symbol')}: {e}")
@@ -949,6 +1046,11 @@ def main():
         logger.warning(f"Could not init extended EDGAR tables (non-fatal): {_e}")
     set_config("trader_running", "true")
 
+    # Write PID file so api.py _is_trader_running() can detect this process
+    _pid_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trader.pid")
+    with open(_pid_file, "w") as _f:
+        _f.write(str(os.getpid()))
+
     alpaca = get_alpaca()
     logger.info(f"Trader daemon started — {'PAPER' if alpaca.paper else 'LIVE'} mode")
 
@@ -992,6 +1094,10 @@ def main():
             time.sleep(1)
 
     set_config("trader_running", "false")
+    try:
+        os.remove(_pid_file)
+    except OSError:
+        pass
     logger.info("Trader daemon stopped")
 
 
