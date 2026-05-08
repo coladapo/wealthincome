@@ -438,5 +438,6 @@ def _setup_logging():
 
 if __name__ == "__main__":
     import uvicorn
+    from core.wi_config import config as _wi_config
     _setup_logging()
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=_wi_config.api_port, log_level="info")

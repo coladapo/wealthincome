@@ -10,9 +10,11 @@ import json
 import requests
 from datetime import datetime
 
-API_BASE = "http://localhost:8000"
+from core.wi_config import config
+
+API_BASE = config.api_base_url
 API_HOST = "127.0.0.1"
-API_PORT = 8000
+API_PORT = config.api_port
 
 
 def _port_is_listening(host: str, port: int) -> bool:

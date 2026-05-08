@@ -12,14 +12,18 @@
 
 set -euo pipefail
 
-PROJECT="/Users/wivak/puo-jects/____active/wealthincome-unified"
-LOGDIR="$PROJECT/logs"
+# Single source of truth — every port, path, and timeout lives in wealthincome.toml.
+# shellcheck source=/Users/wivak/puo-jects/____active/wealthincome-unified/scripts/_config.sh
+source "$(dirname "$0")/_config.sh"
+
+PROJECT="$WI_PROJECT"
+LOGDIR="$WI_LOG_DIR"
 mkdir -p "$LOGDIR"
 
-API_PORT=8000
-DASH_PORT=8501
-API_HEALTH_URL="http://127.0.0.1:${API_PORT}/health"
-DASH_URL="http://127.0.0.1:${DASH_PORT}"
+API_PORT="$WI_API_PORT"
+DASH_PORT="$WI_DASH_PORT"
+API_HEALTH_URL="$WI_API_HEALTH_URL"
+DASH_URL="$WI_DASH_URL"
 
 PLIST_API="$HOME/Library/LaunchAgents/com.wealthincome.api.plist"
 TRADER_PID_FILE="$PROJECT/trader.pid"
