@@ -374,9 +374,59 @@ def execute_decision(
         # Extract signal attribution fields
         macd_data = sym_data.get("macd") or {}
         volume_data = sym_data.get("volume") or {}
-        signal_summary = sym_data.get("signal_summary")
-        entry_signals_json = json.dumps(signal_summary) if signal_summary else None
+        signal_summary = sym_data.get("signal_summary") or {}
         volume_ratio = volume_data.get("ratio") if isinstance(volume_data, dict) else None
+
+        # Scout-quality flags — keys must match SCOUT_SIGNAL_FLAGS in
+        # core/scout_quality.py. Booleans only; missing data → False.
+        try:
+            vwap_above = bool(sym_data.get("vwap") and sym_data.get("price") and
+                              sym_data["price"] > sym_data["vwap"])
+        except Exception:
+            vwap_above = False
+
+        options_flow_block = sym_data.get("options_flow") or {}
+        unusual_call_volume = bool(
+            isinstance(options_flow_block, dict)
+            and options_flow_block.get("call_put_ratio") is not None
+            and options_flow_block.get("call_put_ratio") > 1.5
+        )
+
+        insider_block = sym_data.get("insider") or {}
+        insider_cluster_buy = bool(
+            isinstance(insider_block, dict)
+            and (insider_block.get("cluster_buy") or insider_block.get("buys_30d", 0) >= 2)
+        )
+
+        earnings_block = sym_data.get("earnings") or {}
+        days_to_er = (
+            earnings_block.get("days_until") if isinstance(earnings_block, dict) else None
+        )
+        earnings_within_7d = bool(days_to_er is not None and 0 <= days_to_er <= 7)
+
+        rag_block = sym_data.get("rag") or {}
+        similar_winrate = (
+            rag_block.get("similar_trades_winrate") if isinstance(rag_block, dict) else None
+        )
+        similar_trades_winrate_high = bool(
+            similar_winrate is not None and similar_winrate >= 0.6
+        )
+
+        macro_block = sym_data.get("macro") or {}
+        macro_supportive = bool(
+            isinstance(macro_block, dict)
+            and (macro_block.get("regime") in ("bull", "supportive") or macro_block.get("score", 0) > 0.5)
+        )
+
+        signal_summary.update({
+            "vwap_above": vwap_above,
+            "unusual_call_volume": unusual_call_volume,
+            "insider_cluster_buy": insider_cluster_buy,
+            "earnings_within_7d": earnings_within_7d,
+            "similar_trades_winrate_high": similar_trades_winrate_high,
+            "macro_supportive": macro_supportive,
+        })
+        entry_signals_json = json.dumps(signal_summary)
 
         pos_id = open_position_lifecycle(
             symbol=symbol, entry_price=current_price,
