@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend-api",
+      "runtimeExecutable": "/Users/wivak/puo-jects/____active/wealthincome-unified/venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "backend.api:app", "--host", "0.0.0.0", "--port", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "dashboard-preview",
+      "runtimeExecutable": "/Users/wivak/puo-jects/____active/wealthincome-unified/venv/bin/streamlit",
+      "runtimeArgs": ["run", "app.py", "--server.port", "8502", "--server.headless", "true"],
+      "port": 8502
+    },
+    {
+      "name": "trader",
+      "runtimeExecutable": "/Users/wivak/puo-jects/____active/wealthincome-unified/venv/bin/python",
+      "runtimeArgs": ["-m", "backend.trader"],
+      "port": null
+    }
+  ]
+}

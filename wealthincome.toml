@@ -1,0 +1,28 @@
+# WealthIncome — single source of truth for ports, paths, and timing.
+# Read by: launch.sh, shutdown.sh, backend/api.py, page_modules/autonomous.py,
+# .claude/launch.json (via routine), and any future tool.
+#
+# Change a value here once and everything updates. Do NOT hardcode these
+# values anywhere else in the codebase.
+
+[ports]
+api              = 8000   # FastAPI backend — always-on, launchd-managed
+dashboard        = 8501   # User-facing Streamlit dashboard
+dashboard_preview = 8502  # Side-panel preview inside Claude Code (separate so they don't collide)
+
+[paths]
+project = "/Users/wivak/puo-jects/____active/wealthincome-unified"
+log_dir = "logs"
+data_dir = "data"
+db      = "data/wealthincome.db"
+
+[health]
+api_path        = "/health"
+api_timeout_sec = 3
+retry_count     = 5
+retry_delay_sec = 2
+
+[scheduler]
+# These are documentation only — actual schedule lives in the local Claude Code routines.
+morning_start_pt = "06:25"  # weekdays
+evening_stop_pt  = "13:15"  # weekdays
