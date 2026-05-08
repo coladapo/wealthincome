@@ -12,16 +12,63 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("WEALTHINCOME_DB", "data/wealthincome.db")
+import time
+import logging as _logging
+
+_BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.environ.get("WEALTHINCOME_DB", os.path.join(_BASE, "data", "wealthincome.db"))
+
+# How long SQLite itself waits for a lock before raising. WAL plus a generous
+# busy timeout means concurrent reader/writer races resolve transparently.
+_BUSY_TIMEOUT_MS = 10_000  # 10 seconds
+
+# How many times we retry the actual connect() call when the database appears
+# briefly inaccessible (e.g. trader and api racing on startup, fsync window,
+# WAL checkpoint). Each retry doubles the wait, capped at ~2s.
+_CONNECT_RETRIES = 5
+_CONNECT_RETRY_BASE_SEC = 0.1
+
+_log = _logging.getLogger(__name__)
+
+
+def _open_connection() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(
+        DB_PATH,
+        check_same_thread=False,
+        timeout=_BUSY_TIMEOUT_MS / 1000.0,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
 def get_connection() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    last_err: Exception | None = None
+    for attempt in range(_CONNECT_RETRIES):
+        try:
+            return _open_connection()
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            transient = (
+                "unable to open database file" in msg
+                or "database is locked" in msg
+                or "disk i/o error" in msg
+            )
+            if not transient:
+                raise
+            last_err = e
+            wait = min(_CONNECT_RETRY_BASE_SEC * (2 ** attempt), 2.0)
+            _log.warning(
+                "db connect attempt %d/%d failed (%s) — retrying in %.2fs",
+                attempt + 1, _CONNECT_RETRIES, msg, wait,
+            )
+            time.sleep(wait)
+    assert last_err is not None
+    raise last_err
 
 
 @contextmanager
@@ -1361,6 +1408,60 @@ def get_token_usage(days: int = 1) -> Dict:
         d["today_cost_usd"] = round(float(today_row["cost"]), 4)
 
         return d
+
+
+def get_todays_proposed_buys() -> List[Dict]:
+    """
+    Return BUY decisions proposed today that were never executed.
+    Used to tell Claude "you've already proposed these N times today and they didn't execute."
+
+    Returns list of {symbol, count, last_reasoning, last_confidence}
+    sorted by count descending.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT parsed_decisions_json, decisions_made, decisions_executed
+            FROM ai_decisions
+            WHERE decided_at LIKE ?
+              AND decisions_made > 0
+        """, (f"{today}%",)).fetchall()
+
+    symbol_counts: Dict[str, Dict] = {}
+    for row in rows:
+        try:
+            decisions = json.loads(row["parsed_decisions_json"] or "[]")
+        except Exception:
+            continue
+        for d in decisions:
+            action = (d.get("action") or "").lower()
+            symbol = (d.get("symbol") or "").upper()
+            if action != "buy" or not symbol:
+                continue
+            if symbol not in symbol_counts:
+                symbol_counts[symbol] = {
+                    "symbol": symbol,
+                    "count": 0,
+                    "last_reasoning": d.get("reasoning", ""),
+                    "last_confidence": d.get("confidence"),
+                }
+            symbol_counts[symbol]["count"] += 1
+            symbol_counts[symbol]["last_reasoning"] = d.get("reasoning", "")
+            symbol_counts[symbol]["last_confidence"] = d.get("confidence")
+
+    result = sorted(symbol_counts.values(), key=lambda x: x["count"], reverse=True)
+    return result
+
+
+def get_todays_executed_symbols() -> List[str]:
+    """Return symbols where a trade was executed today (buy or sell)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM trades WHERE executed_at LIKE ?",
+            (f"{today}%",)
+        ).fetchall()
+    return [r["symbol"] for r in rows]
 
 
 def get_token_usage_by_agent(days: int = 7) -> List[Dict]:
