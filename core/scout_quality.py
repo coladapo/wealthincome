@@ -58,13 +58,15 @@ class ScoutScore:
 
 
 def _closed_trades() -> list[sqlite3.Row]:
-    # entry_signals_json + realized_pnl_pct both live on position_lifecycle.
+    # All closed trades — entry_signals_json may be null on legacy rows;
+    # the per-scout scorer skips those, but regime/watchlist scorers still use them.
     with db() as conn:
         return conn.execute(
             """
-            SELECT id, symbol, entry_signals_json, realized_pnl_pct AS pnl_pct, closed_at
+            SELECT id, symbol, entry_signals_json, realized_pnl_pct AS pnl_pct,
+                   closed_at, regime_at_entry
             FROM position_lifecycle
-            WHERE closed_at IS NOT NULL AND entry_signals_json IS NOT NULL
+            WHERE closed_at IS NOT NULL
             """
         ).fetchall()
 
@@ -107,9 +109,64 @@ def _score_one(scout: str, json_path: str, trades: list[sqlite3.Row]) -> ScoutSc
     )
 
 
+def _score_regime(trades: list[sqlite3.Row]) -> list[ScoutScore]:
+    # Regime classifier: bucket trades by regime_at_entry and report
+    # win-rate per bucket. Treats "bull" as the fired-bucket and everything
+    # else as not-fired so we can reuse the ScoutScore format.
+    buckets: dict[str, list[float]] = {}
+    for t in trades:
+        regime = (t["regime_at_entry"] or "unknown").lower()
+        pnl = t["pnl_pct"]
+        if pnl is None:
+            continue
+        buckets.setdefault(regime, []).append(pnl)
+
+    out: list[ScoutScore] = []
+    for regime, pnls in buckets.items():
+        winrate = sum(1 for v in pnls if v > 0) / len(pnls) if pnls else 0.0
+        avg = sum(pnls) / len(pnls) if pnls else 0.0
+        # baseline: every other regime
+        other = [v for r, arr in buckets.items() if r != regime for v in arr]
+        other_wr = sum(1 for v in other if v > 0) / len(other) if other else 0.0
+        other_avg = sum(other) / len(other) if other else 0.0
+        out.append(ScoutScore(
+            scout=f"regime:{regime}",
+            fired_count=len(pnls),
+            not_fired_count=len(other),
+            fired_winrate=winrate,
+            not_fired_winrate=other_wr,
+            delta=winrate - other_wr,
+            fired_avg_pnl_pct=avg,
+            not_fired_avg_pnl_pct=other_avg,
+            sample_size_ok=len(pnls) >= 10 and len(other) >= 10,
+        ))
+    return out
+
+
+def _score_watchlist(trades: list[sqlite3.Row]) -> ScoutScore:
+    # Watchlist screener quality = aggregate win-rate of every trade it surfaced.
+    # Every trade in the system passed the screener, so this is the screener's
+    # bottom-line accuracy. No baseline available, so delta is the win-rate itself.
+    pnls = [t["pnl_pct"] for t in trades if t["pnl_pct"] is not None]
+    winrate = sum(1 for v in pnls if v > 0) / len(pnls) if pnls else 0.0
+    avg = sum(pnls) / len(pnls) if pnls else 0.0
+    return ScoutScore(
+        scout="watchlist_screener",
+        fired_count=len(pnls),
+        not_fired_count=0,
+        fired_winrate=winrate,
+        not_fired_winrate=0.0,
+        delta=winrate,
+        fired_avg_pnl_pct=avg,
+        not_fired_avg_pnl_pct=0.0,
+        sample_size_ok=len(pnls) >= 20,
+    )
+
+
 def score_all() -> list[ScoutScore]:
     trades = _closed_trades()
-    return [_score_one(s, p, trades) for s, p in SCOUT_SIGNAL_FLAGS.items()]
+    scout_scores = [_score_one(s, p, trades) for s, p in SCOUT_SIGNAL_FLAGS.items()]
+    return scout_scores + _score_regime(trades) + [_score_watchlist(trades)]
 
 
 def persist_scores(scores: Iterable[ScoutScore]) -> None:
