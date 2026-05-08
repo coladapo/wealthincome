@@ -159,6 +159,9 @@ launch_trader() {
 
 # ── run all ──────────────────────────────────────────────────────────────────
 echo "WealthIncome launch — $(date '+%Y-%m-%d %H:%M:%S')"
+# Keep .claude/launch.json (the desktop preview config) in sync with the
+# truth file silently — the regen is cheap and prevents drift.
+bash "$(dirname "$0")/regen_launch_json.sh" >/dev/null 2>&1 || true
 launch_api
 launch_dashboard
 launch_trader
