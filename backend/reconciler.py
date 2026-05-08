@@ -533,8 +533,9 @@ def reconciler_loop(alpaca, interval_seconds: int = 30):
         except sqlite3.OperationalError as e:
             msg = str(e)
             if "unable to open database file" in msg:
+                from backend import db as _db
                 logger.error(
-                    f"Reconciler DB open failed at {DB_PATH}: {msg}. "
+                    f"Reconciler DB open failed at {_db.DB_PATH}: {msg}. "
                     f"Likely cause: another process holds a stale handle, or a "
                     f"second backend is bound to port 8000. Run `scripts/stop_trader.sh` "
                     f"then `scripts/launch.sh` to clear duplicates. File-missing is rare; "
