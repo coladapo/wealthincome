@@ -530,6 +530,24 @@ def reconciler_loop(alpaca, interval_seconds: int = 30):
     while not _stop_event.is_set():
         try:
             _reconcile_once(alpaca)
+        except sqlite3.OperationalError as e:
+            msg = str(e)
+            if "unable to open database file" in msg:
+                logger.error(
+                    f"Reconciler DB open failed at {DB_PATH}: {msg}. "
+                    f"Likely cause: another process holds a stale handle, or a "
+                    f"second backend is bound to port 8000. Run `scripts/stop_trader.sh` "
+                    f"then `scripts/launch.sh` to clear duplicates. File-missing is rare; "
+                    f"check `ls -la data/wealthincome.db` to confirm.",
+                    exc_info=True,
+                )
+            elif "database is locked" in msg:
+                logger.warning(
+                    f"Reconciler DB locked (writer contention). Will retry next cycle. "
+                    f"If this persists >5 cycles, check for a hung writer in `logs/trader.log`."
+                )
+            else:
+                logger.error(f"Reconciler SQLite error: {msg}", exc_info=True)
         except Exception as e:
             logger.error(f"Reconciler error: {e}", exc_info=True)
         _stop_event.wait(interval_seconds)

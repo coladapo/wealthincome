@@ -3,6 +3,7 @@ Autonomous Trader Page — Read-only dashboard that talks to the backend API.
 All state lives in the backend daemon + SQLite. This page only displays and sends commands.
 """
 
+import socket
 import streamlit as st
 import pandas as pd
 import json
@@ -10,6 +11,16 @@ import requests
 from datetime import datetime
 
 API_BASE = "http://localhost:8000"
+API_HOST = "127.0.0.1"
+API_PORT = 8000
+
+
+def _port_is_listening(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
 
 
 def _api(method: str, path: str, **kwargs):
@@ -19,7 +30,21 @@ def _api(method: str, path: str, **kwargs):
         resp.raise_for_status()
         return resp.json(), None
     except requests.exceptions.ConnectionError:
-        return None, "Backend API not running — start it with: `python -m backend.api`"
+        if _port_is_listening(API_HOST, API_PORT):
+            return None, (
+                "Backend port is taken but not responding — likely a wedged or "
+                "duplicate process. Stop any manual backend, then restart via "
+                "`scripts/launch.sh`. Tail `logs/api.log` for the real cause."
+            )
+        return None, (
+            "Backend API not running. Start it with `scripts/launch.sh` "
+            "(starts backend + dashboard cleanly via launchd)."
+        )
+    except requests.exceptions.ReadTimeout:
+        return None, (
+            "Backend port answered but the API stalled — likely stuck on a slow "
+            "DB query or upstream call. Check `logs/api.log` for the latest trace."
+        )
     except requests.exceptions.HTTPError as e:
         return None, f"API error {e.response.status_code}: {e.response.text[:200]}"
     except Exception as e:
@@ -33,7 +58,11 @@ def render():
     status_data, err = _api("GET", "/status")
     if err:
         st.error(err)
-        st.info("Start the backend: `ALPACA_API_KEY=... ALPACA_SECRET_KEY=... python -m backend.api`")
+        st.info(
+            "Recommended start: `scripts/launch.sh` — handles env, launchd, and "
+            "dashboard wiring. If a manual backend is already bound to port 8000, "
+            "stop it first with `scripts/stop_trader.sh` to clear the port."
+        )
         return
 
     cfg = status_data.get("config", {})
