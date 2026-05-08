@@ -26,45 +26,50 @@ def _port_is_listening(host: str, port: int) -> bool:
 
 
 def _api(method: str, path: str, **kwargs):
-    """Make an API call. Returns (data, error_str)."""
+    """Make an API call. Returns (data, error_severity, error_str).
+
+    error_severity is one of: None, "info", "warn", "error".
+    The dashboard renders each severity level differently so a calm
+    "trader has stopped" doesn't look the same as a real wedge.
+    """
     try:
         resp = requests.request(method, f"{API_BASE}{path}", timeout=10, **kwargs)
         resp.raise_for_status()
-        return resp.json(), None
+        return resp.json(), None, None
     except requests.exceptions.ConnectionError:
         if _port_is_listening(API_HOST, API_PORT):
-            return None, (
-                "Backend port is taken but not responding — likely a wedged or "
-                "duplicate process. Stop any manual backend, then restart via "
-                "`scripts/launch.sh`. Tail `logs/api.log` for the real cause."
+            return None, "warn", (
+                f"Backend port {API_PORT} is taken but not responding. "
+                "If you just ran the shutdown routine, this is normal — the trader "
+                "is paused for the day. Run `scripts/launch.sh` to restart."
             )
-        return None, (
-            "Backend API not running. Start it with `scripts/launch.sh` "
-            "(starts backend + dashboard cleanly via launchd)."
+        return None, "info", (
+            "Trader is not running. Run `scripts/launch.sh` to start it "
+            "(or wait for the morning routine — weekdays at 6:25 AM)."
         )
     except requests.exceptions.ReadTimeout:
-        return None, (
-            "Backend port answered but the API stalled — likely stuck on a slow "
-            "DB query or upstream call. Check `logs/api.log` for the latest trace."
+        return None, "error", (
+            "Backend port answered but the API stalled — likely a slow DB query "
+            "or upstream call. Check `logs/api.log` for the latest trace."
         )
     except requests.exceptions.HTTPError as e:
-        return None, f"API error {e.response.status_code}: {e.response.text[:200]}"
+        return None, "error", f"API error {e.response.status_code}: {e.response.text[:200]}"
     except Exception as e:
-        return None, str(e)
+        return None, "error", str(e)
 
 
 def render():
     st.title("Autonomous Trader")
 
     # ─── API connection check ────────────────────────────────────────────────
-    status_data, err = _api("GET", "/status")
+    status_data, severity, err = _api("GET", "/status")
     if err:
-        st.error(err)
-        st.info(
-            "Recommended start: `scripts/launch.sh` — handles env, launchd, and "
-            "dashboard wiring. If a manual backend is already bound to port 8000, "
-            "stop it first with `scripts/stop_trader.sh` to clear the port."
-        )
+        if severity == "info":
+            st.info(err)
+        elif severity == "warn":
+            st.warning(err)
+        else:
+            st.error(err)
         return
 
     cfg = status_data.get("config", {})
