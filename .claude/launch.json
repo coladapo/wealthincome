@@ -1,4 +1,5 @@
 {
+  "_comment": "GENERATED from wealthincome.toml by scripts/regen_launch_json.sh — do not edit by hand. Run that script after changing the config.",
   "version": "0.0.1",
   "configurations": [
     {
