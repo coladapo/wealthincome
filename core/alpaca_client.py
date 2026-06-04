@@ -16,6 +16,16 @@ PAPER_BASE_URL = "https://paper-api.alpaca.markets/v2"
 LIVE_BASE_URL = "https://api.alpaca.markets/v2"
 DATA_BASE_URL = "https://data.alpaca.markets/v2"
 
+# Hard concentration cap for manual order paths (dashboard form + /order endpoint).
+# Mirrors RiskConfig.max_position_pct (0.08) in the autonomous trader so a manual
+# buy can never exceed ~8% of portfolio value in a single name. See bug history:
+# the 2026-04-15 CAT trade put ~45% of the account into one position.
+MAX_SINGLE_POSITION_PCT = 0.08
+
+
+class ConcentrationCapError(Exception):
+    """Raised when a buy order would push a single position past the concentration cap."""
+
 
 class AlpacaOrderSide(Enum):
     BUY = "buy"
@@ -202,13 +212,60 @@ class AlpacaClient:
 
     # ─── Orders ─────────────────────────────────────────────────────────────
 
+    def _enforce_concentration_cap(self, symbol: str, qty: float, side: AlpacaOrderSide,
+                                   price: Optional[float] = None) -> None:
+        """Block a BUY whose resulting position would exceed MAX_SINGLE_POSITION_PCT
+        of portfolio value. Sells are never capped. Raises ConcentrationCapError.
+
+        Counts existing exposure to the same symbol so repeated small buys can't
+        stack past the cap. Fails closed: if price or account can't be read, the
+        order is refused rather than waved through."""
+        if side != AlpacaOrderSide.BUY:
+            return
+
+        if price is None:
+            price = self.get_current_price(symbol)
+        if not price or price <= 0:
+            raise ConcentrationCapError(
+                f"Cannot price-check {symbol} before order — refusing buy (fail-closed)."
+            )
+
+        account = self.get_account()
+        portfolio_value = account.portfolio_value
+        if not portfolio_value or portfolio_value <= 0:
+            raise ConcentrationCapError(
+                "Cannot read portfolio value — refusing buy (fail-closed)."
+            )
+
+        existing_value = 0.0
+        existing = self.get_position(symbol)
+        if existing is not None:
+            existing_value = abs(float(getattr(existing, "market_value", 0) or 0))
+
+        new_value = qty * price
+        resulting_pct = (existing_value + new_value) / portfolio_value
+        if resulting_pct > MAX_SINGLE_POSITION_PCT:
+            max_dollars = portfolio_value * MAX_SINGLE_POSITION_PCT
+            raise ConcentrationCapError(
+                f"Order blocked: {symbol} would be {resulting_pct * 100:.1f}% of portfolio "
+                f"(cap {MAX_SINGLE_POSITION_PCT * 100:.0f}%, max ${max_dollars:,.0f}). "
+                f"Existing ${existing_value:,.0f} + new ${new_value:,.0f} on "
+                f"${portfolio_value:,.0f} portfolio."
+            )
+
     def place_market_order(
         self,
         symbol: str,
         qty: float,
         side: AlpacaOrderSide,
         time_in_force: AlpacaTimeInForce = AlpacaTimeInForce.DAY,
+        enforce_cap: bool = True,
     ) -> AlpacaOrder:
+        # enforce_cap defaults True so manual paths (dashboard form, /order endpoint)
+        # are protected automatically. The autonomous traders do their own sizing
+        # against their own (larger) cap and pass enforce_cap=False.
+        if enforce_cap:
+            self._enforce_concentration_cap(symbol, qty, side)
         body = {
             "symbol": symbol,
             "qty": str(qty),
@@ -226,7 +283,10 @@ class AlpacaClient:
         side: AlpacaOrderSide,
         limit_price: float,
         time_in_force: AlpacaTimeInForce = AlpacaTimeInForce.DAY,
+        enforce_cap: bool = True,
     ) -> AlpacaOrder:
+        if enforce_cap:
+            self._enforce_concentration_cap(symbol, qty, side, price=limit_price)
         body = {
             "symbol": symbol,
             "qty": str(qty),

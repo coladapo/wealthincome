@@ -325,6 +325,7 @@ def execute_decision(
                 symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
                 limit_price=limit_price,
                 time_in_force=AlpacaTimeInForce.IOC,
+                enforce_cap=False,  # trader sizes against its own cap (MAX_SINGLE_POSITION_PCT in trader.py)
             )
             logger.info(
                 f"BUY {qty} {symbol} limit=${limit_price:.2f} (signal=${current_price:.2f} +0.1%) IOC | "
@@ -332,7 +333,7 @@ def execute_decision(
             )
         except Exception as e:
             logger.warning(f"Limit order failed for {symbol}: {e} — falling back to market")
-            order = alpaca.place_market_order(symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY)
+            order = alpaca.place_market_order(symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY, enforce_cap=False)
             order_type_used = "market"
             logger.info(
                 f"BUY {qty} {symbol} MARKET @ ~${current_price:.2f} | "
