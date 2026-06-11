@@ -304,7 +304,15 @@ def equity_curve(days: int = 90):
 
 @app.get("/performance")
 def performance(days: int = 252):
-    return compute_risk_metrics(days=days)
+    m = compute_risk_metrics(days=days)
+    if isinstance(m, dict):
+        if "sharpe" in m and "sharpe_ratio" not in m:
+            m["sharpe_ratio"] = m["sharpe"]
+        if "total_closed_positions" in m and "total_trades" not in m:
+            m["total_trades"] = m["total_closed_positions"]
+        if "annualized_return_pct" in m and "total_return_pct" not in m:
+            m["total_return_pct"] = m["annualized_return_pct"]
+    return m
 
 
 @app.get("/pnl/daily")
@@ -408,6 +416,14 @@ def order_groups(limit: int = 50):
 @app.get("/decisions")
 def decisions(limit: int = 20, cycle_id: int = None):
     return {"decisions": get_ai_decisions(limit=limit, cycle_id=cycle_id)}
+
+
+# ─── Performance scorecard (measurement layer) ───────────────────────────────
+
+@app.get("/scorecard")
+def scorecard(days: int = None):
+    from core.scorecard import compute_scorecard
+    return compute_scorecard(days=days)
 
 
 @app.get("/decisions/{decision_id}")

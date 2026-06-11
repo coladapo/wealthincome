@@ -61,6 +61,14 @@ def _reconcile_once(alpaca):
         except Exception as e:
             logger.warning(f"Failed to reconcile order {order_row['alpaca_order_id']}: {e}")
 
+    # ── 1b. Sync trades rows from the orders table (status / fill / slippage) ─
+    # The orders table is the fill-truth; trades rows historically went stale
+    # (stuck "pending_new") because nothing propagated status back. Idempotent.
+    try:
+        _sync_trades_from_orders(DB_PATH)
+    except Exception as e:
+        logger.warning(f"trades←orders sync failed: {e}")
+
     # ── 2. Resolve bracket order groups ──────────────────────────────────────
     open_groups = get_open_order_groups()
     for group in open_groups:
@@ -213,6 +221,46 @@ def _reconcile_once(alpaca):
         backfill_post_exit_prices()
     except Exception as e:
         logger.debug(f"Post-exit backfill error: {e}")
+
+
+def _sync_trades_from_orders(db_path: str):
+    """Propagate order status, fill price, and slippage from orders → trades.
+
+    The orders table is kept current by step 1; trades is what the dashboard,
+    /trades endpoint, and analytics read. One idempotent pass per reconcile.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    cur = conn.execute(
+        """
+        UPDATE trades SET
+            order_status = (SELECT o.status FROM orders o
+                            WHERE o.alpaca_order_id = trades.order_id),
+            fill_price = COALESCE(
+                (SELECT o.filled_avg_price FROM orders o
+                 WHERE o.alpaca_order_id = trades.order_id),
+                fill_price),
+            slippage_pct = CASE
+                WHEN signal_price > 0 AND (SELECT o.filled_avg_price FROM orders o
+                                           WHERE o.alpaca_order_id = trades.order_id) IS NOT NULL
+                THEN ROUND(((SELECT o.filled_avg_price FROM orders o
+                             WHERE o.alpaca_order_id = trades.order_id)
+                            - signal_price) / signal_price * 100, 4)
+                ELSE slippage_pct
+            END
+        WHERE EXISTS (
+            SELECT 1 FROM orders o
+            WHERE o.alpaca_order_id = trades.order_id
+              AND (o.status IS NOT trades.order_status
+                   OR (o.filled_avg_price IS NOT NULL AND trades.fill_price IS NULL))
+        )
+        """
+    )
+    if cur.rowcount:
+        logger.info(f"trades←orders sync: updated {cur.rowcount} trade rows")
+    conn.commit()
+    conn.close()
 
 
 def _backfill_entry_price(symbol: str, fill_price: float, filled_qty: float, db_path: str):

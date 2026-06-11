@@ -118,7 +118,13 @@ class AlpacaClient:
                 if attempt < 2:
                     time.sleep(2 ** attempt)  # 1s, 2s
                     logger.warning(f"Alpaca {method} {url} retry {attempt + 1}/3 after: {e}")
-            except requests.exceptions.HTTPError:
+            except requests.exceptions.HTTPError as e:
+                # Surface Alpaca's rejection reason (e.g. insufficient qty,
+                # wash trade) — the status line alone is undiagnosable.
+                body = ""
+                if e.response is not None:
+                    body = e.response.text[:300]
+                logger.error(f"Alpaca {method} {url} → HTTP {e.response.status_code if e.response is not None else '?'}: {body}")
                 raise
         raise last_exc
 

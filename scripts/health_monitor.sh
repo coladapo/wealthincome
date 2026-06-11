@@ -24,6 +24,18 @@ mkdir -p "$WI_LOG_DIR"
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "$(ts) [$1] $2" >> "$HEALTH_LOG"; }
 
+# Push critical events to the #wealthincom-trader Slack channel.
+# Fire-and-forget: alerting must never block or fail the monitor itself.
+WEBHOOK_FILE="$HOME/.claude/secrets/wealthincome-slack-webhook"
+alert() {
+    [ -f "$WEBHOOK_FILE" ] || return 0
+    local url text
+    url=$(cat "$WEBHOOK_FILE")
+    text="$1"
+    curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
+        --data "{\"text\": \"$text\"}" "$url" >/dev/null 2>&1 || true
+}
+
 is_healthy_url() {
     local code
     code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 3 "$1" 2>/dev/null || echo "000")
@@ -85,8 +97,10 @@ if [ "$RECOVER_NEEDED" -eq 1 ]; then
         log INFO "auto-recovering via scripts/launch.sh ($ANOMALY)"
         if bash "$WI_PROJECT/scripts/launch.sh" >> "$HEALTH_LOG" 2>&1; then
             log INFO "auto-recovery succeeded"
+            alert "🩹 WealthIncome: $ANOMALY detected — auto-recovered OK ($(ts))"
         else
             log ERROR "auto-recovery FAILED — manual intervention needed"
+            alert "🚨 WealthIncome: $ANOMALY — AUTO-RECOVERY FAILED, needs attention ($(ts))"
         fi
     else
         log WARN "anomaly $ANOMALY observed but skipping recovery (cooldown active)"

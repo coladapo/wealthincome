@@ -122,35 +122,51 @@ launch_dashboard() {
     fi
 }
 
-# ── 3. Trader daemon ─────────────────────────────────────────────────────────
+# ── 3. Trader daemon (launchd-managed, like the API) ─────────────────────────
+# NEVER nohup the trader from here: when this script runs under launchd (the
+# health monitor), launchd reaps the whole process group on job exit and kills
+# the child seconds after start. That was the May-13→June-11 churn bug that
+# silently degraded trading for a month. Always go through launchctl.
+PLIST_TRADER="$HOME/Library/LaunchAgents/com.wealthincome.trader.plist"
+
 launch_trader() {
     if [ -f "$TRADER_PID_FILE" ] && kill -0 "$(cat "$TRADER_PID_FILE")" 2>/dev/null; then
         status "trader"    "healthy (PID $(cat "$TRADER_PID_FILE"), no action)"
         return 0
     fi
 
-    # Stale PID file — remove and check for any orphan trader.
-    rm -f "$TRADER_PID_FILE"
+    if [ ! -f "$PLIST_TRADER" ]; then
+        status "trader"    "FAILED — plist missing at $PLIST_TRADER"
+        return 1
+    fi
+
+    # PID file stale or missing. If the launchd job already supervises a live
+    # trader, just resync the PID file instead of restarting it.
+    local launchd_pid
+    launchd_pid=$(launchctl list 2>/dev/null | awk '$3 == "com.wealthincome.trader" {print $1}')
+    if [ -n "$launchd_pid" ] && [ "$launchd_pid" != "-" ] && kill -0 "$launchd_pid" 2>/dev/null; then
+        echo "$launchd_pid" > "$TRADER_PID_FILE"
+        status "trader"    "healthy (PID $launchd_pid, resynced pid file)"
+        return 0
+    fi
+
+    # Clean up any orphan started outside launchd, then (re)start the job.
     local orphans
     orphans=$(pgrep -f "python -m backend\\.trader" || true)
     if [ -n "$orphans" ]; then
         echo "  found orphan trader process(es): $orphans — terminating." >&2
-        echo "$orphans" | xargs -r kill -9 2>/dev/null || true
-        sleep 1
+        echo "$orphans" | xargs -r kill 2>/dev/null || true
+        sleep 2
     fi
 
-    cd "$PROJECT"
-    set -a
-    # shellcheck disable=SC1091
-    source "$PROJECT/.env"
-    set +a
-    nohup "$PROJECT/venv/bin/python" -m backend.trader \
-        >> "$LOGDIR/trader.log" 2>&1 &
-    local pid=$!
-    echo "$pid" > "$TRADER_PID_FILE"
-    sleep 2
-    if kill -0 "$pid" 2>/dev/null; then
-        status "trader"    "started (PID $pid)"
+    launchctl unload "$PLIST_TRADER" 2>/dev/null || true
+    sleep 1
+    launchctl load "$PLIST_TRADER"
+    sleep 3
+
+    launchd_pid=$(launchctl list 2>/dev/null | awk '$3 == "com.wealthincome.trader" {print $1}')
+    if [ -n "$launchd_pid" ] && [ "$launchd_pid" != "-" ] && kill -0 "$launchd_pid" 2>/dev/null; then
+        status "trader"    "started via launchd (PID $launchd_pid)"
     else
         status "trader"    "FAILED — see logs/trader.log"
         return 1

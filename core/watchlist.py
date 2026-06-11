@@ -50,7 +50,8 @@ def get_sp500_tickers() -> List[str]:
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
-        tables = pd.read_html(resp.text)
+        from io import StringIO
+        tables = pd.read_html(StringIO(resp.text))  # pandas 2.1+ treats a bare string as a file path
         df = tables[0]
         tickers = df["Symbol"].tolist()
         tickers = [t.replace(".", "-") for t in tickers]

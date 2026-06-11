@@ -1145,8 +1145,13 @@ def main():
             time.sleep(1)
 
     set_config("trader_running", "false")
+    # Only remove the PID file if it's still ours — a replacement instance may
+    # have already written its own PID (deleting it would make the health
+    # monitor think the new instance is dead and kill it: the May-13 churn bug).
     try:
-        os.remove(_pid_file)
+        with open(_pid_file) as _f:
+            if _f.read().strip() == str(os.getpid()):
+                os.remove(_pid_file)
     except OSError:
         pass
     logger.info("Trader daemon stopped")
