@@ -702,12 +702,16 @@ def run_cycle(alpaca: AlpacaClient):
             new_entries_allowed = regime_data.get("new_entries_allowed", True)
             logger.info(f"Regime: {regime} (score={regime_data.get('score')}) | "
                         f"entries={'allowed' if new_entries_allowed else 'BLOCKED'}")
+            # Publish for the reconciler's regime-conditional exit gate —
+            # it runs in the API process and must not refetch market data.
+            set_config("current_regime", f"{regime}:{regime_data.get('score') or 0}")
         except Exception as e:
             logger.warning(f"Regime fetch failed: {e} — defaulting to CAUTION")
             regime = "CAUTION"
             regime_summary = "MARKET REGIME: CAUTION (data unavailable)\nNew entries allowed: YES\nMax position size: 6%"
             max_pos_pct_override = None
             new_entries_allowed = True
+            set_config("current_regime", "CAUTION:0")
 
         # Layer 2: Dynamic watchlist — top momentum stocks for current regime
         wl_data = {}

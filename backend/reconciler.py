@@ -197,10 +197,20 @@ def _reconcile_once(alpaca):
         logger.warning(f"Sell fill reconciliation error: {e}")
 
     # ── 4. SMA50 exit monitor (MomentumHold strategy) ────────────────────────
-    # Only run when market is open — avoid false triggers from after-hours prices
+    # Only run when market is open — avoid false triggers from after-hours prices.
+    # Regime-conditional (BACKTEST-REPORT.md 2026-06-11): in a STRONG bull this
+    # preemptive exit costs win rate and expectancy — the trailing stop manages
+    # the exit instead. In anything weaker it stays armed (crash insurance).
     try:
         if alpaca.is_market_open():
-            _check_sma50_exits(alpaca, DB_PATH)
+            from core.risk_limits import preemptive_exits_active
+            from backend.db import get_config as _get_cfg
+            regime_str = (_get_cfg().get("current_regime") or "").strip()
+            regime, _, score = regime_str.partition(":")
+            if preemptive_exits_active(regime, score or 0):
+                _check_sma50_exits(alpaca, DB_PATH)
+            else:
+                logger.debug(f"SMA50 exit monitor disarmed — strong bull ({regime_str})")
     except Exception as e:
         logger.debug(f"SMA50 exit check error: {e}")
 

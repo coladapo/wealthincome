@@ -32,6 +32,7 @@ EXIT SIGNALS (SELL when any of these trigger for an existing position):
 1. Price closes below SMA50 for 2 consecutive DAILY bars — trend broken (primary exit). An intraday dip below SMA50 that recovers by close is NOT an exit signal. Wait for confirmation on the daily close.
 2. Price < SMA20 AND RSI < 40 — momentum collapsed (both conditions, sustained)
 3. Drawdown from position peak exceeds 15% — catastrophic loss protection
+REGIME-CONDITIONAL EXITS (2026-06-11 backtest, 1,400+ trades): In a STRONG BULL regime (score >= 70), DO NOT use exits 1 and 2 — the trailing stop and rule 3 manage the position; preemptive trend-break exits in strong bulls cut win rate by ~12 points and expectancy by ~2/3 (sma50_breach exits went 0-for-7 live). Exits 1 and 2 apply ONLY when the regime is CAUTION, BEAR, or a weak bull (score < 70). In bear windows those same exits are essential crash insurance — never skip them there.
 EXIT GRACE WINDOW (2026-05-11): For positions opened within the last 24 hours, DO NOT sell on a single SMA50 breach unless drawdown also exceeds 8%. Closed-trade analysis: 5 same-day sma50_breach exits all locked in losses on positions that hadn't had time to develop. A fresh entry deserves at least one full trading day to breathe.
 DO NOT sell just because RSI is high or price is "extended" — that's the trend working for you.
 DO NOT sell to free up cash for another trade unless concentration cap or buying power is actually breached — selling a winner to chase a new entry destroys edge.

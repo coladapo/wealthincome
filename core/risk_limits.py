@@ -17,3 +17,23 @@ MAX_SINGLE_POSITION_PCT = 0.08
 
 # Maximum fraction of portfolio value deployed across all positions.
 MAX_DEPLOY_PCT = 0.80
+
+# Regime-conditional exits (BACKTEST-REPORT.md, 2026-06-11): the preemptive
+# exits (SMA50-breach monitor, momentum-collapse) cost ~12 points of win rate
+# and ~2/3 of expectancy in bull markets but are essential crash insurance in
+# bears. They switch OFF only in a STRONG bull; any ambiguity keeps them on.
+STRONG_BULL_MIN_SCORE = 70
+
+
+def preemptive_exits_active(regime: str | None, score: float | None) -> bool:
+    """True = keep the SMA50-breach / momentum-collapse exits armed.
+
+    Conservative by construction: only an unambiguous strong BULL reading
+    disarms them. Unknown/missing regime data keeps the insurance on.
+    """
+    if not regime:
+        return True
+    try:
+        return not (regime.upper() == "BULL" and float(score or 0) >= STRONG_BULL_MIN_SCORE)
+    except (TypeError, ValueError):
+        return True
