@@ -108,7 +108,10 @@ def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout
     if proc.returncode != 0:
         raise RuntimeError(f"Claude CLI exited {proc.returncode}: {proc.stderr[:300]}")
 
-    envelope = json.loads(proc.stdout)
+    # The CLI occasionally prints extra output after the JSON envelope
+    # (e.g. self-update notices) — take the FIRST JSON document instead of
+    # requiring the whole stdout to be one ("Extra data" crash, 2026-06-11).
+    envelope, _ = json.JSONDecoder().raw_decode(proc.stdout.strip())
     text_output = envelope.get("result", "").strip()
     raw_usage   = envelope.get("usage", {})
     return text_output, raw_usage
@@ -272,7 +275,9 @@ def run_decision(
     news_context: str = "",
     portfolio_risk_context: str = "",
     calendar_context: str = "",
-    timeout: int = 120,
+    timeout: int = 240,  # successful calls range 30-102s; 120s executed the slow
+                         # tail (cold-cache calls after restarts). Cycle budget is
+                         # 300s — 240s keeps one cycle's call inside it.
     provider_override: Optional[str] = None,
     model_override: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
