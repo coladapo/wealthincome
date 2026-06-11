@@ -210,16 +210,29 @@ def _build_prompt(
 ) -> str:
     """Build the user prompt with all market context"""
 
-    positions_str = json.dumps(portfolio.get("positions", []), indent=2)
-    account_str = json.dumps({
+    def _slim(obj, _depth=0):
+        """Round floats and drop None values — same information, far fewer
+        tokens. Pretty-printing + 16-digit floats made the volatile prompt
+        ~46k tokens/cycle, slowing every call (the timeout tail) and burning
+        cache writes (2026-06-11 root-cause dig)."""
+        if isinstance(obj, float):
+            return round(obj, 4)
+        if isinstance(obj, dict):
+            return {k: _slim(v, _depth + 1) for k, v in obj.items() if v is not None}
+        if isinstance(obj, list):
+            return [_slim(v, _depth + 1) for v in obj]
+        return obj
+
+    positions_str = json.dumps(_slim(portfolio.get("positions", [])), separators=(",", ":"))
+    account_str = json.dumps(_slim({
         "portfolio_value": account.get("portfolio_value"),
         "cash": account.get("cash"),
         "buying_power": account.get("buying_power"),
         "daily_pnl": account.get("daily_pnl"),
         "daily_pnl_pct": account.get("daily_pnl_pct"),
-    }, indent=2)
+    }), separators=(",", ":"))
 
-    market_str = json.dumps(market_data, indent=2)
+    market_str = json.dumps(_slim(market_data), separators=(",", ":"))
 
     regime_block = f"""
 === MACRO REGIME (READ THIS FIRST) ===

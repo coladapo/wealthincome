@@ -371,6 +371,23 @@ def execute_decision(
                 f"{confidence:.0%} | trail={trail_percent}% | {reasoning[:60]}"
             )
 
+        # Use the ACTUAL filled quantity downstream — IOC entries can partially
+        # fill (e.g. MS 27 of 31, 2026-06-11), and sizing the trailing stop to
+        # the requested qty gets Alpaca 403 "insufficient qty available",
+        # leaving the position unprotected. This was the months-old 403 mystery
+        # (UNH May 28, CAT Jun 5).
+        try:
+            _raw = alpaca.get_order_raw(order.id) or {}
+            _filled = float(_raw.get("filled_qty") or 0)
+            if 0 < _filled < qty:
+                logger.warning(
+                    f"Partial fill {symbol}: {_filled:g}/{qty} — sizing stop and "
+                    f"lifecycle to the filled quantity"
+                )
+                qty = _filled
+        except Exception:
+            pass  # fill still settling — reconciler reconciles quantities later
+
         trade_id = record_trade(cycle_id, {
             "symbol": symbol, "action": action, "qty": qty,
             "signal_price": current_price, "confidence": confidence,

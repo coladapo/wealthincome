@@ -262,7 +262,19 @@ def build_portfolio_rag_block(
     if not blocks:
         return ""
 
-    return "\n\n".join(blocks)
+    # Cap the injected history (was ~18k chars/cycle of volatile prompt —
+    # part of the 2026-06-11 prompt-diet). Per-symbol blocks are most-relevant
+    # first only within each block, so keep whole blocks until the budget.
+    MAX_RAG_CHARS = 6000
+    out, used = [], 0
+    for b in blocks:
+        if used + len(b) > MAX_RAG_CHARS:
+            break
+        out.append(b)
+        used += len(b)
+    if not out:  # first block alone exceeds budget — truncate it
+        out = [blocks[0][:MAX_RAG_CHARS]]
+    return "\n\n".join(out)
 
 
 if __name__ == "__main__":
