@@ -280,7 +280,7 @@ def execute_decision(
 
         # Hard guard: never deploy more than 80% of portfolio value
         # Prevents over-concentration even if Claude requests a large position
-        MAX_DEPLOY_PCT = 0.80
+        from core.risk_limits import MAX_DEPLOY_PCT, MAX_SINGLE_POSITION_PCT
         long_market_value = float(getattr(account, "long_market_value", 0) or 0)
         deployed_pct = long_market_value / float(account.portfolio_value) if account.portfolio_value else 0
         if deployed_pct >= MAX_DEPLOY_PCT:
@@ -290,10 +290,9 @@ def execute_decision(
             )
             return None
 
-        # Hard concentration cap: no single position may exceed 25% of portfolio
-        # This is the primary risk control per quant industry research — position sizing
-        # beats stop placement as the core risk lever.
-        MAX_SINGLE_POSITION_PCT = 0.25
+        # Hard concentration cap from core/risk_limits.py — single source of truth
+        # shared with the manual-order paths. Position sizing beats stop placement
+        # as the core risk lever; DB config may size lower, never higher.
         capped_pct = min(position_size_pct, max_pos_pct, MAX_SINGLE_POSITION_PCT)
         max_value = min(
             account.portfolio_value * capped_pct,  # sizing rule

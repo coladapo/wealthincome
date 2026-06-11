@@ -16,11 +16,10 @@ PAPER_BASE_URL = "https://paper-api.alpaca.markets/v2"
 LIVE_BASE_URL = "https://api.alpaca.markets/v2"
 DATA_BASE_URL = "https://data.alpaca.markets/v2"
 
-# Hard concentration cap for manual order paths (dashboard form + /order endpoint).
-# Mirrors RiskConfig.max_position_pct (0.08) in the autonomous trader so a manual
-# buy can never exceed ~8% of portfolio value in a single name. See bug history:
-# the 2026-04-15 CAT trade put ~45% of the account into one position.
-MAX_SINGLE_POSITION_PCT = 0.08
+# Hard concentration cap — single source of truth in core/risk_limits.py,
+# shared with the autonomous trader (unified 2026-06-11; see bug history:
+# the 2026-04-15 CAT trade put ~45% of the account into one position).
+from core.risk_limits import MAX_SINGLE_POSITION_PCT
 
 
 class ConcentrationCapError(Exception):
