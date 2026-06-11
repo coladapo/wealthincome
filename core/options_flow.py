@@ -134,10 +134,9 @@ def analyze_options_chain(symbol: str) -> Dict:
                 call_ivs.extend(call_iv_vals)
                 put_ivs.extend(put_iv_vals)
 
-                # Get current stock price for moneyness
+                # Get current stock price for moneyness (fast_info works for ETFs; .info 404s on SPY/QQQ)
                 try:
-                    current_price = float(ticker.info.get("currentPrice") or
-                                          ticker.info.get("regularMarketPrice") or 0)
+                    current_price = float(ticker.fast_info.last_price or 0)
                 except Exception:
                     current_price = 0
 

@@ -218,7 +218,7 @@ def _fetch_13d_for_symbol(symbol: str, days_back: int) -> Dict:
         logger.info(f"13D [{symbol}]: {signal} | {base['summary']}")
 
     except Exception as e:
-        logger.debug(f"13D fetch failed for {symbol}: {e}")
+        logger.warning(f"13D fetch failed for {symbol}: {e}")
 
     return base
 

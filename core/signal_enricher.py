@@ -92,7 +92,7 @@ def get_enriched_context(
             context["earnings_block"] = block
             if block:
                 blocks.append(block)
-            imminent = [s for s, d in earnings.items() if d.get("earnings_risk") in ("today", "imminent")]
+            imminent = [s for s, d in earnings.items() if isinstance(d, dict) and d.get("earnings_risk") in ("today", "imminent")]
             if imminent:
                 logger.info(f"Earnings enricher: IMMINENT earnings for {imminent}")
             enricher_status["earnings"] = {"ok": True, "symbols": len(earnings)}
@@ -110,7 +110,7 @@ def get_enriched_context(
             context["options_block"] = block
             if block:
                 blocks.append(block)
-            bullish = [s for s, d in flow.items() if d.get("flow_signal") == "bullish_flow"]
+            bullish = [s for s, d in flow.items() if isinstance(d, dict) and d.get("flow_signal") == "bullish_flow"]
             if bullish:
                 logger.info(f"Options enricher: bullish flow in {bullish}")
             enricher_status["options_flow"] = {"ok": True, "symbols": len(flow)}
@@ -145,7 +145,7 @@ def get_enriched_context(
             context["edgar_extended_block"] = block
             if block:
                 blocks.append(block)
-            activists = [s for s, d in context["activist_signals"].items() if d.get("signal") in ("known_activist", "activist_accumulation")]
+            activists = [s for s, d in context["activist_signals"].items() if isinstance(d, dict) and d.get("signal") in ("known_activist", "activist_accumulation")]
             if activists:
                 logger.info(f"EDGAR activist enricher: signals for {activists}")
             enricher_status["edgar_extended"] = {"ok": True, "symbols": len(context["activist_signals"])}
@@ -178,7 +178,7 @@ def get_earnings_risk_symbols(symbols: List[str]) -> List[str]:
     try:
         from core.earnings_scraper import get_earnings_calendar
         earnings = get_earnings_calendar(symbols)
-        return [s for s, d in earnings.items() if d.get("earnings_risk") in ("today", "imminent")]
+        return [s for s, d in earnings.items() if isinstance(d, dict) and d.get("earnings_risk") in ("today", "imminent")]
     except Exception:
         return []
 

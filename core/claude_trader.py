@@ -23,15 +23,18 @@ destroy performance in trending markets. Winners must be held until the trend ac
 ENTRY SIGNALS (all must align for a BUY):
 1. Price > SMA50 — uptrend confirmed (the single most important filter)
 2. Price > SMA20 — short-term momentum positive
-3. RSI 40-75 — trending range (NOT overbought extreme, NOT deeply oversold)
+3. RSI 40-75 — trending range (NOT overbought extreme, NOT deeply oversold). PREFER RSI 45-65 — closed-trade analysis (2026-05-11) shows winners entered RSI 53-62; losers entered RSI ~69. Entries with RSI 65-75 require an additional supporting signal (insider cluster, unusual call flow, or VWAP confirmation) — do not enter on technicals alone in that band.
 4. Volume above average OR expanding trend — momentum confirmation
 5. NOT within 3 days of earnings — avoid gap risk
+6. ENTRY QUALITY GUARD (2026-05-11): Price must be at least 2% above SMA50 AND VWAP must be supportive (price >= VWAP, or trending toward it). Closed-trade analysis: 5 of 11 closed positions were force-exited via sma50_breach within 7 hours of entry — meaning the system bought right at or just above SMA50 and got immediately stopped out. If price is within 2% of SMA50, the setup is too fragile — WAIT for a real pullback-and-resume or skip the symbol entirely. Avoid buying into intraday weakness.
 
 EXIT SIGNALS (SELL when any of these trigger for an existing position):
-1. Price closes below SMA50 for 2 consecutive bars — trend broken (primary exit)
-2. Price < SMA20 AND RSI < 40 — momentum collapsed
+1. Price closes below SMA50 for 2 consecutive DAILY bars — trend broken (primary exit). An intraday dip below SMA50 that recovers by close is NOT an exit signal. Wait for confirmation on the daily close.
+2. Price < SMA20 AND RSI < 40 — momentum collapsed (both conditions, sustained)
 3. Drawdown from position peak exceeds 15% — catastrophic loss protection
+EXIT GRACE WINDOW (2026-05-11): For positions opened within the last 24 hours, DO NOT sell on a single SMA50 breach unless drawdown also exceeds 8%. Closed-trade analysis: 5 same-day sma50_breach exits all locked in losses on positions that hadn't had time to develop. A fresh entry deserves at least one full trading day to breathe.
 DO NOT sell just because RSI is high or price is "extended" — that's the trend working for you.
+DO NOT sell to free up cash for another trade unless concentration cap or buying power is actually breached — selling a winner to chase a new entry destroys edge.
 
 INDICATOR GUIDE:
 - rsi_14: RSI. Entry range: 40-75. Exit trigger: <40 combined with SMA20 break
@@ -128,6 +131,27 @@ OPTIONS FLOW — if provided in PORTFOLIO RISK section:
 - signal_strength: 0.0-1.0. Only weight this heavily at > 0.6.
 - Never buy based on options flow alone — it's a confirmation signal, not a primary one.
 
+MACRO HEDGE SIGNAL (cross-signal synthesis — apply this before any hold decision):
+Index ETFs (SPY, QQQ, IWM) in options flow are NOT stock picks — they are macro hedge signals.
+When institutions buy SPY/QQQ puts at scale, they are hedging market-wide downside, not making a
+stock-specific bet. This is fundamentally different from a stock's own options flow.
+
+Apply this compound rule when ALL of the following are true for a held position:
+  1. SPY or QQQ shows bearish_flow with signal_strength >= 0.8 in the options flow data
+  2. The held position has earnings within 10 days (binary event approaching)
+  3. Unrealized gain on the position is less than 3% (insufficient cushion to absorb a gap)
+  4. The position's own options flow is neutral OR bullish (stock-level confidence looks fine)
+
+Action: Issue a SELL for 40-50% of the position to reduce exposure before the binary event.
+Reasoning template: "Macro hedge pressure (SPY/QQQ put flow strength=[X]) with earnings in [N]d
+and only [Y]% unrealized cushion — reducing position size to limit binary event downside."
+
+Why this rule exists: Stock-level bullish signals and macro index bearish signals are not
+contradictory — they coexist frequently before earnings. The stock may be fundamentally fine,
+but a macro selloff + earnings miss combination produces gap-down losses that trailing stops
+cannot protect against (discontinuous price movement). The correct response is position
+reduction BEFORE the event, not a stop order after it.
+
 VWAP (Intraday Institutional Benchmark) — if provided in PORTFOLIO RISK section:
 - VWAP = Volume-Weighted Average Price. Institutional algos benchmark every execution to VWAP.
 - above_vwap_strong (> +1.5%): Buyers in control. Strong confirmation signal for new longs.
@@ -161,6 +185,12 @@ OUTPUT FORMAT (return this exact JSON, nothing else):
   "market_summary": "One sentence on overall market conditions and whether trend environment favors entries or caution",
   "cycle_notes": "Key observations — what you watched but chose not to trade and why"
 }
+
+For partial position reductions (e.g. macro hedge signal rule), use action "sell" and add a
+"reduce_pct" field (0.0-1.0) indicating what fraction of the current holding to sell.
+Omit reduce_pct for full exits (defaults to 1.0 = sell everything).
+Example: {"symbol": "SBUX", "action": "sell", "reduce_pct": 0.5, "confidence": 0.78,
+"reasoning": "Macro hedge pressure ..."}
 
 If no trades are warranted, return decisions as an empty array [].
 """
@@ -232,6 +262,65 @@ Review the macro regime above first — it sets the rules for this cycle.
 Then review individual symbols for trade opportunities.
 Only act on high-conviction setups that match the regime's risk posture.
 """
+
+
+def build_session_feedback_block(
+    deployed_pct: float = 0.0,
+    max_deploy_pct: float = 0.80,
+) -> str:
+    """
+    Build a feedback block telling Claude which BUY decisions it already
+    proposed today and why they didn't execute. Injected every cycle so
+    Claude stops wasting tokens on trades that can never execute this session.
+
+    deployed_pct: current portfolio deployment (long_market_value / portfolio_value)
+    """
+    try:
+        from backend.db import get_todays_proposed_buys, get_todays_executed_symbols
+        proposed = get_todays_proposed_buys()
+        executed_syms = set(get_todays_executed_symbols())
+    except Exception as e:
+        logger.warning(f"build_session_feedback_block failed (non-fatal): {e}")
+        return ""
+
+    if not proposed:
+        return ""
+
+    # Only surface symbols proposed 2+ times that never executed
+    stale = [p for p in proposed if p["count"] >= 2 and p["symbol"] not in executed_syms]
+    if not stale:
+        return ""
+
+    lines = ["=== SESSION FEEDBACK — Trades proposed this session that did NOT execute ==="]
+
+    # Why can't they execute?
+    if deployed_pct >= max_deploy_pct:
+        lines.append(
+            f"REASON: Portfolio is {deployed_pct:.0%} deployed (max {max_deploy_pct:.0%}). "
+            f"No new BUY orders can execute until existing positions are sold or trail-stopped out."
+        )
+        lines.append("DO NOT propose BUY orders for symbols listed below — they cannot execute.")
+    else:
+        lines.append(
+            f"Portfolio is {deployed_pct:.0%} deployed. The following symbols were proposed "
+            f"multiple times today but did not execute (likely due to position limits or order rejection)."
+        )
+
+    lines.append("")
+    for p in stale[:10]:  # cap to 10 to avoid prompt bloat
+        conf_str = f"conf={p['last_confidence']:.0%}" if p.get("last_confidence") else ""
+        lines.append(
+            f"  {p['symbol']:6s} — proposed {p['count']}x today {conf_str} — "
+            f"NOT executed. Do not propose again this session."
+        )
+
+    lines.append("")
+    lines.append(
+        "If the portfolio remains at capacity, use cycle_notes to acknowledge "
+        "the setup and state you will revisit when capacity opens."
+    )
+
+    return "\n".join(lines)
 
 
 # run_claude_decision has been removed.
