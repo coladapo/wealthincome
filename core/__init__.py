@@ -1,15 +1,6 @@
-"""
-Core modules for the WealthIncome unified platform
-"""
+"""Core modules for the WealthIncome unified platform.
 
-from .data_manager import UnifiedDataManager
-from .auth import AuthenticationManager
-from .trading_engine import TradingEngine
-from .ai_engine import AIEngine
-
-__all__ = [
-    'UnifiedDataManager',
-    'AuthenticationManager', 
-    'TradingEngine',
-    'AIEngine'
-]
+Deliberately empty: package-level imports here used to pull the legacy v1
+modules (data_manager, auth, trading_engine, ai_engine) — and their heavy
+dependencies — into every `core.*` import. Import submodules directly.
+"""

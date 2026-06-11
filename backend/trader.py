@@ -315,21 +315,53 @@ def execute_decision(
         # Step 1: Place IOC limit entry at signal price + 0.1% slippage allowance.
         # IOC (Immediate-Or-Cancel): fills at limit price or better, cancels any unfilled
         # portion instantly — no lingering open orders that can queue up between cycles.
-        # Fallback to market if limit placement itself fails.
+        #
+        # RETRY LADDER (G3, 2026-06-11): historically ~50% of IOC entries cancelled
+        # unfilled (price moved past the 0.1% allowance between signal and placement)
+        # and nothing retried — the intended trade silently never existed. Now we
+        # verify the IOC outcome and retry ONCE at a fresh price with a 0.5%
+        # allowance. If that cancels too, we give up loudly (no price-chasing).
+        def _place_ioc(limit_px):
+            return alpaca.place_limit_order(
+                symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
+                limit_price=limit_px,
+                time_in_force=AlpacaTimeInForce.IOC,
+                enforce_cap=False,  # trader sizes against its own cap (core/risk_limits.py)
+            )
+
+        def _ioc_unfilled(o):
+            """True if the IOC resolved as cancelled with nothing filled."""
+            try:
+                time.sleep(1.5)  # IOC resolves near-instantly; give Alpaca a beat
+                raw = alpaca.get_order_raw(o.id) or {}
+                return (raw.get("status") == "canceled"
+                        and float(raw.get("filled_qty") or 0) == 0)
+            except Exception:
+                return False  # can't verify — assume placed; reconciler sorts it out
+
         limit_price = round(current_price * 1.001, 2)  # allow 0.1% above signal
         order = None
         order_type_used = "limit_ioc"
         try:
-            order = alpaca.place_limit_order(
-                symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
-                limit_price=limit_price,
-                time_in_force=AlpacaTimeInForce.IOC,
-                enforce_cap=False,  # trader sizes against its own cap (MAX_SINGLE_POSITION_PCT in trader.py)
-            )
+            order = _place_ioc(limit_price)
             logger.info(
                 f"BUY {qty} {symbol} limit=${limit_price:.2f} (signal=${current_price:.2f} +0.1%) IOC | "
                 f"{confidence:.0%} | trail={trail_percent}% | {reasoning[:60]}"
             )
+            if _ioc_unfilled(order):
+                fresh_price = alpaca.get_current_price(symbol) or current_price
+                retry_limit = round(fresh_price * 1.005, 2)  # 0.5% allowance on retry
+                logger.warning(
+                    f"IOC entry cancelled unfilled for {symbol} (limit ${limit_price:.2f}) — "
+                    f"retrying once at ${retry_limit:.2f} (fresh ${fresh_price:.2f} +0.5%)"
+                )
+                order = _place_ioc(retry_limit)
+                order_type_used = "limit_ioc_retry"
+                if _ioc_unfilled(order):
+                    logger.warning(
+                        f"ENTRY MISSED: {symbol} IOC retry also cancelled unfilled — "
+                        f"not chasing. Signal ${current_price:.2f}, last try ${retry_limit:.2f}."
+                    )
         except Exception as e:
             logger.warning(f"Limit order failed for {symbol}: {e} — falling back to market")
             order = alpaca.place_market_order(symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY, enforce_cap=False)
