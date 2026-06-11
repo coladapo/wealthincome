@@ -406,7 +406,16 @@ def execute_decision(
         # Extract signal attribution fields
         macd_data = sym_data.get("macd") or {}
         volume_data = sym_data.get("volume") or {}
-        signal_summary = sym_data.get("signal_summary") or {}
+        # indicators.compute_all() returns signal_summary as a LIST of signal
+        # strings; this block needs a dict it can .update() with attribution
+        # fields. The list form crashed the first post-restart entry (TGT,
+        # 2026-06-11 10:03) AFTER the order filled but BEFORE the lifecycle row
+        # and trailing stop — leaving an unprotected position. Coerce safely.
+        signal_summary = sym_data.get("signal_summary")
+        if isinstance(signal_summary, list):
+            signal_summary = {"signals": signal_summary}
+        elif not isinstance(signal_summary, dict):
+            signal_summary = {}
         volume_ratio = volume_data.get("ratio") if isinstance(volume_data, dict) else None
 
         # Scout-quality flags — keys must match SCOUT_SIGNAL_FLAGS in
