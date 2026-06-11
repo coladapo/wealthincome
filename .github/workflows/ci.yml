@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Tests are deliberately network-free and import only the light modules
+      # (risk limits, concentration cap, calendar, scorecard, catalyst risk).
+      - name: Install test dependencies
+        run: pip install pytest requests
+
+      - name: Run test suite
+        run: python -m pytest tests/ -q
