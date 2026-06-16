@@ -1076,18 +1076,34 @@ def close_position_lifecycle(
         except Exception:
             hold_seconds = None
 
+        # Stamp the regime + whether the preemptive exits were ARMED at close
+        # time — this is the exact variable the 2-week regime-exit experiment
+        # is testing (review ~2026-06-25). Without it the scorecard can only
+        # infer the exit mode from entry regime, not prove it.
+        close_regime = None
+        exit_armed = None
+        try:
+            regime_str = (get_config().get("current_regime") or "").strip()
+            close_regime = regime_str.partition(":")[0] or None
+            from core.risk_limits import preemptive_exits_active
+            r, _, s = regime_str.partition(":")
+            exit_armed = "armed" if preemptive_exits_active(r, s or 0) else "disarmed"
+        except Exception:
+            pass
+
         conn.execute("""
             UPDATE position_lifecycle SET
                 closed_at=?, exit_cycle_id=?, exit_trade_id=?,
                 exit_price=?, exit_qty=?, close_reason=?,
                 realized_pnl=?, realized_pnl_pct=?,
-                hold_duration_seconds=?, status='closed'
+                hold_duration_seconds=?, status='closed',
+                close_regime=?, exit_preemptive_armed=?
             WHERE id=?
         """, (
             now, exit_cycle_id, exit_trade_id,
             exit_price, exit_qty, close_reason,
             realized_pnl, realized_pnl_pct,
-            hold_seconds, position_id,
+            hold_seconds, close_regime, exit_armed, position_id,
         ))
 
 

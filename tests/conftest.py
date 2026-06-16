@@ -21,7 +21,8 @@ def tmp_db(tmp_path):
             symbol TEXT, status TEXT, closed_at TEXT,
             realized_pnl REAL, realized_pnl_pct REAL,
             hold_duration_seconds INTEGER,
-            regime_at_entry TEXT, entry_rsi REAL, close_reason TEXT
+            regime_at_entry TEXT, entry_rsi REAL, close_reason TEXT,
+            exit_preemptive_armed TEXT, close_regime TEXT
         );
         CREATE TABLE orders (
             id INTEGER PRIMARY KEY,

@@ -63,6 +63,26 @@ def test_scorecard_math(tmp_db, monkeypatch):
     assert e["fill_rate_pct"] == 75.0
 
 
+def test_exit_mode_breakdown(tmp_db, monkeypatch):
+    """The regime-exit experiment's headline cut must compute."""
+    conn = sqlite3.connect(tmp_db)
+    rows = [
+        ("AAA", "closed", "2026-06-12", 300.0, 3.0, 720000, "BULL", 50, "ai_sell", "disarmed", "BULL"),
+        ("BBB", "closed", "2026-06-13", -100.0, -1.0, 36000, "CAUTION", 60, "sma50_breach", "armed", "CAUTION"),
+    ]
+    conn.executemany(
+        "INSERT INTO position_lifecycle (symbol, status, closed_at, realized_pnl,"
+        " realized_pnl_pct, hold_duration_seconds, regime_at_entry, entry_rsi, close_reason,"
+        " exit_preemptive_armed, close_regime) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit(); conn.close()
+    monkeypatch.setattr(scorecard, "DB_PATH", tmp_db)
+    modes = {r["exit_mode"]: r for r in scorecard.compute_scorecard()["by_exit_mode"]}
+    assert modes["disarmed"]["net_pnl"] == 300.0
+    assert modes["armed"]["net_pnl"] == -100.0
+
+
 def test_digest_formats_without_error(tmp_db, monkeypatch):
     _seed(tmp_db)
     monkeypatch.setattr(scorecard, "DB_PATH", tmp_db)

@@ -95,6 +95,19 @@ def compute_scorecard(days: Optional[int] = None) -> Dict[str, Any]:
             GROUP BY rsi_band ORDER BY net_pnl DESC
         """)
 
+        # The regime-exit experiment's headline cut (2026-06-11 → review ~06-25):
+        # how do trades fare when preemptive exits were armed vs disarmed?
+        by_exit_mode = _rows(conn, f"""
+            SELECT COALESCE(exit_preemptive_armed, 'unrecorded') AS exit_mode,
+                   count(*)                              AS n,
+                   round(avg(realized_pnl > 0) * 100, 0) AS win_rate_pct,
+                   round(sum(realized_pnl), 2)           AS net_pnl,
+                   round(avg(realized_pnl), 2)           AS expectancy
+            FROM position_lifecycle
+            WHERE status = 'closed'{since}
+            GROUP BY exit_mode ORDER BY n DESC
+        """)
+
         by_symbol = _rows(conn, f"""
             SELECT symbol,
                    count(*)                              AS n,
@@ -145,6 +158,7 @@ def compute_scorecard(days: Optional[int] = None) -> Dict[str, Any]:
             "by_close_reason": by_close_reason,
             "by_regime": by_regime,
             "by_rsi_band": by_rsi_band,
+            "by_exit_mode": by_exit_mode,
             "by_symbol": by_symbol,
             "execution": execution,
             "equity": {**equity_now, **(day_change[0] if day_change else {})},
