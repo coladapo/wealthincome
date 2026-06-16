@@ -554,6 +554,21 @@ def execute_decision(
         reduce_pct_clamped = max(0.0, min(1.0, reduce_pct))
         qty = max(1, round(full_qty * reduce_pct_clamped))
         is_partial = qty < full_qty
+
+        # Release shares held by an open trailing stop BEFORE selling. A live
+        # trailing-stop order reserves the whole position, so a market sell
+        # gets Alpaca 403 "insufficient qty available (held_for_orders)" and
+        # retries forever (MPC jammed 30+ cycles, 2026-06-16). Cancel any open
+        # sell orders for this symbol, then exit.
+        try:
+            for _o in alpaca.get_orders(status="open", limit=50):
+                if _o.symbol == symbol and _o.side == "sell":
+                    alpaca.cancel_order(_o.id)
+                    logger.info(f"Cancelled open {_o.order_type} {_o.id[:8]}… holding {symbol} before exit")
+            time.sleep(1)  # let the cancel settle so shares free up
+        except Exception as e:
+            logger.warning(f"Could not pre-cancel holding orders for {symbol}: {e} — sell may 403")
+
         order = alpaca.place_market_order(
             symbol=symbol, qty=qty, side=AlpacaOrderSide.SELL
         )
