@@ -1062,7 +1062,8 @@ def close_position_lifecycle(
 ):
     with db() as conn:
         row = conn.execute(
-            "SELECT entry_price, entry_qty, entry_cost_basis, opened_at FROM position_lifecycle WHERE id=?",
+            "SELECT entry_price, entry_qty, entry_cost_basis, opened_at, symbol, "
+            "regime_at_entry, entry_rsi, entry_confidence FROM position_lifecycle WHERE id=?",
             (position_id,)
         ).fetchone()
         if not row:
@@ -1105,6 +1106,18 @@ def close_position_lifecycle(
             realized_pnl, realized_pnl_pct,
             hold_seconds, close_regime, exit_armed, position_id,
         ))
+
+    # Write a durable self-critique lesson (recursive scaffold, 2026-06-16).
+    # Outside the db() context so a lessons failure can never block a close.
+    try:
+        from core.trade_lessons import record_lesson
+        full = dict(row)
+        full.update({"id": position_id, "exit_price": exit_price,
+                     "close_reason": close_reason, "close_regime": close_regime,
+                     "realized_pnl_pct": realized_pnl_pct})
+        record_lesson(full)
+    except Exception as _e:
+        _logging.getLogger("db").warning(f"record_lesson failed (non-fatal): {_e}")
 
 
 def update_position_trailing_stop(position_id: int, trailing_stop_order_id: str, trail_percent: float):

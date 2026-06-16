@@ -976,8 +976,20 @@ def run_cycle(alpaca: AlpacaClient):
         except Exception as e:
             logger.warning(f"RAG block failed (non-fatal): {e}")
 
-        # Combine VWAP + Options + Insider + Enricher + RAG + Session feedback into portfolio_risk_context
-        extra_context = "\n\n".join(filter(None, [session_feedback_context, vwap_context, options_context, insider_context, enricher_context, rag_context]))
+        # Self-critique lessons digest — durable post-mortems distilled into a
+        # caution-first block (recursive scaffold, 2026-06-16). May only make
+        # the model MORE cautious; the digest header enforces that contract.
+        lessons_context = ""
+        try:
+            from core.trade_lessons import build_lessons_digest
+            lessons_context = build_lessons_digest()
+            if lessons_context:
+                logger.info(f"Lessons digest injected ({len(lessons_context)} chars)")
+        except Exception as e:
+            logger.warning(f"Lessons digest failed (non-fatal): {e}")
+
+        # Combine VWAP + Options + Insider + Enricher + RAG + Session feedback + Lessons
+        extra_context = "\n\n".join(filter(None, [session_feedback_context, vwap_context, options_context, insider_context, enricher_context, rag_context, lessons_context]))
         if extra_context:
             portfolio_risk_context = (
                 (portfolio_risk_context + "\n\n" + extra_context).strip()
