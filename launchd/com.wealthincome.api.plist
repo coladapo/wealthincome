@@ -5,11 +5,17 @@
     <key>Label</key>
     <string>com.wealthincome.api</string>
 
+    <!-- Standard, not Background: background QoS starved numpy's BLAS threads
+         at import on the busy mini (hung at 0% CPU, 2026-10-14). -->
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>OPENBLAS_NUM_THREADS</key>
+        <string>1</string>
+        <key>OMP_NUM_THREADS</key>
+        <string>1</string>
         <key>PATH</key>
         <string>/Users/wivak/puo-jects/____active/wealthincome-unified/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>

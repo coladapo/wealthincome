@@ -5,14 +5,22 @@
     <key>Label</key>
     <string>com.wealthincome.trader</string>
 
+    <!-- ProcessType deliberately NOT "Background": on the busy mini, launchd's
+         background QoS starved the OpenBLAS worker threads that numpy spins up
+         at import, so trader + api hung at 0% CPU before writing a log line
+         (2026-10-14 cutover). Standard priority + single-threaded BLAS. -->
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 
     <!-- Mini host (moved from the M2 laptop 2026-10-14). The brain runs the
          PINNED claude binary in <project>/bin, isolated from the operator's
          interactive settings (see core/llm_router.py). -->
     <key>EnvironmentVariables</key>
     <dict>
+        <key>OPENBLAS_NUM_THREADS</key>
+        <string>1</string>
+        <key>OMP_NUM_THREADS</key>
+        <string>1</string>
         <key>PATH</key>
         <string>/Users/wivak/puo-jects/____active/wealthincome-unified/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
