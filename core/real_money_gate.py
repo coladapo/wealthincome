@@ -88,7 +88,10 @@ def compute_gate(now: Optional[datetime] = None) -> Dict[str, Any]:
     now = now or datetime.now()
     conn = _conn()
     try:
-        cfg = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM config")}
+        # Same view of config the running system has: code defaults overlaid by
+        # whatever rows exist. A missing row means "default", not "false".
+        cfg = dict(getattr(_db, "DEFAULT_CONFIG", {}))
+        cfg.update({r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM config")})
         first = conn.execute(
             "SELECT min(opened_at) FROM position_lifecycle WHERE id >= ?", (CLEAN_START_ID,)
         ).fetchone()[0]
@@ -146,9 +149,9 @@ def compute_gate(now: Optional[datetime] = None) -> Dict[str, Any]:
                            mdd is not None and mdd < 8))
 
         # (f) (g) safety switches, set by config
-        pdt = (cfg.get("pdt_guard_in_paper") or "false").strip().lower()
+        pdt = str(cfg.get("pdt_guard_in_paper") or "false").strip().lower()
         items.append(_item("f", "PDT guard active in paper", pdt, "== true", pdt == "true"))
-        vfc = (cfg.get("validator_fail_closed") or "false").strip().lower()
+        vfc = str(cfg.get("validator_fail_closed") or "false").strip().lower()
         items.append(_item("g", "Validator fails closed", vfc, "== true", vfc == "true"))
 
         # (h) ledger reconciles with the broker equity curve

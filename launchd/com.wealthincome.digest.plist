@@ -5,8 +5,9 @@
     <key>Label</key>
     <string>com.wealthincome.digest</string>
 
+    <!-- Standard, not Background: background QoS starved imports on the busy mini (2026-10-14). -->
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -59,8 +59,9 @@ def test_gate_mostly_failing(gate_db):
     assert not items["b"]["pass"]                         # CI over 10 trades spans 0
     assert items["c"]["value"] == 0 and not items["c"]["pass"]
     assert items["e"]["value"] == 5.0 and items["e"]["pass"]
-    assert items["f"]["value"] == "false" and not items["f"]["pass"]
-    assert not items["g"]["pass"] and not items["i"]["pass"]
+    # f/g: no config rows → the code defaults ('true') apply, as in the live trader
+    assert items["f"]["value"] == "true" and items["f"]["pass"]
+    assert items["g"]["pass"] and not items["i"]["pass"]
     # ledger: 250 realized + 50 unrealized - (100300 - 100000) = 0
     assert items["h"]["value"] == 0 and items["h"]["pass"]
     # deployment over last 30d (from 09-14): 09-20 (36.8%) and NOW-1d (20.2%); 09-01 excluded
@@ -110,3 +111,16 @@ def test_gate_line_and_brain_line_in_digest():
         "Real-money gate: 2/9 — next blocker: 100+ clean closed trades"
     assert format_gate_line({"passed_count": 9, "total": 9, "next_blocker": None}) == \
         "Real-money gate: 9/9 — all clear"
+
+
+def test_gate_switches_use_code_defaults_when_rows_missing(gate_db):
+    # No config rows at all: the gate must see the same defaults the trader
+    # and validator use (both 'true'), not report the switches as off.
+    conn = sqlite3.connect(gate_db)
+    conn.execute("DELETE FROM config WHERE key IN ('pdt_guard_in_paper', 'validator_fail_closed')")
+    conn.commit(); conn.close()
+    assert db.DEFAULT_CONFIG["pdt_guard_in_paper"] == "true"
+    assert db.DEFAULT_CONFIG["validator_fail_closed"] == "true"
+    items = _by_id(gate_mod.compute_gate(now=NOW))
+    assert items["f"]["pass"] and items["f"]["value"] == "true"
+    assert items["g"]["pass"] and items["g"]["value"] == "true"
