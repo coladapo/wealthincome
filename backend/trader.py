@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.db import (
     init_db, get_config, set_config,
     start_cycle, finish_cycle, fail_cycle,
-    record_trade, update_trade_links, record_error, get_trades_today,
+    record_trade, update_trade_links, record_error,
     record_ai_decision, increment_ai_decision_executed,
     record_order_group, record_order,
     open_position_lifecycle, get_open_position_by_symbol, close_position_lifecycle,
@@ -143,21 +143,107 @@ def fetch_market_data(watchlist: list, alpaca: AlpacaClient) -> Dict[str, Any]:
 
 # ─── PDT guard ───────────────────────────────────────────────────────────────
 
-def count_day_trades_today() -> int:
-    trades = get_trades_today()
-    symbols_traded = {}
-    day_trades = 0
-    for t in trades:
-        sym = t["symbol"]
-        action = t["action"]
-        if sym not in symbols_traded:
-            symbols_traded[sym] = []
-        symbols_traded[sym].append(action)
-    for sym, actions in symbols_traded.items():
-        buys = actions.count("buy")
-        sells = actions.count("sell")
-        day_trades += min(buys, sells)
-    return day_trades
+PDT_WINDOW_BUSINESS_DAYS = 5
+PDT_MAX_DAY_TRADES = 3  # a 4th day trade inside the window flags the account
+
+
+def _pdt_window_days(today=None, n: int = PDT_WINDOW_BUSINESS_DAYS):
+    """The last `n` business days (Mon-Fri) ending today, as 'YYYY-MM-DD' strings."""
+    d = today or datetime.now().date()
+    days = []
+    while len(days) < n:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d -= timedelta(days=1)
+    return days
+
+
+def count_day_trades_rolling(today=None) -> int:
+    """Count day trades in the rolling 5-business-day PDT window (incl. today).
+
+    Rule (FINRA pattern-day-trader, as enforced here):
+      - A *day trade* is a buy and a sell of the same symbol on the same
+        trading day. Trading day = the local-date prefix of the stored ISO
+        timestamp (the same convention get_trades_today() uses).
+      - For each (symbol, day) in the window the count is the larger of:
+          * min(#buys, #sells) in the `trades` table that day, and
+          * #position_lifecycle rows opened AND closed that same day
+            (catches broker-side exits, e.g. trailing-stop fills, that never
+            write a 'sell' row to `trades`).
+        Taking the max (not the sum) avoids double-counting a round trip that
+        appears in both tables.
+      - Window = the last 5 weekdays ending today. Exchange holidays are not
+        skipped, so a holiday inside the window shortens it by one session
+        (slightly permissive; Alpaca's own PDT check remains the backstop live).
+    """
+    from backend.db import db
+    days = _pdt_window_days(today)
+    oldest = days[-1]
+    per_key: Dict[tuple, int] = {}
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT symbol, substr(executed_at,1,10) AS day,"
+            " SUM(lower(action)='buy') AS buys, SUM(lower(action)='sell') AS sells"
+            " FROM trades WHERE substr(executed_at,1,10) >= ?"
+            " GROUP BY symbol, day",
+            (oldest,),
+        ).fetchall()
+        for r in rows:
+            if r["day"] in days:
+                per_key[(r["symbol"].upper(), r["day"])] = min(r["buys"] or 0, r["sells"] or 0)
+        rows = conn.execute(
+            "SELECT symbol, substr(opened_at,1,10) AS day, COUNT(*) AS n"
+            " FROM position_lifecycle"
+            " WHERE closed_at IS NOT NULL AND substr(opened_at,1,10) >= ?"
+            " AND substr(opened_at,1,10) = substr(closed_at,1,10)"
+            " GROUP BY symbol, day",
+            (oldest,),
+        ).fetchall()
+        for r in rows:
+            if r["day"] in days:
+                key = (r["symbol"].upper(), r["day"])
+                per_key[key] = max(per_key.get(key, 0), r["n"] or 0)
+    return sum(per_key.values())
+
+
+def pdt_guard_applies(alpaca, cfg: Dict) -> bool:
+    """PDT guard runs live always; in paper unless config pdt_guard_in_paper='false'."""
+    if not alpaca.paper:
+        return True
+    return str(cfg.get("pdt_guard_in_paper", "true")).strip().lower() != "false"
+
+
+def pdt_blocks_buy(symbol: str, cycle_id: int = None, today=None) -> bool:
+    """True if a new BUY must be skipped under the PDT rule. Only call for buys —
+    sells/exits are never PDT-blocked (blocking an exit would trap risk).
+
+    With 3 day trades already in the rolling window, any new entry could become
+    the 4th (it can be stopped out the same day, and that exit is never
+    blocked), so the buy itself is refused.
+    """
+    try:
+        day_trades = count_day_trades_rolling(today)
+    except Exception as e:
+        # Fail closed — can't verify PDT headroom, don't open a new position.
+        logger.warning(f"PDT count failed ({e}) — skipping buy {symbol} (fail-closed)")
+        try:
+            record_error("pdt_blocked", f"Blocked buy {symbol} — PDT count unavailable: {e}", cycle_id)
+        except Exception:
+            pass
+        return True
+    if day_trades >= PDT_MAX_DAY_TRADES:
+        logger.warning(
+            f"PDT guard: {day_trades} day trades in last {PDT_WINDOW_BUSINESS_DAYS} business days "
+            f"— buy {symbol} blocked (a 4th would flag pattern-day-trader)"
+        )
+        record_error(
+            "pdt_blocked",
+            f"Blocked buy {symbol} — {day_trades} day trades in rolling "
+            f"{PDT_WINDOW_BUSINESS_DAYS}-business-day window (max {PDT_MAX_DAY_TRADES})",
+            cycle_id,
+        )
+        return True
+    return False
 
 
 # ─── Execution ───────────────────────────────────────────────────────────────
@@ -265,12 +351,8 @@ def execute_decision(
                 f"×{catalyst.position_size_multiplier:.1f} — {catalyst.primary_reason}"
             )
 
-        if not alpaca.paper:
-            day_trades = count_day_trades_today()
-            if day_trades >= 3:
-                logger.warning(f"PDT limit approaching ({day_trades} today) — skipping {symbol}")
-                record_error("pdt_guard", f"Blocked buy {symbol} — {day_trades} day trades today", cycle_id)
-                return None
+        if pdt_guard_applies(alpaca, cfg) and pdt_blocks_buy(symbol, cycle_id):
+            return None
 
         # Hard guard: never use margin — only deploy actual cash on hand
         available_cash = max(float(account.cash), 0.0)

@@ -496,6 +496,10 @@ DEFAULT_CONFIG = {
     # LLM provider config — swap model/provider without restarting the daemon
     "llm_provider": "anthropic_cli",   # anthropic_cli | anthropic_api | openai | gemini | grok | ollama
     "llm_model":    "claude-sonnet-4-6",
+    # Safety: validator error/timeout BLOCKS the buy ('false' = old fail-open PASS)
+    "validator_fail_closed": "true",
+    # Safety: run the pattern-day-trade guard in paper too, so paper behaves like live
+    "pdt_guard_in_paper": "true",
 }
 
 

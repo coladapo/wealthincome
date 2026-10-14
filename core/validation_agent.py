@@ -10,7 +10,10 @@ focused skeptical question and returns a PASS / BLOCK / WARN verdict.
 
 Design principles:
   - Fast: short prompt, small token budget (~300 output tokens max)
-  - Fault-tolerant: any failure → PASS (never block a trade due to validator crash)
+  - Fails CLOSED by default: if the validator errors or times out, the buy is
+    BLOCKed (block_reason "validator_unavailable", _source "fail_closed").
+    Config key `validator_fail_closed` ('true' default / 'false') — 'false'
+    restores the old fail-open behaviour (error → PASS, _source "fallback").
   - Provider-agnostic: uses same llm_router dispatch as main trader
   - Auditable: every validation stored in DB (validation_results table)
   - HOLD decisions always pass — only BUY is validated pre-execution
@@ -28,6 +31,23 @@ logger = logging.getLogger(__name__)
 PASS  = "pass"
 WARN  = "warn"    # proceed but log the concern
 BLOCK = "block"   # do not execute this trade
+
+# Validator model-call timeout. The isolated brain call completes in ~60-90 s;
+# the old 30 s guaranteed a timeout (and, when failing open, a waved-through buy).
+VALIDATOR_TIMEOUT_S = 90
+
+VALIDATOR_UNAVAILABLE = "validator_unavailable"
+FAIL_CLOSED_LOG = "validator unavailable — buy skipped (fail-closed)"
+
+
+def _fail_closed_enabled() -> bool:
+    """Read `validator_fail_closed` from config. Unreadable config → fail closed."""
+    try:
+        from backend.db import get_config
+        return str(get_config().get("validator_fail_closed", "true")).strip().lower() != "false"
+    except Exception:
+        return True
+
 
 # Risk factors that trigger an automatic BLOCK without LLM call (rule-based fast path)
 _HARD_BLOCK_RULES = [
@@ -153,11 +173,13 @@ def validate_decision(
             "risk_score":   0-10,
             "top_risks":    [...],
             "block_reason": str or None,
-            "_source":      "hard_rule" | "llm" | "fallback",
+            "_source":      "hard_rule" | "llm" | "fail_closed" | "fallback",
             "_duration_ms": int,
         }
 
-    Never raises — any failure returns a PASS with _source="fallback".
+    Never raises. If the LLM call errors or times out: BLOCK with
+    block_reason="validator_unavailable", _source="fail_closed" (default), or
+    PASS with _source="fallback" when config validator_fail_closed='false'.
     """
     t0 = time.time()
     action = decision.get("action", "hold").lower()
@@ -207,7 +229,7 @@ def validate_decision(
         if not fn:
             raise ValueError(f"Unknown provider: {provider}")
 
-        text_output, _raw_usage = fn(VALIDATION_SYSTEM_PROMPT, user_prompt, model, timeout=30)
+        text_output, _raw_usage = fn(VALIDATION_SYSTEM_PROMPT, user_prompt, model, timeout=VALIDATOR_TIMEOUT_S)
         result = _parse_trading_json(text_output)
 
         verdict = result.get("verdict", PASS).lower()
@@ -234,6 +256,18 @@ def validate_decision(
         return out
 
     except Exception as e:
+        if _fail_closed_enabled():
+            # Logged once (as FAIL_CLOSED_LOG) by validate_decisions, the caller
+            # the trader uses — keep the error detail at INFO to avoid duplicates.
+            logger.info(f"Validation agent error for {decision.get('symbol', '?')}: {e!r}")
+            return {
+                "verdict":      BLOCK,
+                "risk_score":   10,
+                "top_risks":    [f"validator error: {e!r}"[:300]],
+                "block_reason": VALIDATOR_UNAVAILABLE,
+                "_source":      "fail_closed",
+                "_duration_ms": int((time.time() - t0) * 1000),
+            }
         logger.warning(f"Validation agent failed (non-fatal, defaulting to PASS): {e}")
         return {
             "verdict":      PASS,
@@ -266,6 +300,9 @@ def validate_decisions(
 
         if v["verdict"] == BLOCK:
             blocked_count += 1
+            if v.get("_source") == "fail_closed":
+                logger.warning(f"{FAIL_CLOSED_LOG}: {d.get('symbol', '?')}")
+                continue
             logger.warning(
                 f"BLOCKED: {d.get('action','?').upper()} {d.get('symbol','?')} — "
                 f"{v['block_reason']}"
