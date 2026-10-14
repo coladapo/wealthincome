@@ -65,6 +65,23 @@ def _post_via_webhook(text: str, attempts: int = 3, delay: int = 30) -> bool:
     return False
 
 
+def _brain_and_gate():
+    """Brain-health and real-money-gate inputs; a failure here must never
+    cost the digest itself, so each one degrades to None (line omitted)."""
+    brain = gate = None
+    try:
+        from core.brain_health import brain_stats
+        brain = brain_stats()
+    except Exception as e:
+        print(f"brain stats failed: {e}", file=sys.stderr)
+    try:
+        from core.real_money_gate import compute_gate
+        gate = compute_gate()
+    except Exception as e:
+        print(f"gate failed: {e}", file=sys.stderr)
+    return brain, gate
+
+
 def main() -> int:
     from core.scorecard import compute_scorecard, format_digest
     from backend.db import DB_PATH
@@ -79,7 +96,9 @@ def main() -> int:
     conn.close()
 
     card = compute_scorecard()
-    text = format_digest(card, trades_today=trades_today, errors_today=errors_today)
+    brain, gate = _brain_and_gate()
+    text = format_digest(card, trades_today=trades_today, errors_today=errors_today,
+                         brain=brain, gate=gate)
 
     if _post_via_webhook(text):
         _heartbeat("posted via webhook")

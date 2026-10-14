@@ -426,6 +426,12 @@ def scorecard(days: int = None):
     return compute_scorecard(days=days)
 
 
+@app.get("/gate")
+def gate():
+    from core.real_money_gate import compute_gate
+    return compute_gate()
+
+
 @app.get("/decisions/{decision_id}")
 def decision_detail(decision_id: int):
     d = get_ai_decision_detail(decision_id)

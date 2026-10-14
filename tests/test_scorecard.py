@@ -89,3 +89,20 @@ def test_digest_formats_without_error(tmp_db, monkeypatch):
     text = scorecard.format_digest(scorecard.compute_scorecard(), trades_today=2, errors_today=0)
     assert "daily digest" in text
     assert "fill rate" in text
+
+
+def test_digest_appends_brain_and_gate_lines(tmp_db, monkeypatch):
+    _seed(tmp_db)
+    monkeypatch.setattr(scorecard, "DB_PATH", tmp_db)
+    card = scorecard.compute_scorecard()
+    base = scorecard.format_digest(card, trades_today=2, errors_today=0)
+    text = scorecard.format_digest(
+        card, trades_today=2, errors_today=0,
+        brain={"asks": 33, "successes": 31, "success_rate_pct": 93.9},
+        gate={"passed_count": 2, "total": 9, "next_blocker": "100+ clean closed trades"},
+    )
+    assert text.startswith(base + "\n")  # existing lines unchanged
+    assert text.splitlines()[-2:] == [
+        "Brain: 31/33 calls OK today (94%)",
+        "Real-money gate: 2/9 — next blocker: 100+ clean closed trades",
+    ]

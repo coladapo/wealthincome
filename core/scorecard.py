@@ -167,7 +167,25 @@ def compute_scorecard(days: Optional[int] = None) -> Dict[str, Any]:
         conn.close()
 
 
-def format_digest(card: Dict[str, Any], trades_today: int = 0, errors_today: int = 0) -> str:
+def format_brain_line(brain: Dict[str, Any]) -> str:
+    """`Brain: 31/33 calls OK today (94%)` from core.brain_health.brain_stats()."""
+    if not brain.get("asks"):
+        return "Brain: no calls today"
+    return (f"Brain: {brain['successes']}/{brain['asks']} calls OK today "
+            f"({brain['success_rate_pct']:.0f}%)")
+
+
+def format_gate_line(gate: Dict[str, Any]) -> str:
+    """`Real-money gate: 2/9 — next blocker: <label>` from core.real_money_gate."""
+    head = f"Real-money gate: {gate['passed_count']}/{gate['total']}"
+    if gate.get("next_blocker"):
+        return f"{head} — next blocker: {gate['next_blocker']}"
+    return f"{head} — all clear"
+
+
+def format_digest(card: Dict[str, Any], trades_today: int = 0, errors_today: int = 0,
+                  brain: Optional[Dict[str, Any]] = None,
+                  gate: Optional[Dict[str, Any]] = None) -> str:
     """One-screen plain-text digest for Slack."""
     o = card["overall"]
     e = card["execution"]
@@ -189,6 +207,10 @@ def format_digest(card: Dict[str, Any], trades_today: int = 0, errors_today: int
     if worst and (worst[0]["net_pnl"] or 0) < 0:
         w = worst[0]
         lines.append(f"Biggest leak: {w['close_reason']} exits — {w['n']} trades, ${w['net_pnl']:,.0f}")
+    if brain is not None:
+        lines.append(format_brain_line(brain))
+    if gate is not None:
+        lines.append(format_gate_line(gate))
     return "\n".join(lines)
 
 
