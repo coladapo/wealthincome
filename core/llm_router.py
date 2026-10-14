@@ -13,6 +13,7 @@ Adding a new provider = add one _run_<name>() function + one entry in _PROVIDERS
 
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import time
@@ -91,19 +92,76 @@ def _normalize_usage(raw: Dict[str, Any], provider: str) -> Dict[str, int]:
 
 # ── Provider implementations ──────────────────────────────────────────────────
 
+# ── Isolated brain call (2026-10-14) ─────────────────────────────────────────
+# Every decision used to run `claude` with the operator's full interactive
+# setup: personal settings.json (effort "high"), ~22 hook scripts, plugins, MCP
+# servers and a 45 KB global CLAUDE.md. On a loaded machine that boot stalled
+# past the 240 s timeout on 50–85% of calls (Sep–Oct 2026), and on Oct 5 a
+# SessionEnd hook failure killed every call. The trader's brain must be a bare
+# model call that still uses the subscription login, so:
+#   * `--setting-sources ""`     → no user/project/local settings, hence no
+#                                   hooks, no plugins, no CLAUDE.md
+#   * `--strict-mcp-config`      → no MCP servers
+#   * `--disable-slash-commands`, `--no-session-persistence`
+#   * run from an empty temp cwd  → nothing project-level can be picked up
+#   * pinned binary via WEALTHINCOME_CLAUDE_BIN (default <project>/bin/claude,
+#     falling back to `claude` on PATH) and auto-update disabled.
+# NOT `--bare`: that mode refuses the OAuth/keychain login and wants an API key.
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLI_ISOLATION_FLAGS = [
+    "--setting-sources", "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+]
+
+
+def _claude_binary() -> str:
+    env_bin = os.environ.get("WEALTHINCOME_CLAUDE_BIN")
+    if env_bin:
+        return env_bin
+    pinned = os.path.join(_PROJECT_DIR, "bin", "claude")
+    return pinned if os.path.exists(pinned) else "claude"
+
+
+def build_cli_argv(model: str, system_file: str) -> list:
+    """The exact argv the brain runs — kept separate so tests can pin it."""
+    return [
+        _claude_binary(), "-p",
+        "--output-format", "json",
+        "--model", model,
+        "--system-prompt-file", system_file,
+        *CLI_ISOLATION_FLAGS,
+    ]
+
+
 def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout: int) -> Dict[str, Any]:
-    """Uses `claude -p` CLI (no API key — requires Claude Max subscription)."""
+    """Uses `claude -p` CLI (no API key — requires Claude Max subscription).
+    Runs isolated from the operator's interactive settings; see note above."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write(system_prompt)
         system_file = f.name
+    empty_cwd = tempfile.mkdtemp(prefix="wi-brain-")
+    env = dict(os.environ)
+    env["DISABLE_AUTOUPDATER"] = "1"
+    env["DISABLE_UPDATES"] = "1"
 
-    proc = subprocess.run(
-        ["claude", "-p", "--output-format", "json", "--model", model, "--system-prompt-file", system_file],
-        input=user_prompt,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            build_cli_argv(model, system_file),
+            input=user_prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=empty_cwd,
+            env=env,
+        )
+    finally:
+        try:
+            os.unlink(system_file)
+            os.rmdir(empty_cwd)
+        except OSError:
+            pass
 
     if proc.returncode != 0:
         raise RuntimeError(f"Claude CLI exited {proc.returncode}: {proc.stderr[:300]}")

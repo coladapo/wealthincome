@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wealthincome.trader</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- Mini host (moved from the M2 laptop 2026-10-14). The brain runs the
+         PINNED claude binary in <project>/bin, isolated from the operator's
+         interactive settings (see core/llm_router.py). -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/wivak/puo-jects/____active/wealthincome-unified/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/wivak</string>
+        <key>WEALTHINCOME_CLAUDE_BIN</key>
+        <string>/Users/wivak/puo-jects/____active/wealthincome-unified/bin/claude</string>
+        <key>DISABLE_AUTOUPDATER</key>
+        <string>1</string>
+        <key>DISABLE_UPDATES</key>
+        <string>1</string>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Users/wivak/puo-jects/____active/wealthincome-unified &amp;&amp; set -a &amp;&amp; source .env &amp;&amp; set +a &amp;&amp; exec venv/bin/python -m backend.trader</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/wivak/puo-jects/____active/wealthincome-unified/logs/trader.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/wivak/puo-jects/____active/wealthincome-unified/logs/trader.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/wivak/puo-jects/____active/wealthincome-unified</string>
+</dict>
+</plist>

@@ -87,3 +87,6 @@ dump.rdb
 *.db
 *.sqlite
 *.sqlite3
+# pinned Claude CLI copy (250 MB) and laptop plist snapshot
+bin/
+launchd/_laptop_plists.txt
