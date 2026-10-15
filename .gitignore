@@ -85,6 +85,8 @@ dump.rdb
 
 # SQLite databases
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 # pinned Claude CLI copy (250 MB) and laptop plist snapshot
