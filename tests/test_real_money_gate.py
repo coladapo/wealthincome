@@ -67,7 +67,7 @@ def test_gate_mostly_failing(gate_db):
     # deployment over last 30d (from 09-14): 09-20 (36.8%) and NOW-1d (20.2%); 09-01 excluded
     assert items["d"]["value"] == pytest.approx(28.5, abs=0.1) and not items["d"]["pass"]
     assert card["passed_count"] == 4  # e, h, and the two default-on switches f, g
-    assert card["summary"] == "gate: 2/9"
+    assert card["summary"] == "gate: 4/9"
     assert card["next_blocker"] == items["a"]["label"]
 
 
