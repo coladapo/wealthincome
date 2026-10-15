@@ -17,6 +17,209 @@ logger = logging.getLogger("reconciler")
 _reconciler_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 
+# Don't touch a position until its entry is this old: the trader writes the
+# lifecycle row and trailing stop a few seconds after the fill, and the
+# reconciler (API process) must not race it.
+RECOVERY_GRACE_SECONDS = 600
+DEFAULT_TRAIL_PCT = 12.0  # same conservative fixed trail as core/self_heal.py
+
+
+def _log_swallowed(error_type: str, message: str):
+    """Call from inside an except block: full traceback to the log plus an
+    errors-table row, instead of a silent `pass`. Never raises."""
+    logger.exception(message)
+    try:
+        _record_error_once(error_type, message[:500], hours=1)
+    except Exception:
+        logger.exception(f"Could not write errors row for {error_type}")
+
+
+def _record_error_once(error_type: str, message: str, hours: int = 24):
+    """errors-table row, at most one per (type, message) per `hours` — the
+    reconciler runs every 30s and must not flood the table."""
+    from backend.db import db, record_error
+    from datetime import timedelta
+    since = (datetime.now() - timedelta(hours=hours)).isoformat()
+    with db() as conn:
+        dup = conn.execute(
+            "SELECT 1 FROM errors WHERE error_type=? AND message=? AND occurred_at>=? LIMIT 1",
+            (error_type, message, since),
+        ).fetchone()
+    if not dup:
+        record_error(error_type, message)
+
+
+def _age_seconds(ts: Optional[str], now: datetime) -> Optional[float]:
+    """Seconds since an ISO timestamp (naive local, or UTC with Z/offset)."""
+    if not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone().replace(tzinfo=None)
+    return (now - t).total_seconds()
+
+
+def _recover_orphan_positions(alpaca, db_path: str, now: Optional[datetime] = None):
+    """Broker holds a position that came from OUR buy order, but no lifecycle row
+    references that order (trader killed between submit and lifecycle write).
+    Create the lifecycle row so the position is managed (stop re-armed by
+    _ensure_trailing_stops). A held position with no order of ours behind it is
+    ambiguous (manual buy?) — logged, never auto-adopted (same rule as self_heal)."""
+    from backend.db import get_open_positions_lifecycle, open_position_lifecycle, record_order, record_error
+    now = now or datetime.now()
+    open_syms = {r["symbol"].upper() for r in get_open_positions_lifecycle()}
+
+    for p in alpaca.get_positions():
+        sym = p.symbol.upper()
+        held = abs(float(p.qty or 0))
+        if sym in open_syms or held <= 0:
+            continue
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        entry = conn.execute(
+            "SELECT * FROM orders WHERE upper(symbol)=? AND side='buy'"
+            " AND NOT (status IN ('canceled','expired','rejected') AND COALESCE(filled_qty,0)=0)"
+            " ORDER BY id DESC LIMIT 1",
+            (sym,),
+        ).fetchone()
+        entry = dict(entry) if entry else None
+        linked = False
+        if entry:
+            linked = conn.execute(
+                "SELECT 1 FROM position_lifecycle WHERE"
+                " (entry_order_group_id IS NOT NULL AND entry_order_group_id=?)"
+                " OR (entry_trade_id IS NOT NULL AND entry_trade_id=?) LIMIT 1",
+                (entry.get("order_group_id"), entry.get("trade_id")),
+            ).fetchone() is not None
+        conn.close()
+
+        source = "orders"
+        if entry is None:
+            # Killed before record_order: look for our keyed buy at the broker.
+            source = "broker"
+            for o in alpaca.get_orders(status="closed", limit=50, symbols=[sym]):
+                cid = ((o.raw or {}).get("client_order_id") or "")
+                if o.side == "buy" and float(o.filled_qty or 0) > 0 and cid.startswith("wi-") \
+                        and not cid.startswith("wi-ts-"):
+                    entry = {"alpaca_order_id": o.id, "filled_at": o.filled_at,
+                             "status_updated_at": o.filled_at or o.created_at,
+                             "client_order_id": cid, "cycle_id": None, "trade_id": None,
+                             "order_group_id": None, "_order": o}
+                    break
+
+        if entry is None or linked:
+            why = ("its last buy order is already linked to a lifecycle row" if linked
+                   else "no buy order of ours found")
+            msg = f"{sym}: broker holds {held:g} shares with no open lifecycle row — {why}; needs a human"
+            logger.warning(msg)
+            _record_error_once("untracked_position", msg)
+            continue
+
+        age = _age_seconds(entry.get("filled_at") or entry.get("status_updated_at"), now)
+        if age is not None and age < RECOVERY_GRACE_SECONDS:
+            continue  # trader may still be writing the lifecycle row
+
+        if source == "broker":
+            o = entry["_order"]
+            record_order(
+                alpaca_order_id=o.id, symbol=sym, side="buy", order_type=o.order_type,
+                qty=float(o.qty or held), status=o.status, order_class="simple",
+                raw_json=None, client_order_id=entry["client_order_id"],
+            )
+        pos_id = open_position_lifecycle(
+            symbol=sym, entry_price=float(p.avg_entry_price), entry_qty=held,
+            cycle_id=entry.get("cycle_id"), trade_id=entry.get("trade_id"),
+            order_group_id=entry.get("order_group_id"),
+        )
+        if entry.get("trade_id"):
+            from backend.db import update_trade_links
+            update_trade_links(entry["trade_id"], position_lifecycle_id=pos_id)
+        msg = (f"{sym}: orphan fill recovered from {source} (order {entry['alpaca_order_id']}) — "
+               f"lifecycle {pos_id} opened for {held:g} @ ${float(p.avg_entry_price):.2f}")
+        logger.warning(msg)
+        record_error("orphan_position_recovered", msg)
+        open_syms.add(sym)
+
+        # Its entry is already past the grace window, so arm the stop now rather
+        # than waiting for _ensure_trailing_stops' age check on the new row.
+        if alpaca.is_market_open() and not any(
+                o.side == "sell" for o in alpaca.get_orders(status="open", limit=500, symbols=[sym])):
+            from backend.db import get_open_position_by_symbol
+            _arm_trailing_stop(alpaca, get_open_position_by_symbol(sym), int(held))
+
+
+def _ensure_trailing_stops(alpaca, db_path: str, now: Optional[datetime] = None):
+    """Re-place a missing trailing stop on every open, broker-held position that
+    has no open sell order (issue 5: stops never recorded, or cancelled before a
+    partial sell and never re-armed). Exactly once: a held stop is an open sell
+    and is skipped; the deterministic client_order_id makes a replayed placement
+    a no-op at Alpaca. Skips deliberate catalyst suspensions and anything with
+    order activity in the grace window (the trader may be mid-exit)."""
+    from backend.db import get_open_positions_lifecycle
+    now = now or datetime.now()
+    if not alpaca.is_market_open():
+        return  # same rule as self_heal: stops are armed in session only
+
+    held = {p.symbol.upper(): p for p in alpaca.get_positions()}
+    open_sell_syms = {o.symbol.upper() for o in alpaca.get_orders(status="open", limit=500)
+                      if o.side == "sell"}
+    from datetime import timedelta
+    recent_cutoff = (now - timedelta(seconds=RECOVERY_GRACE_SECONDS)).isoformat()
+
+    for pos in get_open_positions_lifecycle():
+        sym = pos["symbol"].upper()
+        if sym not in held or sym in open_sell_syms or pos.get("stop_suspended_reason"):
+            continue
+        age = _age_seconds(pos.get("opened_at"), now)
+        if age is not None and age < RECOVERY_GRACE_SECONDS:
+            continue
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        busy = conn.execute(
+            "SELECT 1 FROM orders WHERE upper(symbol)=? AND status_updated_at>=? LIMIT 1",
+            (sym, recent_cutoff),
+        ).fetchone()
+        conn.close()
+        if busy:
+            continue
+
+        _arm_trailing_stop(alpaca, pos, int(abs(float(held[sym].qty))))
+
+
+def _arm_trailing_stop(alpaca, pos: dict, qty: int):
+    """Place one trailing stop for a lifecycle row and record it everywhere
+    (lifecycle row, orders, errors 'trailing_stop_replaced', log)."""
+    from backend.db import update_position_trailing_stop, record_order, record_error
+    from backend.order_keys import trailing_stop_key
+    sym = pos["symbol"].upper()
+    if qty < 1:
+        return
+    trail = pos.get("trail_percent") or DEFAULT_TRAIL_PCT
+    key = trailing_stop_key(pos["id"], qty, pos.get("trailing_stop_order_id"))
+    try:
+        ts = alpaca.place_trailing_stop_order(symbol=sym, qty=qty, trail_percent=trail,
+                                              client_order_id=key)
+    except Exception as e:
+        _log_swallowed("trailing_stop_replace_failed",
+                       f"{sym}: could not re-place trailing stop on lifecycle {pos['id']}: {e}")
+        return
+    update_position_trailing_stop(pos["id"], ts.id, trail)
+    record_order(
+        alpaca_order_id=ts.id, symbol=sym, side="sell", order_type="trailing_stop",
+        qty=qty, status=ts.status, order_class="simple", time_in_force="gtc",
+        trade_id=pos.get("entry_trade_id"), order_group_id=pos.get("entry_order_group_id"),
+        client_order_id=key,
+    )
+    msg = (f"{sym}: trailing stop re-placed on lifecycle {pos['id']} — {qty} shares, "
+           f"trail {trail}% (previous stop {pos.get('trailing_stop_order_id') or 'none'}), order {ts.id}")
+    logger.warning(msg)
+    record_error("trailing_stop_replaced", msg)
+
 
 def _reconcile_once(alpaca):
     from backend.db import (
@@ -174,8 +377,9 @@ def _reconcile_once(alpaca):
                         try:
                             from core.performance_intelligence import run_signal_calibration
                             run_signal_calibration()
-                        except Exception:
-                            pass
+                        except Exception as ce:
+                            _log_swallowed("signal_calibration_failed",
+                                           f"Signal calibration recompute failed after {pos['symbol']} close: {ce}")
                         break
 
                 logger.info(
@@ -195,6 +399,16 @@ def _reconcile_once(alpaca):
         _reconcile_sell_fills(alpaca, DB_PATH)
     except Exception as e:
         logger.warning(f"Sell fill reconciliation error: {e}")
+
+    # ── 3b. Restart recovery: orphan fills → lifecycle rows; missing stops ───
+    try:
+        _recover_orphan_positions(alpaca, DB_PATH)
+    except Exception as e:
+        _log_swallowed("orphan_recovery_failed", f"Orphan position recovery failed: {e}")
+    try:
+        _ensure_trailing_stops(alpaca, DB_PATH)
+    except Exception as e:
+        _log_swallowed("trailing_stop_replace_failed", f"Trailing stop re-arm failed: {e}")
 
     # ── 4. SMA50 exit monitor (MomentumHold strategy) ────────────────────────
     # Only run when market is open — avoid false triggers from after-hours prices.
@@ -379,8 +593,9 @@ def _reconcile_sell_fills(alpaca, db_path: str):
                         exit_at = o.filled_at
                         close_reason = "sell_filled"
                         break
-            except Exception:
-                pass
+            except Exception as oe:
+                _log_swallowed("reconciler_sell_lookup_failed",
+                               f"Could not look up filled sell for {symbol}: {oe}")
 
             # Fallback: use entry price if we can't find fill (marks at cost, not ideal but correct)
             if not exit_price:
@@ -389,8 +604,9 @@ def _reconcile_sell_fills(alpaca, db_path: str):
                     if current:
                         exit_price = current
                         close_reason = "position_closed"
-                except Exception:
-                    pass
+                except Exception as pe:
+                    _log_swallowed("reconciler_price_lookup_failed",
+                                   f"Could not price {symbol} for lifecycle close: {pe}")
 
             if not exit_price:
                 exit_price = pos.get("entry_price", 0)
@@ -413,8 +629,9 @@ def _reconcile_sell_fills(alpaca, db_path: str):
                     exit_price=exit_price,
                     exit_date=(exit_at or datetime.now().isoformat())[:10],
                 )
-            except Exception:
-                pass
+            except Exception as re_:
+                _log_swallowed("record_post_exit_failed",
+                               f"record_post_exit failed for {symbol}: {re_}")
 
             pnl_str = f"${realized_pnl:+.2f}" if realized_pnl is not None else "unknown"
             logger.info(
@@ -425,8 +642,9 @@ def _reconcile_sell_fills(alpaca, db_path: str):
             try:
                 from core.performance_intelligence import run_signal_calibration
                 run_signal_calibration()
-            except Exception:
-                pass
+            except Exception as ce:
+                _log_swallowed("signal_calibration_failed",
+                               f"Signal calibration recompute failed after {symbol} close: {ce}")
 
     except Exception as e:
         logger.warning(f"_reconcile_sell_fills failed: {e}")

@@ -123,6 +123,8 @@ class AlpacaClient:
                 body = ""
                 if e.response is not None:
                     body = e.response.text[:300]
+                    if method == "GET" and e.response.status_code == 404:
+                        raise  # "not found" lookups are expected answers, not errors
                 logger.error(f"Alpaca {method} {url} → HTTP {e.response.status_code if e.response is not None else '?'}: {body}")
                 raise
         raise last_exc
@@ -171,6 +173,42 @@ class AlpacaClient:
 
     def get_clock(self) -> Dict:
         return self._get("/clock")
+
+    def get_account_raw(self) -> Dict:
+        """Full /account dict (includes last_equity, created_at)."""
+        return self._get("/account")
+
+    def get_account_activities(
+        self,
+        activity_types: Optional[str] = None,
+        page_size: int = 100,
+        page_token: Optional[str] = None,
+        direction: str = "asc",
+    ) -> List[Dict]:
+        """One page of account activities (read-only). activity_types e.g. 'FILL'
+        or 'FILL,DIV,FEE'; None = every type."""
+        params = {"page_size": page_size, "direction": direction}
+        if activity_types:
+            params["activity_types"] = activity_types
+        if page_token:
+            params["page_token"] = page_token
+        return self._get("/account/activities", params=params)
+
+    def iter_account_activities(self, activity_types: Optional[str] = None,
+                                page_size: int = 100) -> List[Dict]:
+        """Every activity for the account's full history, oldest first.
+        Paginates with the last row's id as the next page_token."""
+        out: List[Dict] = []
+        token = None
+        while True:
+            page = self.get_account_activities(activity_types, page_size, token, "asc")
+            if not page:
+                break
+            out.extend(page)
+            if len(page) < page_size:
+                break
+            token = page[-1]["id"]
+        return out
 
     # ─── Positions ──────────────────────────────────────────────────────────
 
@@ -265,6 +303,7 @@ class AlpacaClient:
         side: AlpacaOrderSide,
         time_in_force: AlpacaTimeInForce = AlpacaTimeInForce.DAY,
         enforce_cap: bool = True,
+        client_order_id: Optional[str] = None,
     ) -> AlpacaOrder:
         # enforce_cap defaults True so manual paths (dashboard form, /order endpoint)
         # are protected automatically. The autonomous traders do their own sizing
@@ -278,8 +317,7 @@ class AlpacaClient:
             "type": "market",
             "time_in_force": time_in_force.value,
         }
-        data = self._post("/orders", body)
-        return self._parse_order(data)
+        return self._submit_order(body, client_order_id)
 
     def place_limit_order(
         self,
@@ -289,6 +327,7 @@ class AlpacaClient:
         limit_price: float,
         time_in_force: AlpacaTimeInForce = AlpacaTimeInForce.DAY,
         enforce_cap: bool = True,
+        client_order_id: Optional[str] = None,
     ) -> AlpacaOrder:
         if enforce_cap:
             self._enforce_concentration_cap(symbol, qty, side, price=limit_price)
@@ -300,8 +339,7 @@ class AlpacaClient:
             "limit_price": str(round(limit_price, 2)),
             "time_in_force": time_in_force.value,
         }
-        data = self._post("/orders", body)
-        return self._parse_order(data)
+        return self._submit_order(body, client_order_id)
 
     def place_bracket_order(
         self,
@@ -310,6 +348,7 @@ class AlpacaClient:
         side: AlpacaOrderSide,
         take_profit_price: float,
         stop_loss_price: float,
+        client_order_id: Optional[str] = None,
     ) -> AlpacaOrder:
         """Market order with automatic take profit and stop loss legs"""
         body = {
@@ -322,14 +361,14 @@ class AlpacaClient:
             "take_profit": {"limit_price": str(round(take_profit_price, 2))},
             "stop_loss": {"stop_price": str(round(stop_loss_price, 2))},
         }
-        data = self._post("/orders", body)
-        return self._parse_order(data)
+        return self._submit_order(body, client_order_id)
 
     def place_trailing_stop_order(
         self,
         symbol: str,
         qty: float,
         trail_percent: float,
+        client_order_id: Optional[str] = None,
     ) -> AlpacaOrder:
         """
         Sell-side trailing stop that trails trail_percent% below the high-water mark.
@@ -344,8 +383,44 @@ class AlpacaClient:
             "trail_percent": str(round(trail_percent, 2)),
             "time_in_force": "gtc",
         }
-        data = self._post("/orders", body)
+        return self._submit_order(body, client_order_id)
+
+    def _submit_order(self, body: Dict, client_order_id: Optional[str] = None) -> AlpacaOrder:
+        """POST an order, idempotently when a client_order_id is given.
+
+        _request_with_retry re-sends the POST after a connection/SSL error, and
+        that error can arrive AFTER Alpaca accepted the order — without a key
+        the retry is a second, real order. With a key Alpaca rejects the repeat
+        (422 "client_order_id must be unique") and we return the order that
+        already exists instead of raising."""
+        if client_order_id:
+            body = dict(body, client_order_id=client_order_id)
+        try:
+            data = self._post("/orders", body)
+        except requests.exceptions.HTTPError as e:
+            resp = e.response
+            if (client_order_id and resp is not None and resp.status_code == 422
+                    and "client_order_id" in (resp.text or "")):
+                existing = self.get_order_by_client_id(client_order_id)
+                if existing is not None:
+                    logger.warning(
+                        f"Duplicate submit suppressed: client_order_id {client_order_id} "
+                        f"already exists as order {existing.id}"
+                    )
+                    return existing
+            raise
         return self._parse_order(data)
+
+    def get_order_by_client_id(self, client_order_id: str) -> Optional[AlpacaOrder]:
+        """Look up an order by our idempotency key. None if Alpaca has no such order."""
+        try:
+            data = self._get("/orders:by_client_order_id",
+                             params={"client_order_id": client_order_id})
+            return self._parse_order(data)
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return None
+            raise
 
     def cancel_order(self, order_id: str) -> bool:
         return self._delete(f"/orders/{order_id}")
@@ -353,8 +428,12 @@ class AlpacaClient:
     def cancel_all_orders(self) -> bool:
         return self._delete("/orders")
 
-    def get_orders(self, status: str = "open", limit: int = 50) -> List[AlpacaOrder]:
-        data = self._get("/orders", params={"status": status, "limit": limit})
+    def get_orders(self, status: str = "open", limit: int = 50,
+                   symbols: Optional[List[str]] = None) -> List[AlpacaOrder]:
+        params = {"status": status, "limit": limit}
+        if symbols:
+            params["symbols"] = ",".join(symbols)
+        data = self._get("/orders", params=params)
         return [self._parse_order(o) for o in data]
 
     def get_order(self, order_id: str) -> Optional[AlpacaOrder]:

@@ -372,12 +372,20 @@ def init_db():
             ("cycles",            "llm_model",                "TEXT"),
             ("ai_decisions",      "llm_provider",             "TEXT"),
             ("ai_decisions",      "llm_model",                "TEXT"),
+            ("position_lifecycle","close_regime",             "TEXT"),
+            ("position_lifecycle","exit_preemptive_armed",    "TEXT"),
+            # Set when the trader deliberately skips the trailing stop (catalyst
+            # tier 2/3) so the reconciler doesn't re-arm what was suspended on purpose.
+            ("position_lifecycle","stop_suspended_reason",    "TEXT"),
+            # Idempotency key sent to Alpaca — replays/retries can't double-submit.
+            ("orders",            "client_order_id",          "TEXT"),
         ]
         for table, col, typedef in migrations:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
             except Exception:
                 pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_client_order_id ON orders(client_order_id)")
 
         # Create post_exit_tracking table
         conn.executescript("""
@@ -938,20 +946,33 @@ def record_order(
     trade_id: Optional[int] = None,
     order_group_id: Optional[int] = None,
     raw_json: Optional[str] = None,
+    client_order_id: Optional[str] = None,
 ) -> int:
     with db() as conn:
         cur = conn.execute("""
             INSERT INTO orders(
                 alpaca_order_id, symbol, side, order_type, order_class, time_in_force,
                 qty, limit_price, stop_price, status, status_updated_at,
-                signal_price, cycle_id, trade_id, order_group_id, raw_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                signal_price, cycle_id, trade_id, order_group_id, raw_json,
+                client_order_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             alpaca_order_id, symbol, side, order_type, order_class, time_in_force,
             qty, limit_price, stop_price, status, datetime.now().isoformat(),
             signal_price, cycle_id, trade_id, order_group_id, raw_json,
+            client_order_id,
         ))
         return cur.lastrowid
+
+
+def get_order_by_client_order_id(client_order_id: str) -> Optional[Dict]:
+    """The orders row already submitted under this idempotency key, if any."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM orders WHERE client_order_id=? ORDER BY id DESC LIMIT 1",
+            (client_order_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def update_order_status(
@@ -1130,6 +1151,15 @@ def update_position_trailing_stop(position_id: int, trailing_stop_order_id: str,
         conn.execute(
             "UPDATE position_lifecycle SET trailing_stop_order_id=?, trail_percent=? WHERE id=?",
             (trailing_stop_order_id, trail_percent, position_id)
+        )
+
+
+def set_position_stop_suspended(position_id: int, reason: str):
+    """Mark a trailing stop as deliberately skipped (catalyst suspension)."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE position_lifecycle SET stop_suspended_reason=? WHERE id=?",
+            (reason, position_id)
         )
 
 

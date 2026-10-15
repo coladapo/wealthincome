@@ -25,7 +25,9 @@ from backend.db import (
     update_order_group_exit, update_position_trailing_stop,
     record_equity_snapshot, upsert_daily_summary,
     get_performance_summary,
+    get_order_by_client_order_id, set_position_stop_suspended,
 )
+from backend.order_keys import order_idempotency_key, trailing_stop_key
 from core.alpaca_client import AlpacaClient, AlpacaOrderSide, AlpacaTimeInForce
 from core.claude_trader import SYSTEM_PROMPT, build_session_feedback_block
 from core.llm_router import run_decision
@@ -246,6 +248,43 @@ def pdt_blocks_buy(symbol: str, cycle_id: int = None, today=None) -> bool:
     return False
 
 
+# ─── Duplicate-order prevention ──────────────────────────────────────────────
+
+def already_submitted(client_order_id: str, alpaca, fail_closed: bool = True) -> Optional[str]:
+    """Where this key was already submitted: 'orders' (our ledger), 'broker'
+    (Alpaca has it but we never recorded it — killed between submit and
+    record), or None. A failed broker lookup counts as submitted when
+    fail_closed (buys); exits pass fail_closed=False — the key sent with the
+    order still stops Alpaca accepting a repeat, and an exit must not be
+    blocked by a flaky lookup."""
+    if get_order_by_client_order_id(client_order_id):
+        return "orders"
+    try:
+        if alpaca.get_order_by_client_id(client_order_id) is not None:
+            return "broker"
+    except Exception as e:
+        if fail_closed:
+            logger.warning(f"Could not check broker for client_order_id {client_order_id}: {e} — treating as submitted")
+            return "broker_unverified"
+        logger.warning(f"Could not check broker for client_order_id {client_order_id}: {e} — proceeding (exit)")
+    return None
+
+
+def cycle_already_bought(cycle_id, symbol: str) -> bool:
+    """True if this cycle already submitted a live buy for symbol. The LLM can
+    list a symbol twice and the positions snapshot is from cycle start, so
+    without this the second decision (different size → different key) buys again."""
+    from backend.db import db
+    with db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM orders WHERE cycle_id=? AND upper(symbol)=? AND side='buy'"
+            " AND NOT (status IN ('canceled','expired','rejected') AND COALESCE(filled_qty,0)=0)"
+            " LIMIT 1",
+            (cycle_id, symbol.upper()),
+        ).fetchone()
+    return row is not None
+
+
 # ─── Execution ───────────────────────────────────────────────────────────────
 
 def execute_decision(
@@ -386,6 +425,19 @@ def execute_decision(
             logger.info(f"Insufficient cash for {symbol} @ ${current_price:.2f} (available=${available_cash:,.0f})")
             return None
 
+        # Idempotency: the same decision (cycle+symbol+side+qty) is submitted at
+        # most once, across restarts and retried POSTs. Checked against our
+        # `orders` ledger first, then the broker (killed between submit and record).
+        entry_key = order_idempotency_key(cycle_id, symbol, "buy", qty)
+        if cycle_already_bought(cycle_id, symbol):
+            logger.info(f"Buy for {symbol} already submitted this cycle — skipping duplicate decision")
+            return None
+        seen = already_submitted(entry_key, alpaca)
+        if seen:
+            logger.warning(f"Duplicate buy suppressed: {symbol} x{qty} key {entry_key} already in {seen}")
+            record_error("duplicate_order_suppressed", f"buy {symbol} x{qty} key={entry_key} seen in {seen}", cycle_id)
+            return None
+
         # MomentumHold strategy: market entry + ATR-based trailing stop
         # NO fixed take-profit — we ride the trend until it breaks
         sym_data = market_data.get(symbol, {})
@@ -403,12 +455,13 @@ def execute_decision(
         # and nothing retried — the intended trade silently never existed. Now we
         # verify the IOC outcome and retry ONCE at a fresh price with a 0.5%
         # allowance. If that cancels too, we give up loudly (no price-chasing).
-        def _place_ioc(limit_px):
+        def _place_ioc(limit_px, attempt=0):
             return alpaca.place_limit_order(
                 symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
                 limit_price=limit_px,
                 time_in_force=AlpacaTimeInForce.IOC,
                 enforce_cap=False,  # trader sizes against its own cap (core/risk_limits.py)
+                client_order_id=order_idempotency_key(cycle_id, symbol, "buy", qty, attempt),
             )
 
         def _ioc_unfilled(o):
@@ -424,6 +477,7 @@ def execute_decision(
         limit_price = round(current_price * 1.001, 2)  # allow 0.1% above signal
         order = None
         order_type_used = "limit_ioc"
+        ioc_attempt = 0
         try:
             order = _place_ioc(limit_price)
             logger.info(
@@ -437,7 +491,8 @@ def execute_decision(
                     f"IOC entry cancelled unfilled for {symbol} (limit ${limit_price:.2f}) — "
                     f"retrying once at ${retry_limit:.2f} (fresh ${fresh_price:.2f} +0.5%)"
                 )
-                order = _place_ioc(retry_limit)
+                ioc_attempt = 1
+                order = _place_ioc(retry_limit, attempt=ioc_attempt)
                 order_type_used = "limit_ioc_retry"
                 if _ioc_unfilled(order):
                     logger.warning(
@@ -446,7 +501,12 @@ def execute_decision(
                     )
         except Exception as e:
             logger.warning(f"Limit order failed for {symbol}: {e} — falling back to market")
-            order = alpaca.place_market_order(symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY, enforce_cap=False)
+            # Same key as the latest IOC attempt: if that POST actually reached
+            # Alpaca (timeout after accept), Alpaca refuses the repeat and the
+            # client hands back the existing order instead of buying twice.
+            fallback_key = order_idempotency_key(cycle_id, symbol, "buy", qty, ioc_attempt)
+            order = alpaca.place_market_order(symbol=symbol, qty=qty, side=AlpacaOrderSide.BUY,
+                                              enforce_cap=False, client_order_id=fallback_key)
             order_type_used = "market"
             logger.info(
                 f"BUY {qty} {symbol} MARKET @ ~${current_price:.2f} | "
@@ -458,6 +518,9 @@ def execute_decision(
         # the requested qty gets Alpaca 403 "insufficient qty available",
         # leaving the position unprotected. This was the months-old 403 mystery
         # (UNH May 28, CAT Jun 5).
+        entry_client_id = ((order.raw or {}).get("client_order_id")
+                           or order_idempotency_key(cycle_id, symbol, "buy", qty, ioc_attempt))
+        _raw = {}
         try:
             _raw = alpaca.get_order_raw(order.id) or {}
             _filled = float(_raw.get("filled_qty") or 0)
@@ -469,6 +532,21 @@ def execute_decision(
                 qty = _filled
         except Exception:
             pass  # fill still settling — reconciler reconciles quantities later
+
+        # Entry never filled (IOC ladder missed): record the order for audit but
+        # open NO lifecycle row and NO stop. Previously a phantom lifecycle row
+        # was opened here and later "closed" by the reconciler at a guessed price.
+        if (_raw.get("status") in ("canceled", "expired", "rejected")
+                and float(_raw.get("filled_qty") or 0) == 0):
+            record_order(
+                alpaca_order_id=order.id, symbol=symbol, side="buy",
+                order_type=order_type_used, qty=qty, status=_raw.get("status"),
+                signal_price=current_price, order_class="simple",
+                time_in_force="ioc" if order_type_used.startswith("limit_ioc") else "day",
+                cycle_id=cycle_id, raw_json=json.dumps(_raw),
+                client_order_id=entry_client_id,
+            )
+            return None
 
         trade_id = record_trade(cycle_id, {
             "symbol": symbol, "action": action, "qty": qty,
@@ -500,6 +578,7 @@ def execute_decision(
             cycle_id=cycle_id, trade_id=trade_id,
             order_group_id=group_id,
             raw_json=json.dumps(order.raw) if order.raw else None,
+            client_order_id=entry_client_id,
         )
 
         # Extract signal attribution fields
@@ -597,6 +676,7 @@ def execute_decision(
                 f"Trailing stop suspended [tier {catalyst.tier}] for {symbol} — "
                 f"{catalyst.primary_reason}; SMA50 + AI monitoring active"
             )
+            set_position_stop_suspended(pos_id, f"tier {catalyst.tier}: {catalyst.primary_reason}")
         else:
             effective_trail = round(trail_percent * catalyst.widen_stop_multiplier, 2)
             if catalyst.widen_stop_multiplier > 1.0:
@@ -605,8 +685,10 @@ def execute_decision(
                     f"{trail_percent}% → {effective_trail}% — {catalyst.primary_reason}"
                 )
             try:
+                ts_key = trailing_stop_key(pos_id, qty)
                 ts_order = alpaca.place_trailing_stop_order(
-                    symbol=symbol, qty=qty, trail_percent=effective_trail
+                    symbol=symbol, qty=qty, trail_percent=effective_trail,
+                    client_order_id=ts_key,
                 )
                 update_position_trailing_stop(pos_id, ts_order.id, effective_trail)
                 record_order(
@@ -614,6 +696,7 @@ def execute_decision(
                     order_type="trailing_stop", qty=qty, status=ts_order.status,
                     order_class="simple", time_in_force="gtc",
                     trade_id=trade_id, order_group_id=group_id,
+                    client_order_id=ts_key,
                 )
                 logger.info(f"Trailing stop placed: {symbol} trail={effective_trail}% order={ts_order.id}")
             except Exception as e:
@@ -637,6 +720,13 @@ def execute_decision(
         qty = max(1, round(full_qty * reduce_pct_clamped))
         is_partial = qty < full_qty
 
+        sell_key = order_idempotency_key(cycle_id, symbol, "sell", qty)
+        seen = already_submitted(sell_key, alpaca, fail_closed=False)
+        if seen:
+            logger.warning(f"Duplicate sell suppressed: {symbol} x{qty} key {sell_key} already in {seen}")
+            record_error("duplicate_order_suppressed", f"sell {symbol} x{qty} key={sell_key} seen in {seen}", cycle_id)
+            return None
+
         # Release shares held by an open trailing stop BEFORE selling. A live
         # trailing-stop order reserves the whole position, so a market sell
         # gets Alpaca 403 "insufficient qty available (held_for_orders)" and
@@ -652,7 +742,7 @@ def execute_decision(
             logger.warning(f"Could not pre-cancel holding orders for {symbol}: {e} — sell may 403")
 
         order = alpaca.place_market_order(
-            symbol=symbol, qty=qty, side=AlpacaOrderSide.SELL
+            symbol=symbol, qty=qty, side=AlpacaOrderSide.SELL, client_order_id=sell_key,
         )
         take_profit = None
         stop_loss = None
@@ -672,6 +762,7 @@ def execute_decision(
             alpaca_order_id=order.id, symbol=symbol, side="sell",
             order_type="market", qty=qty, status=order.status,
             signal_price=current_price, cycle_id=cycle_id, trade_id=trade_id,
+            client_order_id=sell_key,
         )
 
         # Close position lifecycle only on full exits
@@ -745,18 +836,73 @@ _today_baseline: float = None
 _baseline_date: str = None
 
 
+def daily_loss_baseline(current_value: float, today: str = None) -> float:
+    """The day's opening equity, persisted in config as daily_loss_baseline_<date>.
+
+    The first cycle of the day writes it; every later cycle (including after a
+    restart) reads the stored value, so a mid-day restart can't reset the
+    breaker to a lower, post-loss baseline."""
+    from backend.db import db
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    key = f"daily_loss_baseline_{today}"
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO config(key, value) VALUES(?,?) ON CONFLICT(key) DO NOTHING",
+            (key, f"{float(current_value):.2f}"),
+        )
+        if cur.rowcount:
+            logger.info(f"New day baseline: ${current_value:,.2f} (persisted {key})")
+        row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+    return float(row["value"])
+
+
 def is_daily_loss_limit_hit(current_value: float, limit_pct: float) -> bool:
     global _today_baseline, _baseline_date
     today = datetime.now().strftime("%Y-%m-%d")
-    if _baseline_date != today:
-        _today_baseline = current_value
-        _baseline_date = today
-        logger.info(f"New day baseline: ${current_value:,.2f}")
+    _today_baseline = daily_loss_baseline(current_value, today)
+    _baseline_date = today
     if _today_baseline:
         daily_return = (current_value - _today_baseline) / _today_baseline
         if daily_return <= -limit_pct:
             return True
     return False
+
+
+def daily_loss_breaker_trips(current_value: float, limit_pct: float, cycle_id: int = None) -> bool:
+    """True (and logged + errors row) when today's loss passes the limit."""
+    if not is_daily_loss_limit_hit(current_value, limit_pct):
+        return False
+    logger.warning(
+        f"Daily loss limit hit (baseline ${_today_baseline:,.2f}, now ${current_value:,.2f}) — "
+        f"new buys blocked; exits and reconciliation continue"
+    )
+    record_error("daily_loss_limit",
+                 f"Portfolio: ${current_value:.2f} vs baseline ${_today_baseline:.2f} — buys blocked",
+                 cycle_id)
+    return True
+
+
+# ─── Cycle overlap guard ──────────────────────────────────────────────────────
+
+_CYCLE_LOCK_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "persistent", "trader_cycle.lock")
+
+
+def acquire_cycle_lock(path: str = None):
+    """Non-blocking exclusive lock held for one cycle. Returns the open file
+    (keep it; closing releases) or None if another trader process is mid-cycle —
+    two overlapping cycles have different cycle_ids, so idempotency keys alone
+    can't stop them both buying."""
+    import fcntl
+    path = path or _CYCLE_LOCK_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fh = open(path, "a")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
 
 
 # ─── One cycle ────────────────────────────────────────────────────────────────
@@ -780,6 +926,7 @@ def run_cycle(alpaca: AlpacaClient):
         # when market is closed — orders queue and execute all at once at open, causing
         # position over-concentration (the same symbol gets bought N times before fills land)
         _buys_allowed = market_open
+        _buy_block_reason = "Market closed"
 
         try:
             account = alpaca.get_account()
@@ -795,11 +942,12 @@ def run_cycle(alpaca: AlpacaClient):
             fail_cycle(cycle_id, "account_blocked")
             return
 
-        if is_daily_loss_limit_hit(account.portfolio_value, daily_loss_limit):
-            logger.warning("Daily loss limit hit — halting")
-            record_error("daily_loss_limit", f"Portfolio: ${account.portfolio_value:.2f}", cycle_id)
-            fail_cycle(cycle_id, "daily_loss_limit")
-            return
+        # A trip blocks NEW BUYS only. Exits (AI sells, stop-loss sweep) still
+        # run — aborting the cycle here used to leave losing positions unmanaged
+        # on exactly the day risk was highest.
+        if daily_loss_breaker_trips(account.portfolio_value, daily_loss_limit, cycle_id):
+            _buys_allowed = False
+            _buy_block_reason = "Daily loss limit hit"
 
         # Equity snapshot at cycle start
         unrealized_pnl = sum(p.unrealized_pl for p in positions.values())
@@ -1195,7 +1343,7 @@ def run_cycle(alpaca: AlpacaClient):
                 # Hard failsafe: never open new positions when market is closed
                 # (prevents queued orders from all filling at once at open)
                 if d.get("action", "").lower() == "buy" and not _buys_allowed:
-                    logger.info(f"Market closed — suppressing BUY for {sym} (would queue and over-concentrate)")
+                    logger.info(f"{_buy_block_reason} — suppressing BUY for {sym}")
                     continue
 
                 # Compute days_until_earnings from market_data for trailing stop decision
@@ -1300,7 +1448,15 @@ def main():
             time.sleep(10)
             continue
 
-        run_cycle(alpaca)
+        _lock = acquire_cycle_lock()
+        if _lock is None:
+            logger.warning("Another trader process holds the cycle lock — skipping this cycle")
+            record_error("cycle_overlap_skipped", f"pid {os.getpid()} found the cycle lock held")
+        else:
+            try:
+                run_cycle(alpaca)
+            finally:
+                _lock.close()
 
         cfg = get_config()
         interval = int(cfg.get("poll_interval", 300))
