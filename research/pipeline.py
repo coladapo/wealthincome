@@ -5,6 +5,7 @@
   venv/bin/python -m research.pipeline evaluate <module:Class> --hypothesis <id> [--params JSON]
         [--start 2019-01-01] [--end YYYY-MM-DD] [--test-start YYYY-MM-DD]
   venv/bin/python -m research.pipeline baselines [--report PATH]
+  venv/bin/python -m research.pipeline promote <id> <version> --approved-by chris
 
 evaluate = budget check (refused when the hypothesis's trials are used up) ->
 register the frozen (id, version) in `strategies` as a candidate -> walk-forward
@@ -12,7 +13,9 @@ under the live chassis at 1x and 2x cost vs SPY and vs the champion's real paper
 equity -> selection-adjusted stats (deflated Sharpe over all trials of the
 hypothesis; PBO by CSCV once >= 4 trials have daily returns) -> one trial logged
 in variant_runs. Nothing here places orders, touches the live trader, or promotes
-a strategy (promotion is research.strategy.set_status(..., approved_by="chris")).
+a strategy on its own: `promote` is Chris's manual approval step and the only path to
+champion (research.strategy.set_status(..., approved_by="chris")); the rules that
+PROPOSE a promotion live in research/promotion.py.
 """
 
 from __future__ import annotations
@@ -394,6 +397,22 @@ def _baseline_report(full_rows, live_rows, out, spy_variants, champ_variants, li
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- promote
+
+def promote(strategy_id: str, version: str, approved_by: Optional[str],
+            db_path: Optional[str] = None) -> Dict:
+    """Chris's approval step: shadow -> champion. `version` may be a unique prefix."""
+    from research.shadow import REFERENCE_IDS
+    if strategy_id in REFERENCE_IDS:
+        raise PermissionError(f"{strategy_id} is a reference series and is never promotable")
+    rows = [r for r in registry.list_strategies(db_path=db_path)
+            if r["id"] == strategy_id and r["version"].startswith(version)]
+    if len(rows) != 1:
+        raise KeyError(f"{strategy_id} {version}: {len(rows)} registered versions match (need exactly 1)")
+    return registry.set_status(strategy_id, rows[0]["version"], "champion", approved_by=approved_by,
+                               notes="promoted via research.pipeline promote", db_path=db_path)
+
+
 # --------------------------------------------------------------------------- CLI
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -417,7 +436,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     hs.add_parser("list")
     bl = sub.add_parser("baselines", help="SPY capped/uncapped + champion replay report")
     bl.add_argument("--report", default=DEFAULT_BASELINE_REPORT)
+    pr = sub.add_parser("promote", help="Chris's approval: shadow -> champion")
+    pr.add_argument("id")
+    pr.add_argument("version", help="registered version (a unique prefix is enough)")
+    pr.add_argument("--approved-by", required=True)
     args = ap.parse_args(argv)
+
+    if args.cmd == "promote":
+        try:
+            row = promote(args.id, args.version, args.approved_by, db_path=args.db)
+        except (PermissionError, KeyError, ValueError) as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            return 2
+        print(f"{row['id']} v{row['version'][:12]} is now the registry champion "
+              f"(promoted_at {row['promoted_at']}). It does not trade live until "
+              "backend/engine_registry.py (Phase C) is wired and config live_engine is flipped.")
+        return 0
 
     if args.cmd == "hypothesis":
         if args.hcmd == "register":

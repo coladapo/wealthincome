@@ -82,6 +82,16 @@ def _brain_and_gate():
     return brain, gate
 
 
+def _shadow_line():
+    """Shadow-challengers line; a research failure must never cost the digest."""
+    try:
+        from research.shadow_report import format_shadow_line
+        return format_shadow_line()
+    except Exception as e:
+        print(f"shadow line failed: {e}", file=sys.stderr)
+        return None
+
+
 def main() -> int:
     from core.scorecard import compute_scorecard, format_digest
     from backend.db import DB_PATH
@@ -99,6 +109,7 @@ def main() -> int:
     brain, gate = _brain_and_gate()
     text = format_digest(card, trades_today=trades_today, errors_today=errors_today,
                          brain=brain, gate=gate)
+    text += ("\n" + shadow) if (shadow := _shadow_line()) else ""
 
     if _post_via_webhook(text):
         _heartbeat("posted via webhook")
