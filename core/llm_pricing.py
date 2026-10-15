@@ -11,6 +11,13 @@ from typing import Dict, Tuple
 # (input, output, cache_read, cache_write) — USD per 1M tokens
 MODEL_PRICING: Dict[str, Tuple[float, float, float, float]] = {
     # ── Anthropic ──────────────────────────────────────────────────────────────
+    # Current generation (Anthropic first-party list rates, 2026-10): cache write = 1.25x input.
+    "claude-sonnet-5-5":            (2.00,  10.00, 0.20,  2.50),
+    "claude-sonnet-5":              (2.00,  10.00, 0.20,  2.50),
+    "claude-opus-5-5":              (4.00,  20.00, 0.20,  5.00),
+    "claude-opus-5":                (5.00,  25.00, 0.50,  6.25),
+    "claude-haiku-5-5":             (0.10,   0.50, 0.01,  0.125),
+    "claude-fable-5-1":             (10.00, 50.00, 0.25, 12.50),
     "claude-sonnet-4-6":            (3.00,  15.00, 0.30,  3.75),
     "claude-sonnet-4-5":            (3.00,  15.00, 0.30,  3.75),
     "claude-opus-4-6":              (15.00, 75.00, 1.50, 18.75),
@@ -54,12 +61,13 @@ MODEL_PRICING: Dict[str, Tuple[float, float, float, float]] = {
     "qwen2.5:72b":                  (0.00,  0.00, 0.00,  0.00),
 }
 
-_FALLBACK_PRICING = MODEL_PRICING["claude-sonnet-4-6"]
+_FALLBACK_PRICING = MODEL_PRICING["claude-sonnet-5-5"]  # the brain's current default tier
 
 
 def get_model_pricing(model: str) -> Tuple[float, float, float, float]:
     """Return (input, output, cache_read, cache_write) per 1M tokens.
-    Falls back to claude-sonnet-4-6 rates if model not in table."""
+    Falls back to current-Sonnet rates if model not in table (the ledger stores the
+    RESOLVED model id from the call envelope, so an unknown id means a new release)."""
     # Normalize: strip org prefix (e.g. "anthropic/claude-sonnet-4-6" → look up full then short)
     pricing = MODEL_PRICING.get(model)
     if pricing is None:

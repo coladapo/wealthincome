@@ -483,7 +483,7 @@ def compute_token_cost(
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
-    model: str = "claude-sonnet-4-6",
+    model: str = "unknown",
 ) -> float:
     """Return USD cost for an LLM call. Model-aware — uses llm_pricing table."""
     from core.llm_pricing import compute_cost  # deferred to avoid circular import
@@ -557,7 +557,7 @@ def finish_cycle(
     enricher_status: Dict = None,
 ):
     usage = usage or {}
-    model    = usage.get("_model",    "claude-sonnet-4-6")
+    model    = usage.get("_model",    "unknown")
     provider = usage.get("_provider", "anthropic_cli")
     cost = compute_token_cost(
         input_tokens=usage.get("input_tokens", 0) or 0,
@@ -748,7 +748,7 @@ def record_ai_decision(
     non_holds = [d for d in parsed_decisions if d.get("action", "hold") != "hold"]
     avg_conf = (sum(d.get("confidence", 0) for d in non_holds) / len(non_holds)
                 if non_holds else None)
-    model    = usage.get("_model",    "claude-sonnet-4-6")
+    model    = usage.get("_model",    "unknown")
     provider = usage.get("_provider", "anthropic_cli")
     cost = compute_token_cost(
         input_tokens=usage.get("input_tokens", 0) or 0,
