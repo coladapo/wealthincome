@@ -235,7 +235,7 @@ def render_analytics():
         from backend.db import get_config, set_config
         cfg = get_config()
         cur_provider = cfg.get("llm_provider", "anthropic_cli")
-        cur_model    = cfg.get("llm_model", "claude-sonnet-4-6")
+        cur_model    = cfg.get("llm_model", "sonnet")
 
         p1, p2 = st.columns(2)
         providers = ["anthropic_cli", "anthropic_api", "openai", "gemini", "grok", "ollama"]

@@ -745,9 +745,15 @@ def _check_sma50_exits(alpaca, db_path: str):
                     except Exception as e:
                         logger.warning(f"Could not cancel trailing stop for {symbol}: {e}")
 
-                # Close the position via market order
+                # Close the position via a KEYED market order (idempotent — a reconciler
+                # retry after a timeout cannot sell the same position twice).
                 try:
-                    alpaca.close_position(symbol)
+                    live = alpaca.get_position(symbol)
+                    exit_qty = float(live.qty) if live is not None else float(pos["entry_qty"])
+                    alpaca.place_market_order(
+                        symbol=symbol, qty=exit_qty, side=AlpacaOrderSide.SELL, enforce_cap=False,
+                        client_order_id=order_idempotency_key(f"pos{pos['id']}", symbol, "sell_sma50", exit_qty),
+                    )
 
                     current_price = alpaca.get_current_price(symbol) or last_close
                     from backend.db import (

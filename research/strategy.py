@@ -244,6 +244,11 @@ def set_status(id: str, version: str, status: str, approved_by: Optional[str] = 
             raise KeyError(f"strategy {id} {version[:12]} is not registered")
         if status not in ALLOWED_TRANSITIONS[cur["status"]]:
             raise ValueError(f"{id}: {cur['status']} -> {status} is not an allowed transition")
+        if status == "champion" and cur["status"] == "retired" and not cur["promoted_at"]:
+            # retired -> champion is a ROLLBACK to a former champion only; a candidate
+            # parked as retired has never been through shadow and may not skip it.
+            raise ValueError(f"{id}: retired -> champion is only allowed for a former champion "
+                             "(promoted_at is empty); go through shadow first")
         now = _now()
         if status == "champion":
             if approved_by != APPROVER:

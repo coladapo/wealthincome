@@ -92,3 +92,7 @@ dump.rdb
 # pinned Claude CLI copy (250 MB) and laptop plist snapshot
 bin/
 launchd/_laptop_plists.txt
+
+# trader-rewritten caches (block scripts/rollback.sh dirty check)
+core/.calendar_cache.json
+core/.watchlist_cache.json

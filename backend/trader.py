@@ -812,11 +812,22 @@ def check_stop_losses(positions: Dict, alpaca: AlpacaClient,
         if pos.unrealized_plpc < -max_loss_pct:
             logger.warning(f"Stop loss: {symbol} at {pos.unrealized_plpc:.1%} — closing")
             try:
-                alpaca.close_position(symbol)
+                open_pos = get_open_position_by_symbol(symbol)
+                # Cancel the resting trailing stop first so the exit cannot double-sell.
+                ts_id = open_pos.get("trailing_stop_order_id") if open_pos else None
+                if ts_id:
+                    try:
+                        alpaca.cancel_order(ts_id)
+                    except Exception as e:  # noqa: BLE001 — best effort, the market sell still goes
+                        logger.warning(f"Could not cancel trailing stop for {symbol}: {e}")
+                # Keyed market sell (idempotent): a retried cycle cannot sell twice.
+                alpaca.place_market_order(
+                    symbol=symbol, qty=pos.qty, side=AlpacaOrderSide.SELL, enforce_cap=False,
+                    client_order_id=order_idempotency_key(cycle_id, symbol, "sell_stop_loss", pos.qty),
+                )
                 record_error("stop_loss_triggered",
                              f"{symbol} closed at {pos.unrealized_plpc:.1%}", cycle_id)
                 # Close position lifecycle
-                open_pos = get_open_position_by_symbol(symbol)
                 if open_pos:
                     current_price = alpaca.get_current_price(symbol) or pos.current_price
                     close_position_lifecycle(
@@ -1228,8 +1239,10 @@ def run_cycle(alpaca: AlpacaClient):
 
         cfg = get_config()
         provider = cfg.get("llm_provider", "anthropic_cli")
-        model    = cfg.get("llm_model", "claude-sonnet-4-6")
-        logger.info(f"Asking {provider}/{model} to analyze {len(watchlist)} symbols...")
+        from core.llm_router import DEFAULT_MODEL, DEFAULT_EFFORT
+        model    = cfg.get("llm_model", DEFAULT_MODEL)
+        effort   = cfg.get("llm_effort", DEFAULT_EFFORT)
+        logger.info(f"Asking {provider}/{model} (effort={effort}) to analyze {len(watchlist)} symbols...")
         result = run_decision(
             watchlist=watchlist,
             market_data=market_data,

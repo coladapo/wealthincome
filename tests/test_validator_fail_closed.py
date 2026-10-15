@@ -20,7 +20,7 @@ def real_db(tmp_path, monkeypatch):
 def calls(monkeypatch):
     seen = {}
 
-    def fake_timeout(system_prompt, user_prompt, model, timeout):
+    def fake_timeout(system_prompt, user_prompt, model, timeout, **kw):
         seen["timeout"] = timeout
         raise TimeoutError("model call timed out")
 

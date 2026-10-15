@@ -3,7 +3,7 @@ LLM Router — provider-agnostic trading brain interface.
 
 Swap between providers by setting config keys:
     llm_provider = anthropic_cli | anthropic_api | openai | gemini | grok | ollama
-    llm_model    = claude-sonnet-4-6 | gpt-4o | gemini-2.5-pro | grok-3 | llama3.3 | ...
+    llm_model    = sonnet | opus | haiku (evergreen aliases) | gpt-4o | gemini-2.5-pro | grok-3 | llama3.3 | ...
 
 All providers receive the same system prompt and user prompt.
 All providers return the same normalized dict — trading logic never changes.
@@ -22,7 +22,15 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROVIDER = "anthropic_cli"
-DEFAULT_MODEL    = "claude-sonnet-4-6"
+# Evergreen aliases only (Chris, 2026-10-14): `sonnet` / `opus` / `haiku` resolve to
+# Anthropic's current model of that tier (verified from call metadata: `sonnet` ->
+# claude-sonnet-5-5 on the pinned CLI). Never pin a versioned id here. Reasoning
+# effort is set per task via the CLI's --effort flag; the RESOLVED model name from
+# the response envelope is what gets written to the ledger, never the alias.
+DEFAULT_MODEL    = "sonnet"
+DEFAULT_EFFORT   = "high"      # the 5-minute decision brain (config key llm_effort)
+DEFAULT_VALIDATOR_EFFORT = "medium"  # pre-trade validator (config key validator_effort)
+VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 # ── Prompt helpers (provider-agnostic) ────────────────────────────────────────
@@ -124,18 +132,24 @@ def _claude_binary() -> str:
     return pinned if os.path.exists(pinned) else "claude"
 
 
-def build_cli_argv(model: str, system_file: str) -> list:
+def build_cli_argv(model: str, system_file: str, effort: Optional[str] = None) -> list:
     """The exact argv the brain runs — kept separate so tests can pin it."""
-    return [
+    argv = [
         _claude_binary(), "-p",
         "--output-format", "json",
         "--model", model,
         "--system-prompt-file", system_file,
         *CLI_ISOLATION_FLAGS,
     ]
+    if effort:
+        if effort not in VALID_EFFORTS:
+            raise ValueError(f"effort must be one of {VALID_EFFORTS}, got {effort!r}")
+        argv += ["--effort", effort]
+    return argv
 
 
-def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout: int) -> Dict[str, Any]:
+def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout: int,
+                       effort: Optional[str] = None) -> Dict[str, Any]:
     """Uses `claude -p` CLI (no API key — requires Claude Max subscription).
     Runs isolated from the operator's interactive settings; see note above."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -148,7 +162,7 @@ def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout
 
     try:
         proc = subprocess.run(
-            build_cli_argv(model, system_file),
+            build_cli_argv(model, system_file, effort),
             input=user_prompt,
             capture_output=True,
             text=True,
@@ -171,7 +185,11 @@ def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout
     # requiring the whole stdout to be one ("Extra data" crash, 2026-06-11).
     envelope, _ = json.JSONDecoder().raw_decode(proc.stdout.strip())
     text_output = envelope.get("result", "").strip()
-    raw_usage   = envelope.get("usage", {})
+    raw_usage   = dict(envelope.get("usage", {}) or {})
+    # Model identity comes from call metadata, never from the alias we asked for.
+    used = envelope.get("modelUsage") or {}
+    if isinstance(used, dict) and used:
+        raw_usage["resolved_model"] = next(iter(used))
     return text_output, raw_usage
 
 
@@ -366,6 +384,7 @@ def run_decision(
     cfg      = get_config()
     provider = provider_override or cfg.get("llm_provider", DEFAULT_PROVIDER)
     model    = model_override    or cfg.get("llm_model",    DEFAULT_MODEL)
+    effort   = cfg.get("llm_effort", DEFAULT_EFFORT)
 
     if provider not in _PROVIDERS:
         logger.error(f"Unknown LLM provider '{provider}'. Valid: {list(_PROVIDERS)}")
@@ -388,8 +407,11 @@ def run_decision(
     t0 = time.time()
     try:
         fn = _PROVIDERS[provider]
-        text_output, raw_usage = fn(system_prompt, user_prompt, model, timeout)
+        extra = {"effort": effort} if provider == "anthropic_cli" else {}
+        text_output, raw_usage = fn(system_prompt, user_prompt, model, timeout, **extra)
         duration_ms = int((time.time() - t0) * 1000)
+        if isinstance(raw_usage, dict) and raw_usage.get("resolved_model"):
+            model = raw_usage.pop("resolved_model")  # ledger gets the real model id
     except subprocess.TimeoutExpired:
         logger.error(f"LLM provider '{provider}' timed out after {timeout}s")
         return None

@@ -46,3 +46,37 @@ def test_pinned_binary_default(monkeypatch, tmp_path):
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "claude").write_text("")
     assert lr._claude_binary() == str(tmp_path / "bin" / "claude")
+
+
+def test_effort_flag_and_resolved_model(monkeypatch):
+    import backend.db as db
+    seen = {}
+
+    class _P:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps({"result": '{"decisions": []}', "usage": {"input_tokens": 1},
+                             "modelUsage": {"claude-sonnet-5-5": {"inputTokens": 1}}})
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        return _P()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    text, usage = lr._run_anthropic_cli("sys", "user", "sonnet", timeout=10, effort="medium")
+    argv = seen["argv"]
+    assert argv[argv.index("--model") + 1] == "sonnet"          # alias, never a versioned id
+    assert argv[argv.index("--effort") + 1] == "medium"
+    assert usage["resolved_model"] == "claude-sonnet-5-5"       # identity from call metadata
+    # no effort → no flag; bad effort → refused
+    assert "--effort" not in lr.build_cli_argv("sonnet", "<sys>")
+    try:
+        lr.build_cli_argv("sonnet", "<sys>", effort="ultra")
+        assert False, "bad effort accepted"
+    except ValueError:
+        pass
+    # defaults stay evergreen and in sync with the DB defaults
+    assert lr.DEFAULT_MODEL == "sonnet" == db.DEFAULT_CONFIG["llm_model"]
+    assert db.DEFAULT_CONFIG["llm_effort"] == lr.DEFAULT_EFFORT == "high"
+    assert db.DEFAULT_CONFIG["validator_effort"] == lr.DEFAULT_VALIDATOR_EFFORT == "medium"
+    assert "claude-sonnet-4-6" not in open(lr.__file__).read()

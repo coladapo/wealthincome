@@ -503,7 +503,9 @@ DEFAULT_CONFIG = {
     "trader_running": "false",
     # LLM provider config — swap model/provider without restarting the daemon
     "llm_provider": "anthropic_cli",   # anthropic_cli | anthropic_api | openai | gemini | grok | ollama
-    "llm_model":    "claude-sonnet-4-6",
+    "llm_model":    "sonnet",      # evergreen alias — keep equal to core.llm_router.DEFAULT_MODEL
+    "llm_effort":   "high",        # decision brain reasoning effort (low|medium|high|xhigh|max)
+    "validator_effort": "medium",  # pre-trade validator reasoning effort
     # Safety: validator error/timeout BLOCKS the buy ('false' = old fail-open PASS)
     "validator_fail_closed": "true",
     # Safety: run the pattern-day-trade guard in paper too, so paper behaves like live

@@ -222,14 +222,17 @@ def validate_decision(
 
         cfg      = get_config()
         provider = cfg.get("llm_provider", "anthropic_cli")
-        model    = cfg.get("llm_model", "claude-sonnet-4-6")
+        from core.llm_router import DEFAULT_MODEL, DEFAULT_VALIDATOR_EFFORT
+        model    = cfg.get("llm_model", DEFAULT_MODEL)
+        effort   = cfg.get("validator_effort", DEFAULT_VALIDATOR_EFFORT)
 
         user_prompt = _build_validation_prompt(decision, market_context, positions, account)
         fn = _PROVIDERS.get(provider)
         if not fn:
             raise ValueError(f"Unknown provider: {provider}")
 
-        text_output, _raw_usage = fn(VALIDATION_SYSTEM_PROMPT, user_prompt, model, timeout=VALIDATOR_TIMEOUT_S)
+        extra = {"effort": effort} if provider == "anthropic_cli" else {}
+        text_output, _raw_usage = fn(VALIDATION_SYSTEM_PROMPT, user_prompt, model, timeout=VALIDATOR_TIMEOUT_S, **extra)
         result = _parse_trading_json(text_output)
 
         verdict = result.get("verdict", PASS).lower()

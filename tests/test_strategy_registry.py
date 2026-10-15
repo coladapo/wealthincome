@@ -94,3 +94,17 @@ def test_reference_only_strategy_cannot_be_champion(conn):
     reg.set_status(s.id, s.version, "shadow", conn=conn)
     with pytest.raises(PermissionError):
         reg.set_status(s.id, s.version, "champion", approved_by="chris", conn=conn)
+
+
+def test_retired_candidate_cannot_skip_shadow_to_champion(conn):
+    s = SpyHoldCapped({"slots": 6})
+    reg.register(s, conn=conn)
+    reg.set_status(s.id, s.version, "retired", conn=conn)       # parked, never a champion
+    with pytest.raises(ValueError):
+        reg.set_status(s.id, s.version, "champion", approved_by="chris", conn=conn)
+    # the legitimate rollback path still works: shadow -> champion -> retired -> champion
+    reg.set_status(s.id, s.version, "shadow", conn=conn)
+    reg.set_status(s.id, s.version, "champion", approved_by="chris", conn=conn)
+    reg.set_status(s.id, s.version, "retired", conn=conn)
+    back = reg.set_status(s.id, s.version, "champion", approved_by="chris", conn=conn)
+    assert back["status"] == "champion"
