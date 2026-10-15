@@ -25,6 +25,12 @@ from typing import Any, Dict, List, Optional
 
 import backend.db as _db
 
+
+def _reconciliation_status():
+    """Indirection so tests can monkeypatch; the real one reads broker_fills/fifo_realized."""
+    from backend.reconciliation import reconciliation_status
+    return reconciliation_status()
+
 CLEAN_START_ID = 58
 BOOTSTRAP_RESAMPLES = 1000
 BOOTSTRAP_SEED = 20260618
@@ -154,21 +160,30 @@ def compute_gate(now: Optional[datetime] = None) -> Dict[str, Any]:
         vfc = str(cfg.get("validator_fail_closed") or "false").strip().lower()
         items.append(_item("g", "Validator fails closed", vfc, "== true", vfc == "true"))
 
-        # (h) ledger reconciles with the broker equity curve
-        first_snap = conn.execute(
-            "SELECT portfolio_value FROM equity_snapshots WHERE snapshot_at >= ?"
-            " ORDER BY snapshot_at, id LIMIT 1",
-            (window_start,),
+        # (h) books reconcile with the broker: realized P&L rebuilt FIFO from the
+        # broker's own fill history (backend.reconciliation, scripts/reconcile_ledger.py)
+        # plus current unrealized must equal the account's equity change since the
+        # $100k start, within $50 — and the rebuild must be fresh (<= 7 days).
+        # (The old lifecycle-only check hid a $5.5k gap of unbooked partial exits.)
+        start_snap = conn.execute(
+            "SELECT portfolio_value FROM equity_snapshots ORDER BY snapshot_at, id LIMIT 1"
         ).fetchone()
         last_snap = conn.execute(
             "SELECT portfolio_value, unrealized_pnl FROM equity_snapshots ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        if first_snap and last_snap:
-            gap = round(sum(pnls) + (last_snap["unrealized_pnl"] or 0)
-                        - (last_snap["portfolio_value"] - first_snap["portfolio_value"]), 2)
-        else:
+        gap, recon_as_of = None, None
+        try:
+            recon = _reconciliation_status()
+            recon_as_of = recon.get("as_of")
+            if recon_as_of and start_snap and last_snap:
+                age_days = (now - datetime.fromisoformat(str(recon_as_of)[:19])).days
+                if age_days <= 7:
+                    gap = round(recon["broker_realized"] + (last_snap["unrealized_pnl"] or 0)
+                                - (last_snap["portfolio_value"] - start_snap["portfolio_value"]), 2)
+        except Exception:  # reconciliation never run / table missing → item fails
             gap = None
-        items.append(_item("h", "Ledger reconciles with equity (within $50)", gap, "|gap| <= 50",
+        items.append(_item("h", "Books reconcile with broker fills (within $50, rebuilt <= 7d)",
+                           {"residual": gap, "reconciled_at": recon_as_of}, "|residual| <= 50",
                            gap is not None and abs(gap) <= 50))
 
         # (i) live shadow

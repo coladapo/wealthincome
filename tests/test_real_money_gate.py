@@ -11,6 +11,13 @@ import core.real_money_gate as gate_mod
 NOW = datetime(2026, 10, 14, 13, 0, 0)
 
 
+@pytest.fixture(autouse=True)
+def fresh_reconciliation(monkeypatch):
+    monkeypatch.setattr(gate_mod, "_reconciliation_status",
+                        lambda: {"broker_realized": 250.0, "lifecycle_realized": 250.0,
+                                 "gap": 0.0, "as_of": NOW.isoformat()})
+
+
 @pytest.fixture()
 def gate_db(tmp_path, monkeypatch):
     path = str(tmp_path / "gate.db")
@@ -62,8 +69,8 @@ def test_gate_mostly_failing(gate_db):
     # f/g: no config rows → the code defaults ('true') apply, as in the live trader
     assert items["f"]["value"] == "true" and items["f"]["pass"]
     assert items["g"]["pass"] and not items["i"]["pass"]
-    # ledger: 250 realized + 50 unrealized - (100300 - 100000) = 0
-    assert items["h"]["value"] == 0 and items["h"]["pass"]
+    # books: broker realized 250 + 50 unrealized - (100300 - 100000) = 0 (fresh rebuild)
+    assert items["h"]["value"]["residual"] == 0 and items["h"]["pass"]
     # deployment over last 30d (from 09-14): 09-20 (36.8%) and NOW-1d (20.2%); 09-01 excluded
     assert items["d"]["value"] == pytest.approx(28.5, abs=0.1) and not items["d"]["pass"]
     assert card["passed_count"] == 4  # e, h, and the two default-on switches f, g
