@@ -31,6 +31,10 @@ DEFAULT_MODEL    = "sonnet"
 DEFAULT_EFFORT   = "high"      # the 5-minute decision brain (config key llm_effort)
 DEFAULT_VALIDATOR_EFFORT = "medium"  # pre-trade validator (config key validator_effort)
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Per-call --max-budget-usd caps (config keys llm_/validator_/research_max_budget_usd)
+DEFAULT_BRAIN_BUDGET_USD     = 1.00
+DEFAULT_VALIDATOR_BUDGET_USD = 0.25
+DEFAULT_RESEARCH_BUDGET_USD  = 2.00
 
 
 # ── Prompt helpers (provider-agnostic) ────────────────────────────────────────
@@ -132,7 +136,8 @@ def _claude_binary() -> str:
     return pinned if os.path.exists(pinned) else "claude"
 
 
-def build_cli_argv(model: str, system_file: str, effort: Optional[str] = None) -> list:
+def build_cli_argv(model: str, system_file: str, effort: Optional[str] = None,
+                   max_budget_usd: Optional[float] = None) -> list:
     """The exact argv the brain runs — kept separate so tests can pin it."""
     argv = [
         _claude_binary(), "-p",
@@ -145,13 +150,69 @@ def build_cli_argv(model: str, system_file: str, effort: Optional[str] = None) -
         if effort not in VALID_EFFORTS:
             raise ValueError(f"effort must be one of {VALID_EFFORTS}, got {effort!r}")
         argv += ["--effort", effort]
+    if max_budget_usd is not None:
+        # Hard per-call spend cap. The CLI checks it after each turn, so it bounds a
+        # runaway multi-turn call; a stop exits 1 with subtype error_max_budget_usd.
+        argv += ["--max-budget-usd", f"{float(max_budget_usd):g}"]
     return argv
 
 
+LEDGER_CALLERS = ("brain", "validator", "research", "other")
+
+
+def budget_from_config(key: str, default: float) -> Optional[float]:
+    """Per-caller --max-budget-usd from DB config; '' / 'none' / '0' disables the cap."""
+    try:
+        from backend.db import get_config
+        raw = str(get_config().get(key, default)).strip().lower()
+    except Exception:
+        return default
+    if raw in ("", "none", "off", "0", "0.0"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _write_ledger_row(caller, cycle_id, model, effort, duration_ms, outcome, error, envelope):
+    """Write one llm_calls row. Never raises — the ledger must not break a call."""
+    try:
+        from backend.db import record_llm_call
+        from core.llm_pricing import compute_cost
+        from core.plan_guard import plan_state
+        used = envelope.get("modelUsage") or {}
+        resolved = next(iter(used)) if isinstance(used, dict) and used else None
+        u = _normalize_usage(dict(envelope.get("usage") or {}), "anthropic_cli")
+        plan = plan_state()
+        raw = {k: v for k, v in envelope.items() if k != "result"}
+        record_llm_call({
+            "caller": caller if caller in LEDGER_CALLERS else "other",
+            "cycle_id": cycle_id,
+            "model_requested": model,
+            "model_resolved": resolved,
+            "effort": effort,
+            **u,
+            "duration_ms": duration_ms,
+            "nominal_usd": round(compute_cost(resolved or model, **u), 6),
+            "outcome": outcome,
+            "error": str(error)[:500] if error else None,
+            "plan_5h_pct": plan["five_hour_pct"] if plan["fresh"] else None,
+            "plan_week_pct": plan["week_pct"] if plan["fresh"] else None,
+            "raw_json": json.dumps(raw, default=str) if raw else None,
+        })
+    except Exception as e:
+        logger.warning(f"llm_calls ledger write failed (non-fatal): {e}")
+
+
 def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout: int,
-                       effort: Optional[str] = None) -> Dict[str, Any]:
+                       effort: Optional[str] = None, caller: str = "other",
+                       cycle_id: Optional[int] = None,
+                       max_budget_usd: Optional[float] = None) -> Dict[str, Any]:
     """Uses `claude -p` CLI (no API key — requires Claude Max subscription).
-    Runs isolated from the operator's interactive settings; see note above."""
+    Runs isolated from the operator's interactive settings; see note above.
+    Every call — ok, empty, timeout, error, budget stop — writes one llm_calls
+    row (the plan-usage ledger) tagged with `caller`."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write(system_prompt)
         system_file = f.name
@@ -160,37 +221,63 @@ def _run_anthropic_cli(system_prompt: str, user_prompt: str, model: str, timeout
     env["DISABLE_AUTOUPDATER"] = "1"
     env["DISABLE_UPDATES"] = "1"
 
+    t0 = time.time()
+    envelope: Dict[str, Any] = {}
+    outcome, error = "error", None
     try:
-        proc = subprocess.run(
-            build_cli_argv(model, system_file, effort),
-            input=user_prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=empty_cwd,
-            env=env,
-        )
-    finally:
         try:
-            os.unlink(system_file)
-            os.rmdir(empty_cwd)
-        except OSError:
-            pass
+            proc = subprocess.run(
+                build_cli_argv(model, system_file, effort, max_budget_usd),
+                input=user_prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=empty_cwd,
+                env=env,
+            )
+        finally:
+            try:
+                os.unlink(system_file)
+                os.rmdir(empty_cwd)
+            except OSError:
+                pass
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI exited {proc.returncode}: {proc.stderr[:300]}")
+        # The CLI occasionally prints extra output after the JSON envelope
+        # (e.g. self-update notices) — take the FIRST JSON document instead of
+        # requiring the whole stdout to be one ("Extra data" crash, 2026-06-11).
+        # A budget stop exits non-zero but still prints the envelope.
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode((proc.stdout or "").strip())
+            envelope = parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            if proc.returncode == 0:
+                raise
+        if envelope.get("subtype") == "error_max_budget_usd":
+            outcome = "budget"
+            raise RuntimeError(f"Claude CLI stopped at --max-budget-usd {max_budget_usd}")
+        if proc.returncode != 0:
+            raise RuntimeError(f"Claude CLI exited {proc.returncode}: {proc.stderr[:300]}")
 
-    # The CLI occasionally prints extra output after the JSON envelope
-    # (e.g. self-update notices) — take the FIRST JSON document instead of
-    # requiring the whole stdout to be one ("Extra data" crash, 2026-06-11).
-    envelope, _ = json.JSONDecoder().raw_decode(proc.stdout.strip())
-    text_output = envelope.get("result", "").strip()
-    raw_usage   = dict(envelope.get("usage", {}) or {})
-    # Model identity comes from call metadata, never from the alias we asked for.
-    used = envelope.get("modelUsage") or {}
-    if isinstance(used, dict) and used:
-        raw_usage["resolved_model"] = next(iter(used))
-    return text_output, raw_usage
+        text_output = (envelope.get("result") or "").strip()
+        raw_usage   = dict(envelope.get("usage", {}) or {})
+        # Model identity comes from call metadata, never from the alias we asked for.
+        used = envelope.get("modelUsage") or {}
+        if isinstance(used, dict) and used:
+            raw_usage["resolved_model"] = next(iter(used))
+        if envelope.get("is_error"):
+            error = f"envelope is_error ({envelope.get('subtype')})"
+        else:
+            outcome = "ok" if text_output else "empty"
+        return text_output, raw_usage
+    except subprocess.TimeoutExpired:
+        outcome, error = "timeout", f"timed out after {timeout}s"
+        raise
+    except Exception as e:
+        error = error or f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        _write_ledger_row(caller, cycle_id, model, effort, int((time.time() - t0) * 1000),
+                          outcome, error, envelope)
 
 
 def _run_anthropic_api(system_prompt: str, user_prompt: str, model: str, timeout: int) -> tuple:
@@ -356,6 +443,7 @@ def run_decision(
                          # 300s — 240s keeps one cycle's call inside it.
     provider_override: Optional[str] = None,
     model_override: Optional[str] = None,
+    cycle_id: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Provider-agnostic trading decision interface.
@@ -407,7 +495,9 @@ def run_decision(
     t0 = time.time()
     try:
         fn = _PROVIDERS[provider]
-        extra = {"effort": effort} if provider == "anthropic_cli" else {}
+        extra = ({"effort": effort, "caller": "brain", "cycle_id": cycle_id,
+                  "max_budget_usd": budget_from_config("llm_max_budget_usd", DEFAULT_BRAIN_BUDGET_USD)}
+                 if provider == "anthropic_cli" else {})
         text_output, raw_usage = fn(system_prompt, user_prompt, model, timeout, **extra)
         duration_ms = int((time.time() - t0) * 1000)
         if isinstance(raw_usage, dict) and raw_usage.get("resolved_model"):

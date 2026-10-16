@@ -982,8 +982,11 @@ def _unique(path: str) -> str:
 
 def call_model(system_prompt: str, user_prompt: str, model: str = MODEL, effort: str = EFFORT,
                timeout: int = MODEL_TIMEOUT_S) -> Tuple[str, Dict]:
-    from core.llm_router import _run_anthropic_cli
-    return _run_anthropic_cli(system_prompt, user_prompt, model, timeout, effort=effort)
+    # caller='research' → one llm_calls row in the live ledger, besides research_sessions.
+    from core.llm_router import DEFAULT_RESEARCH_BUDGET_USD, _run_anthropic_cli, budget_from_config
+    return _run_anthropic_cli(system_prompt, user_prompt, model, timeout, effort=effort, caller="research",
+                              max_budget_usd=budget_from_config("research_max_budget_usd",
+                                                                DEFAULT_RESEARCH_BUDGET_USD))
 
 
 def run_weekly_session(dry_run: bool = False, db_path: Optional[str] = None,

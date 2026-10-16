@@ -9,6 +9,17 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_live_state(tmp_path, monkeypatch):
+    """No test may write the live ledger or read the live plan reading: default the
+    trading DB to a per-test file and the plan reading to a missing one (guard off).
+    Tests that need a real DB still point bdb.DB_PATH at their own file."""
+    import backend.db as bdb
+    import core.plan_guard as pg
+    monkeypatch.setattr(bdb, "DB_PATH", str(tmp_path / "_isolated_wi.db"))
+    monkeypatch.setattr(pg, "USAGE_PATH", str(tmp_path / "_no_plan_reading.json"))
+
+
 @pytest.fixture()
 def tmp_db(tmp_path):
     """Minimal schema covering what core/scorecard.py reads."""

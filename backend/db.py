@@ -474,6 +474,135 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_validation_symbol  ON validation_results(symbol);
             CREATE INDEX IF NOT EXISTS idx_validation_verdict ON validation_results(verdict);
         """)
+        conn.executescript(_LLM_CALLS_DDL)
+
+
+# One row per headless model call (brain, validator, research, ...), written by
+# core.llm_router._run_anthropic_cli whatever the outcome — the plan-usage ledger.
+_LLM_CALLS_DDL = """
+    CREATE TABLE IF NOT EXISTS llm_calls (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        called_at          TEXT NOT NULL,
+        caller             TEXT NOT NULL,
+        cycle_id           INTEGER,
+        model_requested    TEXT,
+        model_resolved     TEXT,
+        effort             TEXT,
+        input_tokens       INTEGER,
+        output_tokens      INTEGER,
+        cache_read_tokens  INTEGER,
+        cache_write_tokens INTEGER,
+        duration_ms        INTEGER,
+        nominal_usd        REAL,
+        outcome            TEXT NOT NULL,
+        error              TEXT,
+        plan_5h_pct        REAL,
+        plan_week_pct      REAL,
+        raw_json           TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_llm_calls_called_at ON llm_calls(called_at);
+    CREATE INDEX IF NOT EXISTS idx_llm_calls_cycle     ON llm_calls(cycle_id);
+"""
+
+_LLM_CALL_COLS = ("called_at", "caller", "cycle_id", "model_requested", "model_resolved", "effort",
+                  "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+                  "duration_ms", "nominal_usd", "outcome", "error", "plan_5h_pct", "plan_week_pct",
+                  "raw_json")
+
+
+def record_llm_call(row: Dict[str, Any]) -> int:
+    """Insert one llm_calls row (missing keys → NULL; called_at defaults to now, local)."""
+    vals = dict(row)
+    vals.setdefault("called_at", datetime.now().isoformat())
+    with db() as conn:
+        cur = conn.execute(
+            f"INSERT INTO llm_calls({', '.join(_LLM_CALL_COLS)}) VALUES({', '.join('?' * len(_LLM_CALL_COLS))})",
+            [vals.get(c) for c in _LLM_CALL_COLS],
+        )
+        return cur.lastrowid
+
+
+def _research_db_default() -> str:
+    return os.environ.get("RESEARCH_DB", os.path.join(_BASE, "data", "research.db"))
+
+
+def backfill_llm_calls(research_db_path: Optional[str] = None) -> Dict[str, int]:
+    """Seed llm_calls from history so 30-day totals are honest from day one. Idempotent.
+
+    brain:    one row per cycle that reached the model — cycles.llm_model set (a
+              decision came back) → 'ok'; or an 'llm_no_decision' error on the
+              cycle (timeout / failure / unparsable reply) → 'error'. Skipped when
+              the cycle already has a brain row.
+    research: one row per research.db research_sessions row, skipped when a
+              research row already covers that session's time window.
+    """
+    from core.llm_pricing import compute_cost
+    added = {"brain": 0, "research": 0}
+    with db() as conn:
+        conn.executescript(_LLM_CALLS_DDL)
+        rows = conn.execute("""
+            SELECT c.id, c.started_at, c.llm_model, c.input_tokens, c.output_tokens,
+                   c.cache_read_tokens, c.cache_write_tokens, c.duration_ms, c.status
+            FROM cycles c
+            WHERE (c.llm_model IS NOT NULL
+                   OR EXISTS (SELECT 1 FROM errors e WHERE e.cycle_id = c.id
+                              AND e.error_type = 'llm_no_decision'))
+              AND NOT EXISTS (SELECT 1 FROM llm_calls l WHERE l.caller = 'brain' AND l.cycle_id = c.id)
+        """).fetchall()
+        for r in rows:
+            ok = r["llm_model"] is not None and r["status"] == "done"
+            tok = {k: int(r[k] or 0) for k in ("input_tokens", "output_tokens",
+                                                 "cache_read_tokens", "cache_write_tokens")}
+            conn.execute(
+                f"INSERT INTO llm_calls({', '.join(_LLM_CALL_COLS)}) VALUES({', '.join('?' * len(_LLM_CALL_COLS))})",
+                [r["started_at"], "brain", r["id"], None, r["llm_model"], None,
+                 *tok.values(), r["duration_ms"],
+                 compute_cost(r["llm_model"], **tok) if r["llm_model"] else 0.0,
+                 "ok" if ok else "error", None if ok else "llm_no_decision (backfilled)",
+                 None, None, json.dumps({"backfill": "cycles", "cycle_id": r["id"]})])
+            added["brain"] += 1
+
+        rpath = research_db_path or _research_db_default()
+        if not os.path.exists(rpath):
+            return added
+        rconn = sqlite3.connect(f"file:{rpath}?mode=ro", uri=True)
+        rconn.row_factory = sqlite3.Row
+        try:
+            sessions = rconn.execute("SELECT * FROM research_sessions").fetchall()
+        except sqlite3.Error:
+            sessions = []
+        finally:
+            rconn.close()
+        for s in sessions:
+            start = _to_local_naive(s["started_at"])
+            end = _to_local_naive(s["ended_at"] or s["started_at"])
+            end = (datetime.fromisoformat(end) + timedelta(minutes=1)).isoformat()
+            dup = conn.execute(
+                "SELECT 1 FROM llm_calls WHERE caller = 'research' AND called_at BETWEEN ? AND ?",
+                (start, end)).fetchone()
+            if dup:
+                continue
+            tok = {k: int(s[k] or 0) for k in ("input_tokens", "output_tokens",
+                                                 "cache_read_tokens", "cache_write_tokens")}
+            model = s["model_resolved"]
+            ok = s["status"] == "ok"
+            dur = int(s["model_seconds"] * 1000) if s["model_seconds"] is not None else None
+            conn.execute(
+                f"INSERT INTO llm_calls({', '.join(_LLM_CALL_COLS)}) VALUES({', '.join('?' * len(_LLM_CALL_COLS))})",
+                [start, "research", None, s["model_requested"], model, s["effort"], *tok.values(), dur,
+                 compute_cost(model, **tok) if model else 0.0,
+                 "ok" if ok or s["status"] == "reply_invalid" else "error", s["error"],
+                 None, None, json.dumps({"backfill": "research_sessions", "session_id": s["id"]})])
+            added["research"] += 1
+    return added
+
+
+def _to_local_naive(ts: str) -> str:
+    """ISO timestamp (possibly UTC-aware) → naive local isoformat, the ledger's clock."""
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt.isoformat()
 
 
 # ─── Token cost ──────────────────────────────────────────────────────────────
@@ -513,6 +642,15 @@ DEFAULT_CONFIG = {
     # framework in production, so in paper the guard only distorted the champion record.
     # The guard code stays (live accounts still run it) for brokers still phasing the change in.
     "pdt_guard_in_paper": "false",
+    # Per-call hard spend cap passed to `claude -p --max-budget-usd` ('none' = no cap)
+    "llm_max_budget_usd":       "1.00",
+    "validator_max_budget_usd": "0.25",
+    "research_max_budget_usd":  "2.00",
+    # Plan guard: the family shares one Claude plan. At/above these readings (Cosmo's
+    # hourly ~/.claude/state/claude-usage.json) the brain is not asked for new entries;
+    # exits and stops still run. A reading older than 2 h = guard off.
+    "plan_guard_week_pct": "95",
+    "plan_guard_5h_pct":   "90",
 }
 
 

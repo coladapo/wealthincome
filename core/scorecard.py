@@ -185,7 +185,8 @@ def format_gate_line(gate: Dict[str, Any]) -> str:
 
 def format_digest(card: Dict[str, Any], trades_today: int = 0, errors_today: int = 0,
                   brain: Optional[Dict[str, Any]] = None,
-                  gate: Optional[Dict[str, Any]] = None) -> str:
+                  gate: Optional[Dict[str, Any]] = None,
+                  usage_line: Optional[str] = None) -> str:
     """One-screen plain-text digest for Slack."""
     o = card["overall"]
     e = card["execution"]
@@ -211,6 +212,8 @@ def format_digest(card: Dict[str, Any], trades_today: int = 0, errors_today: int
         lines.append(format_brain_line(brain))
     if gate is not None:
         lines.append(format_gate_line(gate))
+    if usage_line:
+        lines.append(usage_line)
     return "\n".join(lines)
 
 

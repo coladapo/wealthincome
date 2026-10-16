@@ -294,7 +294,15 @@ def trigger_status():
 
 @app.get("/usage")
 def usage(days: int = 1):
-    return get_token_usage(days=days)
+    """Cycle-based totals (UI shape, unchanged) + `ledger`: every headless model
+    call from llm_calls, today and last 30 days by caller, plus the plan reading."""
+    out = get_token_usage(days=days)
+    try:
+        from core.usage_report import usage_summary
+        out["ledger"] = usage_summary()
+    except Exception as e:
+        out["ledger"] = {"error": f"{type(e).__name__}: {e}"}
+    return out
 
 
 @app.get("/equity-curve")

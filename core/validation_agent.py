@@ -163,6 +163,7 @@ def validate_decision(
     positions: Dict[str, Any],
     account: Dict[str, Any],
     use_llm: bool = True,
+    cycle_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Validate a single trade decision.
@@ -231,7 +232,12 @@ def validate_decision(
         if not fn:
             raise ValueError(f"Unknown provider: {provider}")
 
-        extra = {"effort": effort} if provider == "anthropic_cli" else {}
+        from core.llm_router import DEFAULT_VALIDATOR_BUDGET_USD, budget_from_config
+        # Per-call tokens/duration land in the llm_calls ledger (caller 'validator').
+        extra = ({"effort": effort, "caller": "validator", "cycle_id": cycle_id,
+                  "max_budget_usd": budget_from_config("validator_max_budget_usd",
+                                                       DEFAULT_VALIDATOR_BUDGET_USD)}
+                 if provider == "anthropic_cli" else {})
         text_output, _raw_usage = fn(VALIDATION_SYSTEM_PROMPT, user_prompt, model, timeout=VALIDATOR_TIMEOUT_S, **extra)
         result = _parse_trading_json(text_output)
 
@@ -287,6 +293,7 @@ def validate_decisions(
     market_context: str,
     positions: Dict[str, Any],
     account: Dict[str, Any],
+    cycle_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Validate a list of decisions. Returns only the ones that pass or warn.
@@ -298,7 +305,7 @@ def validate_decisions(
     blocked_count = 0
 
     for d in decisions:
-        v = validate_decision(d, market_context, positions, account)
+        v = validate_decision(d, market_context, positions, account, cycle_id=cycle_id)
         d["_validation"] = v  # attach validation result to decision for DB recording
 
         if v["verdict"] == BLOCK:

@@ -92,6 +92,16 @@ def _shadow_line():
         return None
 
 
+def _usage_line():
+    """Plan-usage line from the llm_calls ledger; never costs the digest."""
+    try:
+        from core.usage_report import format_usage_line
+        return format_usage_line()
+    except Exception as e:
+        print(f"usage line failed: {e}", file=sys.stderr)
+        return None
+
+
 def main() -> int:
     from core.scorecard import compute_scorecard, format_digest
     from backend.db import DB_PATH
@@ -108,7 +118,7 @@ def main() -> int:
     card = compute_scorecard()
     brain, gate = _brain_and_gate()
     text = format_digest(card, trades_today=trades_today, errors_today=errors_today,
-                         brain=brain, gate=gate)
+                         brain=brain, gate=gate, usage_line=_usage_line())
     text += ("\n" + shadow) if (shadow := _shadow_line()) else ""
 
     if _post_via_webhook(text):

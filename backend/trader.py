@@ -31,6 +31,7 @@ from backend.order_keys import order_idempotency_key, trailing_stop_key
 from core.alpaca_client import AlpacaClient, AlpacaOrderSide, AlpacaTimeInForce
 from core.claude_trader import SYSTEM_PROMPT, build_session_feedback_block
 from core.llm_router import run_decision
+from core import plan_guard
 from core.validation_agent import validate_decisions, record_validation, BLOCK
 from core.trade_rag import build_portfolio_rag_block
 from core.indicators import compute_all
@@ -918,6 +919,17 @@ def acquire_cycle_lock(path: str = None):
 
 # ─── One cycle ────────────────────────────────────────────────────────────────
 
+def _finalize_yesterday_summary():
+    """Daily summary — finalize yesterday if a new day just started."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _baseline_date and _baseline_date != today:
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            upsert_daily_summary(yesterday)
+        except Exception as e:
+            logger.warning(f"Could not upsert daily summary: {e}")
+
+
 def run_cycle(alpaca: AlpacaClient):
     cfg = get_config()
     trade_hours_only = cfg["trade_only_market_hours"].lower() == "true"
@@ -1242,8 +1254,19 @@ def run_cycle(alpaca: AlpacaClient):
         from core.llm_router import DEFAULT_MODEL, DEFAULT_EFFORT
         model    = cfg.get("llm_model", DEFAULT_MODEL)
         effort   = cfg.get("llm_effort", DEFAULT_EFFORT)
+        # Plan guard — the family shares one Claude plan. Near its limit, skip the
+        # brain (no new entries) but still run the stop sweep / daily housekeeping.
+        hold, hold_reason = plan_guard.should_hold(cfg)
+        if hold:
+            plan_guard.note_hold(hold_reason, cycle_id)
+            check_stop_losses(positions, alpaca, float(cfg["max_position_pct"]), cycle_id)
+            _finalize_yesterday_summary()
+            fail_cycle(cycle_id, "plan_guard_hold", enricher_status=_enricher_status)
+            return
+
         logger.info(f"Asking {provider}/{model} (effort={effort}) to analyze {len(watchlist)} symbols...")
         result = run_decision(
+            cycle_id=cycle_id,
             watchlist=watchlist,
             market_data=market_data,
             portfolio=portfolio_snapshot,
@@ -1294,6 +1317,7 @@ def run_cycle(alpaca: AlpacaClient):
             market_context=portfolio_risk_context,
             positions={sym: {"symbol": sym} for sym in positions},
             account=account_snapshot,
+            cycle_id=cycle_id,
         )
 
         # Record validation outcomes to DB
@@ -1384,15 +1408,7 @@ def run_cycle(alpaca: AlpacaClient):
                 record_error("execution_error", f"{d.get('symbol')}: {e}", cycle_id)
 
         check_stop_losses(positions, alpaca, float(cfg["max_position_pct"]), cycle_id)
-
-        # Daily summary — finalize yesterday if new day just started
-        today = datetime.now().strftime("%Y-%m-%d")
-        if _baseline_date and _baseline_date != today:
-            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-            try:
-                upsert_daily_summary(yesterday)
-            except Exception as e:
-                logger.warning(f"Could not upsert daily summary: {e}")
+        _finalize_yesterday_summary()
 
     except Exception as e:
         logger.error(f"Cycle error: {e}", exc_info=True)
