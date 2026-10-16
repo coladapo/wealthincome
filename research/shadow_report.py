@@ -1,12 +1,15 @@
-"""One digest line on the shadow challengers (read-only on data/research.db).
+"""One digest line on the shadow strategies, one segment per sleeve (read-only on data/research.db).
 
-    Shadow: 2 challengers · best +0.4%/mo vs champion (n=12d) · SPY capped −0.2%/mo
+    Shadow · swing: champion_replay −0.2% (2d) · long: — · treasury: treasury_sweep +0.0% (0d)
 
-"best" = the challenger (registry status shadow, not a reference series) with the
-highest mean daily excess return over the champion's real equity, on the dates both
-were observed, x21 for a month; n = days compared. "SPY capped" is the same number for
-SPY held under the live caps. format_shadow_line() never raises: any failure returns
-None and the digest simply omits the line.
+A sleeve (registry horizon, in research.strategy.HORIZONS order) gets a segment when it
+has any registered strategy. The segment names the sleeve's best challenger (registry
+status shadow, not a reference series) by shadow TOTAL return since it entered shadow
+(research.shadow: dividends credited), with n = shadow trading days (daily returns, the
+start day not counted, as in promotion rule P1). "(k)" after the sleeve = k challengers
+when there is more than one; "—" = no challenger in that sleeve. A registry champion of
+the sleeve is appended as ", champion <id> ±x%". format_shadow_line() never raises: any
+failure returns None and the digest simply omits the line.
 """
 
 from __future__ import annotations
@@ -17,44 +20,39 @@ from typing import Optional
 
 from research.bars import DEFAULT_DB_PATH
 
-DAYS_PER_MONTH = 21
 
-
-def _mo(v: Optional[float]) -> str:
+def _pct(v: Optional[float]) -> str:
     if v is None:
         return "n/a"
-    x = v * DAYS_PER_MONTH * 100
-    return f"{'+' if x >= 0 else '−'}{abs(x):.1f}%/mo"
+    x = v * 100
+    return f"{'+' if x >= 0 else '−'}{abs(x):.1f}%"
 
 
 def shadow_summary(conn: sqlite3.Connection) -> dict:
+    """{sleeve: {"n_challengers", "best": {id, ret, n} | None, "champion": {id, ret, n} | None}}
+    for every sleeve that has a registered strategy, in HORIZONS order."""
     from research import strategy as registry
-    from research.promotion import load_benchmark, load_shadow
-    from research.shadow import CHAMPION_SERIES, REFERENCE_IDS
-    from research.walk_forward import excess_from_equity
+    from research.promotion import load_shadow
+    from research.shadow import REFERENCE_IDS
 
-    champ = load_benchmark(conn, CHAMPION_SERIES)
+    def record(r):
+        sh = load_shadow(conn, r["id"], r["version"])
+        ret = float(sh["equity"].iloc[-1] / sh["equity"].iloc[0] - 1.0) if len(sh) else None
+        return {"id": r["id"], "ret": ret, "n": max(len(sh) - 1, 0)}
 
-    def excess(sid, ver):
-        sh = load_shadow(conn, sid, ver)
-        if len(sh) < 2 or len(champ) < 2:
-            return None, max(len(sh) - 1, 0)
-        e = excess_from_equity(sh["equity"], champ, n_boot=200)
-        return e.get("mean_daily"), int(e.get("n_days") or 0)
-
-    rows = [r for r in registry.list_strategies(status="shadow", conn=conn)
-            if r["id"] not in REFERENCE_IDS and not r["reference_only"]]
-    best = None
-    for r in rows:
-        m, n = excess(r["id"], r["version"])
-        if best is None or (m is not None and (best["mean"] is None or m > best["mean"])):
-            best = {"id": r["id"], "mean": m, "n": n}
-    spy = None
-    caps = [r for r in registry.list_strategies(conn=conn) if r["id"] == "spy_hold_capped"]
-    if caps:
-        m, n = excess(caps[-1]["id"], caps[-1]["version"])
-        spy = {"mean": m, "n": n}
-    return {"n_challengers": len(rows), "best": best, "spy_capped": spy}
+    rows = registry.list_strategies(conn=conn)
+    out = {}
+    for h in registry.HORIZONS:
+        mine = [r for r in rows if r["horizon"] == h]
+        if not mine:
+            continue
+        ch = [record(r) for r in mine if r["status"] == "shadow"
+              and r["id"] not in REFERENCE_IDS and not r["reference_only"]]
+        ch.sort(key=lambda x: (x["ret"] is not None, x["ret"] or 0.0, x["n"]), reverse=True)
+        champs = [r for r in mine if r["status"] == "champion"]
+        out[h] = {"n_challengers": len(ch), "best": ch[0] if ch else None,
+                  "champion": record(champs[-1]) if champs else None}
+    return out
 
 
 def format_shadow_line(conn: Optional[sqlite3.Connection] = None,
@@ -67,13 +65,17 @@ def format_shadow_line(conn: Optional[sqlite3.Connection] = None,
         if not has:
             return "Shadow: not started"
         s = shadow_summary(conn)
-        k = s["n_challengers"]
-        parts = [f"Shadow: {k} challenger{'s' if k != 1 else ''}"]
-        b = s["best"]
-        if b is not None:
-            parts.append(f"best {_mo(b['mean'])} vs champion (n={b['n']}d)")
-        if s["spy_capped"] is not None:
-            parts.append(f"SPY capped {_mo(s['spy_capped']['mean'])}")
+        if not s:
+            return "Shadow: no strategies registered"
+        parts = ["Shadow"]
+        for h, v in s.items():
+            b = v["best"]
+            k = f" ({v['n_challengers']})" if v["n_challengers"] > 1 else ""
+            seg = f"{h}{k}: " + ("—" if b is None else f"{b['id']} {_pct(b['ret'])} ({b['n']}d)")
+            c = v["champion"]
+            if c is not None:
+                seg += f", champion {c['id']} {_pct(c['ret'])}"
+            parts.append(seg)
         return " · ".join(parts)
     except Exception as e:
         print(f"shadow line failed: {type(e).__name__}: {e}", file=sys.stderr)

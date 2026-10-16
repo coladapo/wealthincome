@@ -133,9 +133,31 @@ def test_universe_uses_fetcher_and_adds_etfs(conn):
     fake = lambda: pd.DataFrame({"symbol": ["AAPL", "BRK-B"], "name": ["Apple", "Berkshire"],
                                  "sector": ["IT", "Fin"]})
     syms = rb.ensure_universe(conn, fetcher=fake)
-    assert set(syms) == {"AAPL", "BRK-B", "SPY", "QQQ", "IWM"}
+    assert set(syms) == {"AAPL", "BRK-B", "SPY", "QQQ", "IWM", "BIL", "SGOV"}
     src = dict(conn.execute("SELECT symbol, source FROM universe"))
     assert src["AAPL"] == "wikipedia_current" and src["SPY"] == "etf"
+    assert src["BIL"] == src["SGOV"] == "etf"          # refreshed nightly with the universe
+
+
+def test_tbill_etfs_excluded_from_stock_universe_scans(tmp_path):
+    from research.asof import AsOfData, MarketData
+    from research_synth import frame
+    db = str(tmp_path / "u.db")
+    c = rb.connect(db)
+    rb.ensure_universe(c, fetcher=lambda: pd.DataFrame({"symbol": ["AAPL"], "name": ["Apple"],
+                                                         "sector": ["IT"]}))
+    dates = pd.bdate_range("2024-01-02", periods=3)
+    for s in ("AAPL", "SPY", "BIL", "SGOV"):
+        rb._write(c, s, frame(dates, [100.0, 101.0, 102.0]), replace_all=True)
+    c.commit()
+    c.close()
+    store = rb.BarStore(db)
+    assert store.symbols(etfs=False) == ["AAPL"]
+    store.close()
+    m = MarketData(db)
+    assert m.universe_all() == ["AAPL"]
+    assert AsOfData("2024-01-04", m).close("BIL") == 102.0            # still readable by name
+    m.close()
 
 
 def test_universe_falls_back_to_snapshot(conn):

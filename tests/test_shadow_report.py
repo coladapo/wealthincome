@@ -2,7 +2,6 @@
 
 import importlib.util
 import os
-import re
 import sqlite3
 import sys
 
@@ -58,8 +57,41 @@ def db(tmp_path):
 
 def test_line_format(db):
     line = shadow_report.format_shadow_line(db_path=db)
-    assert re.fullmatch(r"Shadow: 2 challengers · best \+1\.3%/mo vs champion \(n=12d\) · SPY capped −2\.3%/mo",
-                        line), line
+    # swing: two challengers, best = 1.0016^12 - 1 = +1.9%; long: only the SPY reference series
+    assert line == "Shadow · swing (2): report_challenger +1.9% (12d) · long: —", line
+
+
+class TreasuryCh(Strategy):
+    """Test treasury challenger."""
+    id = "report_tbill"
+    horizon = "treasury"
+    default_params = {"k": 1}
+
+    def target_weights(self, as_of, data):
+        return {}
+
+
+class LongCh(TreasuryCh):
+    """Test long champion."""
+    id = "report_core"
+    horizon = "long"
+
+
+def test_line_per_sleeve_with_champion_and_negative(db):
+    c = sqlite3.connect(db)
+    t = TreasuryCh()
+    reg.register(t, conn=c)
+    reg.set_status(t.id, t.version, "shadow", conn=c)
+    _write(c, t.id, t.version, pd.Series([100_000.0], index=DATES[-1:]))           # entered today: 0 days
+    lc = LongCh()
+    reg.register(lc, conn=c)
+    reg.set_status(lc.id, lc.version, "shadow", conn=c)
+    reg.set_status(lc.id, lc.version, "champion", approved_by="chris", conn=c)
+    _write(c, lc.id, lc.version, pd.Series([100_000.0, 99_800.0], index=DATES[-2:]))
+    c.close()
+    line = shadow_report.format_shadow_line(db_path=db)
+    assert line == ("Shadow · swing (2): report_challenger +1.9% (12d) · long: —, champion report_core −0.2% · "
+                    "treasury: report_tbill +0.0% (0d)"), line
 
 
 def test_not_started_when_no_tables(tmp_path):
@@ -76,7 +108,7 @@ def test_one_challenger_without_history(tmp_path):
     reg.register(s, conn=c)
     reg.set_status(s.id, s.version, "shadow", conn=c)
     c.close()
-    assert shadow_report.format_shadow_line(db_path=path) == "Shadow: 1 challenger · best n/a vs champion (n=0d)"
+    assert shadow_report.format_shadow_line(db_path=path) == "Shadow · swing: report_challenger n/a (0d)"
 
 
 def test_never_raises(db, monkeypatch):

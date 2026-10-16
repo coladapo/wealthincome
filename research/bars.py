@@ -4,7 +4,11 @@ Universe
 --------
 ``ensure_universe()`` loads the CURRENT S&P 500 constituents (Wikipedia list,
 falling back to the committed snapshot research/universe_sp500_snapshot.csv)
-plus the SPY/QQQ/IWM ETFs.
+plus the ETFS: the SPY/QQQ/IWM index ETFs and the BIL/SGOV T-bill ETFs. ETFS are
+refreshed nightly with everything else but are NOT part of the stock universe:
+edge studies and universe scans (AsOfData.universe, BarStore.symbols(etfs=False))
+exclude them; strategies that trade them (spy_hold, treasury_sweep,
+trend_filtered_core) read them by name.
 
 SURVIVORSHIP BIAS: a current-constituent list only contains companies that
 survived and grew into the index. Names that were dropped, went bankrupt or
@@ -23,6 +27,17 @@ dates. Because adjusted history is rewritten by yfinance after every split or
 dividend, the overlap is compared with what is stored; if the stored closes no
 longer match (an adjustment happened), that symbol's full history is reloaded so
 the series never mixes two adjustment bases.
+
+Dividends
+---------
+``refresh_dividends(symbols)`` caches yfinance ``Ticker.dividends`` (cash amount per
+share by EX-DATE, split-adjusted by yfinance) in ``dividends(symbol, ex_date, amount,
+source)``. Upsert by (symbol, ex_date); a symbol is re-fetched only when its last fetch
+(``dividend_fetch``) is older than DIVIDEND_MAX_AGE_HOURS. The shadow runner uses it to
+credit cash and to read stored (adjusted) bars on the basis they had on a given day
+(``dividend_scale``). yfinance's adjustment, verified on BIL 2026-09/10 to 1e-6:
+every bar before an ex-date e is multiplied by 1 - amount_e / raw close of the session
+before e.
 
 CLI (safe to run nightly):  venv/bin/python -m research.bars refresh
 """
@@ -52,11 +67,14 @@ DEFAULT_DB_PATH = os.environ.get(
 SNAPSHOT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "universe_sp500_snapshot.csv")
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 ETFS = [("SPY", "SPDR S&P 500 ETF", "ETF"), ("QQQ", "Invesco QQQ Trust", "ETF"),
-        ("IWM", "iShares Russell 2000 ETF", "ETF")]
+        ("IWM", "iShares Russell 2000 ETF", "ETF"),
+        ("BIL", "SPDR Bloomberg 1-3 Month T-Bill ETF", "ETF"),
+        ("SGOV", "iShares 0-3 Month Treasury Bond ETF", "ETF")]
 DEFAULT_START = "2019-01-01"
 BATCH_SIZE = 50
 OVERLAP_DAYS = 10          # calendar days re-fetched to detect re-adjustment
 ADJ_TOLERANCE = 1e-3       # relative close mismatch that triggers a full reload
+DIVIDEND_MAX_AGE_HOURS = 20
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS universe (
@@ -81,6 +99,18 @@ CREATE TABLE IF NOT EXISTS variant_runs (
     result_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_variant_runs_edge ON variant_runs(edge_name);
+CREATE TABLE IF NOT EXISTS dividends (
+    symbol  TEXT NOT NULL,
+    ex_date TEXT NOT NULL,
+    amount  REAL NOT NULL,
+    source  TEXT NOT NULL,
+    PRIMARY KEY (symbol, ex_date)
+);
+CREATE TABLE IF NOT EXISTS dividend_fetch (
+    symbol     TEXT PRIMARY KEY,
+    fetched_at TEXT NOT NULL,
+    n_rows     INTEGER NOT NULL
+);
 """
 
 # downloader(symbols, start "YYYY-MM-DD", end "YYYY-MM-DD" exclusive)
@@ -316,6 +346,108 @@ def _adjustment_changed(conn: sqlite3.Connection, symbol: str, fresh: pd.DataFra
         return False
     a, b = stored.loc[common].values, fresh.loc[common, "close"].values
     return bool(np.any(np.abs(a / b - 1.0) > ADJ_TOLERANCE))
+
+
+# --------------------------------------------------------------------------- dividends
+
+# fetcher(symbol) -> Series of cash amounts per share indexed by ex-date (tz-aware or naive)
+DividendFetcher = Callable[[str], pd.Series]
+
+
+def yfinance_dividends(symbol: str) -> pd.Series:
+    import yfinance as yf
+
+    return yf.Ticker(symbol).dividends
+
+
+def _ex_dates(idx) -> List[str]:
+    idx = pd.DatetimeIndex(pd.to_datetime(idx))
+    if idx.tz is not None:
+        idx = idx.tz_convert("America/New_York").tz_localize(None)
+    return [d.strftime("%Y-%m-%d") for d in idx]
+
+
+def refresh_dividends(symbols: Iterable[str], conn: Optional[sqlite3.Connection] = None,
+                      fetcher: Optional[DividendFetcher] = None,
+                      max_age_hours: float = DIVIDEND_MAX_AGE_HOURS, now: Optional[datetime] = None,
+                      sleep: Callable[[float], None] = time.sleep, pause: float = 0.5) -> Dict[str, int]:
+    """Cache dividends for `symbols` ("SPY#3" counts as SPY). Fetch failures are counted, never raised."""
+    own = conn is None
+    conn = conn or connect()
+    fetcher = fetcher or yfinance_dividends
+    now = now or datetime.now(timezone.utc)
+    out = {"symbols": 0, "fetched": 0, "cached": 0, "rows": 0, "failed": 0}
+    try:
+        syms = sorted({to_yf_symbol(str(s).split("#", 1)[0]) for s in symbols if s})
+        out["symbols"] = len(syms)
+        for s in syms:
+            r = conn.execute("SELECT fetched_at FROM dividend_fetch WHERE symbol=?", (s,)).fetchone()
+            if r is not None:
+                age = now - datetime.fromisoformat(r[0])
+                if age < timedelta(hours=max_age_hours):
+                    out["cached"] += 1
+                    continue
+            try:
+                ser = fetcher(s)
+            except Exception as e:
+                log.warning("dividends fetch failed for %s: %s", s, e)
+                out["failed"] += 1
+                continue
+            ser = pd.Series(dtype=float) if ser is None else ser.dropna()
+            ser = ser[ser > 0]
+            rows = [(s, d, float(a), "yfinance") for d, a in zip(_ex_dates(ser.index), ser.values)]
+            with conn:
+                conn.executemany(
+                    "INSERT INTO dividends(symbol, ex_date, amount, source) VALUES (?,?,?,?) "
+                    "ON CONFLICT(symbol, ex_date) DO UPDATE SET amount=excluded.amount, source=excluded.source",
+                    rows)
+                conn.execute("INSERT OR REPLACE INTO dividend_fetch(symbol, fetched_at, n_rows) VALUES (?,?,?)",
+                             (s, now.isoformat(timespec="seconds"), len(rows)))
+            out["fetched"] += 1
+            out["rows"] += len(rows)
+            if pause:
+                sleep(pause)
+    finally:
+        if own:
+            conn.close()
+    return out
+
+
+def dividends(conn: sqlite3.Connection, symbol: str, after: Optional[str] = None,
+              until: Optional[str] = None) -> pd.Series:
+    """Cached cash dividends of `symbol` with after < ex_date <= until, indexed by ex-date."""
+    q, p = "SELECT ex_date, amount FROM dividends WHERE symbol=?", [str(symbol).split("#", 1)[0]]
+    if after:
+        q += " AND ex_date > ?"
+        p.append(str(after)[:10])
+    if until:
+        q += " AND ex_date <= ?"
+        p.append(str(until)[:10])
+    rows = conn.execute(q + " ORDER BY ex_date", p).fetchall()
+    return pd.Series([float(a) for _, a in rows], index=pd.DatetimeIndex([d for d, _ in rows]), dtype=float)
+
+
+def dividend_scale(close: pd.Series, divs: pd.Series, as_of) -> float:
+    """Factor that turns stored (adjusted-to-today) prices into the basis the store had at the
+    close of `as_of`, i.e. undoes the adjustments for ex-dates after `as_of`.
+
+    yfinance multiplies every bar before ex-date e by f_e = 1 - a_e / raw_close(e-1). Walking
+    the ex-dates in (as_of, last stored bar] newest first: stored(e-1) = (raw(e-1) - a_e) x L
+    with L the product of the newer factors, so raw(e-1) = stored(e-1) / L + a_e. Returns 1/prod f."""
+    close = close.dropna().sort_index()
+    if close.empty or divs is None or divs.empty:
+        return 1.0
+    t, last = pd.Timestamp(as_of), close.index[-1]
+    later = 1.0
+    for e, a in sorted(divs[(divs.index > t) & (divs.index <= last)].items(), reverse=True):
+        before = close[close.index < e]
+        if before.empty:
+            continue
+        raw_prev = float(before.iloc[-1]) / later + float(a)
+        if raw_prev <= 0:
+            continue
+        later *= 1.0 - float(a) / raw_prev
+    return 1.0 / later if later > 0 else 1.0
 
 
 class BarStore:
