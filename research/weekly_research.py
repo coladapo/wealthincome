@@ -906,7 +906,7 @@ def _fmt_check_value(v) -> str:
 
 def render_report(rec: Dict, proposals: List[Dict], rejected: List[Dict], outcomes: List[Dict],
                   session_note: str = "") -> str:
-    lines = [f"# Weekly research session {rec['week']} ({rec['started_at'][:10]})", "",
+    lines = [f"# Weekly research session {rec['week']} ({date.today().isoformat()})", "",
              "A model proposed; the pipeline decided. The model had no tools, did not see any result, and "
              "has no authority over orders, risk limits, allocation or promotion. A proposal that cleared its "
              "pre-registered bar moved candidate -> shadow mechanically; champion needs Chris "
