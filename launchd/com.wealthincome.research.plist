@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wealthincome.research</string>
+
+    <!-- STAGED, not installed. Weekly bounded research session (Sundays 09:00 PT):
+         one model call proposes <= 3 hypotheses; the pipeline runs one trial each and
+         decides mechanically (candidate -> shadow at most). Never places orders. -->
+    <key>ProcessType</key>
+    <string>Standard</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/wivak</string>
+        <key>WEALTHINCOME_CLAUDE_BIN</key>
+        <string>/Users/wivak/puo-jects/____active/wealthincome-unified/bin/claude</string>
+        <key>DISABLE_AUTOUPDATER</key>
+        <string>1</string>
+        <key>OPENBLAS_NUM_THREADS</key>
+        <string>1</string>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/wivak/puo-jects/____active/wealthincome-unified/venv/bin/python</string>
+        <string>/Users/wivak/puo-jects/____active/wealthincome-unified/scripts/weekly_research.py</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>0</integer></dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/wivak/puo-jects/____active/wealthincome-unified</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/wivak/puo-jects/____active/wealthincome-unified/logs/weekly_research.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/wivak/puo-jects/____active/wealthincome-unified/logs/weekly_research.log</string>
+</dict>
+</plist>
