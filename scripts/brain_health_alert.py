@@ -4,7 +4,7 @@
 Run by com.wealthincome.brainhealth.plist weekdays at 13:20 PT. If fewer
 than 80% of today's LLM calls came back with a decision (and there were at
 least 5), post one line to the #wealthincome webhook. If the previous session
-was ALSO under 80%, escalate the same line to #agent-alerts via slack-push.sh.
+was ALSO under 80%, escalate the same line via slack-push.sh — to the PROJECT channel (#wealthincome); Chris reads the project channel, not a general alerts channel (his call, 2026-10-16).
 At most one alert per day (state in data/persistent/brain_alert_state.json).
 Read-only on trading state; safe to run manually.
 """
@@ -50,7 +50,7 @@ def _save_state(state: dict) -> None:
 def _post_alerts(text: str) -> bool:
     if not os.path.exists(SLACK_PUSH):
         return False
-    r = subprocess.run([SLACK_PUSH, "alerts", text], capture_output=True, text=True, timeout=20)
+    r = subprocess.run([SLACK_PUSH, "wealthincome", text], capture_output=True, text=True, timeout=20)
     if r.returncode != 0:
         print(f"slack-push alerts failed: {r.stderr.strip()}", file=sys.stderr)
     return r.returncode == 0
