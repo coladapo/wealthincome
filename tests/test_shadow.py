@@ -19,6 +19,7 @@ from research_synth import frame
 class HoldAAA(Strategy):
     """Test challenger: hold AAA at weight w."""
     id = "hold_aaa"
+    horizon = "swing"
     default_params = {"w": 0.05}
 
     def target_weights(self, as_of, data):

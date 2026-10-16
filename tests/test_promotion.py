@@ -18,6 +18,7 @@ DATES = pd.bdate_range("2026-01-05", periods=N)
 class Tmp(Strategy):
     """Test strategy."""
     id = "tmp_challenger"
+    horizon = "swing"
     default_params = {"k": 1}
 
     def target_weights(self, as_of, data):

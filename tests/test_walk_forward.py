@@ -13,6 +13,7 @@ from research_synth import random_market
 class Hold(Strategy):
     """Hold AAA and BBB (test helper)."""
     id = "wf_hold"
+    horizon = "swing"
     default_params = {"w": 0.08}
 
     def target_weights(self, as_of, data):

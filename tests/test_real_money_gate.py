@@ -9,6 +9,7 @@ import backend.db as db
 import core.real_money_gate as gate_mod
 
 NOW = datetime(2026, 10, 14, 13, 0, 0)
+REAL_DAY_SLEEVE_WEIGHT = gate_mod._day_sleeve_weight
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +17,11 @@ def fresh_reconciliation(monkeypatch):
     monkeypatch.setattr(gate_mod, "_reconciliation_status",
                         lambda: {"broker_realized": 250.0, "lifecycle_realized": 250.0,
                                  "gap": 0.0, "as_of": NOW.isoformat()})
+
+
+@pytest.fixture(autouse=True)
+def no_day_sleeve(monkeypatch):
+    monkeypatch.setattr(gate_mod, "_day_sleeve_weight", lambda: 0.0)
 
 
 @pytest.fixture()
@@ -66,14 +72,15 @@ def test_gate_mostly_failing(gate_db):
     assert not items["b"]["pass"]                         # CI over 10 trades spans 0
     assert items["c"]["value"] == 0 and not items["c"]["pass"]
     assert items["e"]["value"] == 5.0 and items["e"]["pass"]
-    # f/g: no config rows → the code defaults ('true') apply, as in the live trader
-    assert items["f"]["value"] == "true" and items["f"]["pass"]
+    # f': no day sleeve allocated → not applicable, passes; g: code default 'true' applies
+    assert "f" not in items
+    assert items["f'"]["value"] == "not applicable — no day sleeve yet" and items["f'"]["pass"]
     assert items["g"]["pass"] and not items["i"]["pass"]
     # books: broker realized 250 + 50 unrealized - (100300 - 100000) = 0 (fresh rebuild)
     assert items["h"]["value"]["residual"] == 0 and items["h"]["pass"]
     # deployment over last 30d (from 09-14): 09-20 (36.8%) and NOW-1d (20.2%); 09-01 excluded
     assert items["d"]["value"] == pytest.approx(28.5, abs=0.1) and not items["d"]["pass"]
-    assert card["passed_count"] == 4  # e, h, and the two default-on switches f, g
+    assert card["passed_count"] == 4  # e, h, f' (no day sleeve) and the default-on switch g
     assert card["summary"] == "gate: 4/9"
     assert card["next_blocker"] == items["a"]["label"]
 
@@ -106,7 +113,7 @@ def test_gate_regime_and_switches(gate_db):
 
     items = _by_id(gate_mod.compute_gate(now=NOW))
     assert items["c"]["value"] == 22 and items["c"]["pass"]
-    assert items["f"]["pass"] and items["g"]["pass"] and items["i"]["pass"]
+    assert items["f'"]["pass"] and items["g"]["pass"] and items["i"]["pass"]
 
 
 def test_gate_line_and_brain_line_in_digest():
@@ -126,8 +133,31 @@ def test_gate_switches_use_code_defaults_when_rows_missing(gate_db):
     conn = sqlite3.connect(gate_db)
     conn.execute("DELETE FROM config WHERE key IN ('pdt_guard_in_paper', 'validator_fail_closed')")
     conn.commit(); conn.close()
-    assert db.DEFAULT_CONFIG["pdt_guard_in_paper"] == "true"
+    assert db.DEFAULT_CONFIG["pdt_guard_in_paper"] == "false"     # PDT retired (FINRA 4210, 2026-06-04)
     assert db.DEFAULT_CONFIG["validator_fail_closed"] == "true"
     items = _by_id(gate_mod.compute_gate(now=NOW))
-    assert items["f"]["pass"] and items["f"]["value"] == "true"
+    assert items["f'"]["pass"]                                     # PDT no longer gates real money
     assert items["g"]["pass"] and items["g"]["value"] == "true"
+
+
+def test_gate_day_sleeve_item_fails_once_a_day_sleeve_exists(gate_db, monkeypatch):
+    monkeypatch.setattr(gate_mod, "_day_sleeve_weight", lambda: 0.05)
+    card = gate_mod.compute_gate(now=NOW)
+    f = _by_id(card)["f'"]
+    assert not f["pass"] and "5%" in f["value"] and card["total"] == 9
+    monkeypatch.setattr(gate_mod, "_day_sleeve_weight", lambda: None)   # unreadable -> fail closed
+    assert not _by_id(gate_mod.compute_gate(now=NOW))["f'"]["pass"]
+
+
+def test_day_sleeve_weight_reads_the_latest_allocation(tmp_path, monkeypatch):
+    import research.bars as rb
+    from research import strategy as reg
+    path = str(tmp_path / "research.db")
+    monkeypatch.setattr(rb, "DEFAULT_DB_PATH", path)
+    assert REAL_DAY_SLEEVE_WEIGHT() == 0.0                      # no store at all
+    reg.current_allocation(db_path=path)                        # creates an empty table
+    assert REAL_DAY_SLEEVE_WEIGHT() == 0.0
+    reg.set_allocation({}, approved_by="chris", as_of="2026-10-15", db_path=path)
+    assert REAL_DAY_SLEEVE_WEIGHT() == 0.0
+    reg.set_allocation({"day": 0.1}, approved_by="chris", as_of="2026-11-01", db_path=path)
+    assert REAL_DAY_SLEEVE_WEIGHT() == 0.1

@@ -1,4 +1,5 @@
-"""PDT guard: rolling 5-business-day day-trade count, runs in paper, never blocks sells."""
+"""PDT guard: rolling 5-business-day day-trade count, runs in paper when enabled (default off
+since the FINRA Rule 4210 amendment, 2026-06-04), never blocks sells."""
 
 from datetime import date
 from types import SimpleNamespace
@@ -74,8 +75,9 @@ def test_guard_applies_in_paper_by_default_and_is_configurable():
     assert trader.pdt_guard_applies(live, {"pdt_guard_in_paper": "false"}) is True
 
 
-def test_default_config_has_pdt_guard_in_paper_true(real_db):
-    assert real_db.get_config()["pdt_guard_in_paper"] == "true"
+def test_default_config_has_pdt_guard_in_paper_false(real_db):
+    # FINRA Rule 4210 amendment (effective 2026-06-04) retired PDT; paper default is off
+    assert real_db.get_config()["pdt_guard_in_paper"] == "false"
 
 
 class _ReachedOrder(Exception):
@@ -115,9 +117,10 @@ def test_execute_decision_blocks_paper_buy(real_db, monkeypatch):
     from core import catalyst_risk
     monkeypatch.setattr(catalyst_risk, "get_catalyst_risk", lambda *a, **k: catalyst_risk._clear())
     acct = SimpleNamespace(cash=50_000, portfolio_value=100_000, long_market_value=0)
+    cfg = {**_cfg(), "pdt_guard_in_paper": "true"}      # guard code kept; switched on explicitly
     out = trader.execute_decision(
         {"action": "buy", "symbol": "NVDA", "confidence": 0.9, "position_size_pct": 0.05},
-        acct, {}, _cfg(), _FakeAlpaca(), cycle_id=None, ai_decision_id=None, market_data={})
+        acct, {}, cfg, _FakeAlpaca(), cycle_id=None, ai_decision_id=None, market_data={})
     assert out is None
     assert any(e["error_type"] == "pdt_blocked" for e in bdb.get_errors(10))
 

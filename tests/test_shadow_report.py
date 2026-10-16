@@ -23,6 +23,7 @@ DIGEST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 class Ch(Strategy):
     """Test challenger."""
     id = "report_challenger"
+    horizon = "swing"
     default_params = {"k": 1}
 
     def target_weights(self, as_of, data):

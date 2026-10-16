@@ -31,13 +31,36 @@ Optional hooks / switches:
   chassis                                  None = the live chassis. Anything else makes
                                            the strategy REFERENCE ONLY: it can be
                                            evaluated but never promoted.
+  chassis_override                         a Chassis inside its SLEEVE's risk policy
+                                           (SLEEVE_LIMITS, e.g. the core sleeve's one
+                                           index position at 100%). The simulator and
+                                           walk-forward run it (it is what `chassis`
+                                           returns) and it is NOT reference-only.
+
+Horizon (sleeve)
+----------------
+Every strategy declares ``horizon`` in HORIZONS = day | swing | long | treasury and
+is judged inside that sleeve; ``register`` refuses a strategy without one. Strategies
+registered before the field existed get theirs from LEGACY_HORIZONS (set on the class
+at definition time, so their source files -- and therefore their frozen versions --
+are untouched).
 
 Registry
 --------
 Table ``strategies`` keyed by (id, version). Status lifecycle:
     candidate -> shadow -> champion -> retired
 Promotion to champion requires ``approved_by="chris"`` -- the code never promotes
-on its own -- and retires the previous champion (demoted_at set) in one transaction.
+on its own -- and retires the previous champion OF THE SAME HORIZON (demoted_at set)
+in one transaction: promotion is per sleeve.
+
+Sleeve allocation
+-----------------
+Table ``sleeve_allocation(date, sleeve, weight, approved_by, notes)``: the share of
+account capital each sleeve gets, one row per sleeve per allocation date. Only
+``set_allocation(..., approved_by="chris")`` writes it; treasury is always the
+remainder (1 - the others), each sleeve is capped at SLEEVE_CAPS until proven.
+``current_allocation()`` reads the latest date (all-treasury when nothing is
+recorded). Weights only: nothing in the live trader reads this table yet.
 """
 
 from __future__ import annotations
@@ -50,6 +73,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from research.bars import connect
+from research.portfolio_sim import Chassis  # noqa: F401  (the type of chassis_override)
 
 STATUSES = ("candidate", "shadow", "champion", "retired")
 ALLOWED_TRANSITIONS = {
@@ -61,6 +85,17 @@ ALLOWED_TRANSITIONS = {
 APPROVER = "chris"
 MAX_WEIGHT = 0.08
 MAX_NAMES = 8
+
+HORIZONS = ("day", "swing", "long", "treasury")
+SLEEVES = HORIZONS
+# strategies registered before `horizon` existed (their files must not change: frozen versions)
+LEGACY_HORIZONS = {"champion_replay": "swing", "spy_hold_capped": "long", "spy_hold_uncapped": "long"}
+# per-sleeve risk policy a chassis_override must stay inside: (max positions, max weight per
+# position). swing keeps the live chassis (8 x 8%); the day sleeve's policy (per-trade risk,
+# flat by 15:55 ET, 1% daily stop) is not a daily-bar chassis and has no override yet.
+SLEEVE_LIMITS = {"long": (1, 1.0), "treasury": (1, 1.0)}
+# capital share each sleeve may get until proven (sleeve-design.md); treasury = the remainder
+SLEEVE_CAPS = {"long": 0.60, "swing": 0.40, "day": 0.10, "treasury": 1.0}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS strategies (
@@ -75,7 +110,16 @@ CREATE TABLE IF NOT EXISTS strategies (
     demoted_at     TEXT,
     notes          TEXT,
     reference_only INTEGER NOT NULL DEFAULT 0,
+    horizon        TEXT NOT NULL DEFAULT 'swing',
     PRIMARY KEY (id, version)
+);
+CREATE TABLE IF NOT EXISTS sleeve_allocation (
+    date        TEXT NOT NULL,
+    sleeve      TEXT NOT NULL,
+    weight      REAL NOT NULL,
+    approved_by TEXT NOT NULL,
+    notes       TEXT,
+    PRIMARY KEY (date, sleeve)
 );
 """
 
@@ -88,14 +132,30 @@ class Strategy:
     """Base class. Subclasses set `id`, `default_params` and implement target_weights."""
 
     id: str = ""
+    horizon: str = ""
     default_params: Dict[str, Any] = {}
     rebalance: str = "drift"
     reenter_after_stop: bool = True
-    chassis: Any = None
+    chassis_override: Any = None
+
+    def __init_subclass__(cls, **kw):
+        super().__init_subclass__(**kw)
+        if not cls.__dict__.get("horizon") and cls.__dict__.get("id") in LEGACY_HORIZONS:
+            cls.horizon = LEGACY_HORIZONS[cls.__dict__["id"]]
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         if not self.id:
             raise ValueError(f"{type(self).__name__} must set a class attribute `id`")
+        if self.horizon and self.horizon not in HORIZONS:
+            raise ValueError(f"{self.id}: horizon {self.horizon!r} not in {HORIZONS}")
+        ov = self.chassis_override
+        if ov is not None:
+            lim = SLEEVE_LIMITS.get(self.horizon)
+            if lim is None:
+                raise ValueError(f"{self.id}: sleeve {self.horizon!r} allows no chassis_override")
+            if ov.max_positions > lim[0] or ov.max_weight > lim[1] + 1e-12:
+                raise ValueError(f"{self.id}: chassis_override exceeds the {self.horizon} sleeve "
+                                 f"policy (max {lim[0]} positions, {lim[1]:.0%} each)")
         params = dict(params or {})
         unknown = set(params) - set(self.default_params)
         if unknown:
@@ -120,8 +180,13 @@ class Strategy:
         return h.hexdigest()
 
     @property
+    def chassis(self):
+        """The chassis the simulator runs: None (live chassis) or the sleeve's override."""
+        return self.chassis_override
+
+    @property
     def reference_only(self) -> bool:
-        return self.chassis is not None
+        return self.chassis is not None and self.chassis is not self.chassis_override
 
     def describe(self) -> str:
         doc = (inspect.getdoc(type(self)) or "").strip().splitlines()
@@ -146,6 +211,12 @@ class Strategy:
 # --------------------------------------------------------------------------- registry
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(strategies)")}
+    if cols and "horizon" not in cols:
+        # existing rows get 'swing' (the ADD COLUMN default), then the known legacy ids their sleeve
+        conn.execute("ALTER TABLE strategies ADD COLUMN horizon TEXT NOT NULL DEFAULT 'swing'")
+        conn.executemany("UPDATE strategies SET horizon=? WHERE id=?",
+                         [(h, i) for i, h in LEGACY_HORIZONS.items()])
     conn.executescript(SCHEMA)
     conn.commit()
 
@@ -164,7 +235,7 @@ def _now() -> str:
 
 
 _COLS = ["id", "version", "params_json", "source_path", "status", "hypothesis_id", "created_at",
-         "promoted_at", "demoted_at", "notes", "reference_only"]
+         "promoted_at", "demoted_at", "notes", "reference_only", "horizon"]
 
 
 def _row(r) -> Dict:
@@ -177,6 +248,9 @@ def _row(r) -> Dict:
 def register(strategy: Strategy, hypothesis_id: Optional[str] = None, notes: Optional[str] = None,
              conn: Optional[sqlite3.Connection] = None, db_path: Optional[str] = None) -> Dict:
     """Register (id, version) as a candidate. Idempotent: an existing row is returned unchanged."""
+    if strategy.horizon not in HORIZONS:
+        raise ValueError(f"{strategy.id}: register needs a horizon in {HORIZONS} "
+                         f"(got {strategy.horizon!r})")
     c, own = _open(conn, db_path)
     try:
         v = strategy.version
@@ -185,7 +259,7 @@ def register(strategy: Strategy, hypothesis_id: Optional[str] = None, notes: Opt
             c.execute(f"INSERT INTO strategies({','.join(_COLS)}) VALUES ({','.join('?' * len(_COLS))})",
                       (strategy.id, v, canonical_params(strategy.params), strategy.source_path,
                        "candidate", hypothesis_id, _now(), None, None, notes,
-                       int(strategy.reference_only)))
+                       int(strategy.reference_only), strategy.horizon))
             c.commit()
         return get(strategy.id, v, conn=c)
     finally:
@@ -211,16 +285,23 @@ def get(id: str, version: Optional[str] = None, conn: Optional[sqlite3.Connectio
 
 
 def list_strategies(status: Optional[str] = None, conn: Optional[sqlite3.Connection] = None,
-                    db_path: Optional[str] = None) -> List[Dict]:
+                    db_path: Optional[str] = None, horizon: Optional[str] = None) -> List[Dict]:
     c, own = _open(conn, db_path)
     try:
         q = f"SELECT {','.join(_COLS)} FROM strategies"
-        p: list = []
+        where, p = [], []
         if status:
             if status not in STATUSES:
                 raise ValueError(f"unknown status {status!r}")
-            q += " WHERE status=?"
+            where.append("status=?")
             p.append(status)
+        if horizon:
+            if horizon not in HORIZONS:
+                raise ValueError(f"unknown horizon {horizon!r}")
+            where.append("horizon=?")
+            p.append(horizon)
+        if where:
+            q += " WHERE " + " AND ".join(where)
         return [_row(r) for r in c.execute(q + " ORDER BY created_at, id", p)]
     finally:
         if own:
@@ -232,8 +313,9 @@ def set_status(id: str, version: str, status: str, approved_by: Optional[str] = 
                db_path: Optional[str] = None) -> Dict:
     """Move a registered version along the lifecycle.
 
-    champion requires approved_by="chris" (and a live-chassis strategy); promoting
-    retires the current champion. Leaving champion records demoted_at.
+    champion requires approved_by="chris" (and a non-reference strategy); promoting
+    retires the current champion of the same horizon (sleeve). Leaving champion
+    records demoted_at.
     """
     if status not in STATUSES:
         raise ValueError(f"unknown status {status!r}")
@@ -257,8 +339,8 @@ def set_status(id: str, version: str, status: str, approved_by: Optional[str] = 
             if cur["reference_only"]:
                 raise PermissionError(f"{id} runs on a non-live chassis (reference only)")
             c.execute("UPDATE strategies SET status='retired', demoted_at=?, "
-                      "notes=COALESCE(notes || ' | ', '') || ? WHERE status='champion'",
-                      (now, f"superseded by {id} {version[:12]}"))
+                      "notes=COALESCE(notes || ' | ', '') || ? WHERE status='champion' AND horizon=?",
+                      (now, f"superseded by {id} {version[:12]}", cur["horizon"]))
             c.execute("UPDATE strategies SET status='champion', promoted_at=?, "
                       "notes=COALESCE(notes || ' | ', '') || ? WHERE id=? AND version=?",
                       (now, f"approved_by={approved_by}" + (f": {notes}" if notes else ""),
@@ -270,6 +352,64 @@ def set_status(id: str, version: str, status: str, approved_by: Optional[str] = 
                       "WHERE id=? AND version=?", (status, demoted, notes, notes, id, version))
         c.commit()
         return get(id, version, conn=c)
+    finally:
+        if own:
+            c.close()
+
+
+# --------------------------------------------------------------------------- sleeve allocation
+
+def set_allocation(weights: Dict[str, float], approved_by: Optional[str], notes: Optional[str] = None,
+                   as_of: Optional[str] = None, conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None) -> Dict:
+    """Record a sleeve allocation dated `as_of` (default today). Chris only.
+
+    Weights are fractions of account capital per sleeve; treasury is the remainder
+    (1 - the others) and, if given, must equal it (weights sum to 1). Each sleeve is
+    capped at SLEEVE_CAPS until proven. Re-allocating on the same date replaces it.
+    """
+    if approved_by != APPROVER:
+        raise PermissionError("sleeve allocation needs approved_by='chris'")
+    unknown = set(weights) - set(SLEEVES)
+    if unknown:
+        raise ValueError(f"unknown sleeves {sorted(unknown)}; known: {SLEEVES}")
+    w = {s: float(weights.get(s, 0.0)) for s in SLEEVES if s != "treasury"}
+    for s, v in w.items():
+        if not 0.0 <= v <= SLEEVE_CAPS[s] + 1e-12:
+            raise ValueError(f"{s} weight {v:.4f} outside [0, {SLEEVE_CAPS[s]:.0%}] (cap until proven)")
+    rest = 1.0 - sum(w.values())
+    if rest < -1e-9:
+        raise ValueError(f"sleeve weights sum to {1 - rest:.4f} > 1")
+    if "treasury" in weights and abs(float(weights["treasury"]) - rest) > 1e-9:
+        raise ValueError(f"weights must sum to 1: treasury must be {rest:.4f} (1 - the others)")
+    w["treasury"] = max(rest, 0.0)
+    d = as_of or date.today().isoformat()
+    c, own = _open(conn, db_path)
+    try:
+        with c:
+            c.execute("DELETE FROM sleeve_allocation WHERE date=?", (d,))
+            c.executemany("INSERT INTO sleeve_allocation(date, sleeve, weight, approved_by, notes) "
+                          "VALUES (?,?,?,?,?)", [(d, s, w[s], approved_by, notes) for s in SLEEVES])
+        return current_allocation(conn=c)
+    finally:
+        if own:
+            c.close()
+
+
+def current_allocation(conn: Optional[sqlite3.Connection] = None,
+                       db_path: Optional[str] = None) -> Dict:
+    """Latest allocation: {date, weights{sleeve: w}, approved_by, notes}; all treasury if none."""
+    c, own = _open(conn, db_path)
+    try:
+        d = c.execute("SELECT MAX(date) FROM sleeve_allocation").fetchone()[0]
+        if d is None:
+            return {"date": None, "weights": {s: (1.0 if s == "treasury" else 0.0) for s in SLEEVES},
+                    "approved_by": None, "notes": "default: no allocation recorded (all treasury)"}
+        rows = c.execute("SELECT sleeve, weight, approved_by, notes FROM sleeve_allocation "
+                         "WHERE date=?", (d,)).fetchall()
+        weights = {s: 0.0 for s in SLEEVES}
+        weights.update({s: float(v) for s, v, _, _ in rows})
+        return {"date": d, "weights": weights, "approved_by": rows[0][2], "notes": rows[0][3]}
     finally:
         if own:
             c.close()

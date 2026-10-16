@@ -16,6 +16,7 @@ from research.strategy import Strategy
 class Tmp(Strategy):
     """Temporary strategy for hashing tests."""
     id = "tmp"
+    horizon = "swing"
     default_params = {"k": 1}
 
     def target_weights(self, as_of, data):

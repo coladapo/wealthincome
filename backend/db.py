@@ -508,8 +508,11 @@ DEFAULT_CONFIG = {
     "validator_effort": "medium",  # pre-trade validator reasoning effort
     # Safety: validator error/timeout BLOCKS the buy ('false' = old fail-open PASS)
     "validator_fail_closed": "true",
-    # Safety: run the pattern-day-trade guard in paper too, so paper behaves like live
-    "pdt_guard_in_paper": "true",
+    # Pattern-day-trader guard in paper: OFF. The FINRA Rule 4210 amendment (effective
+    # 2026-06-04) retired the PDT rule and its $25k minimum; Alpaca runs the intraday-margin
+    # framework in production, so in paper the guard only distorted the champion record.
+    # The guard code stays (live accounts still run it) for brokers still phasing the change in.
+    "pdt_guard_in_paper": "false",
 }
 
 

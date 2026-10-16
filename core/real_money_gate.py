@@ -12,6 +12,15 @@ main-trader prompt in ai_decisions.prompt_user carries the line
 "MARKET REGIME: <BULL|CAUTION|BEAR> (...)" that the trader acted on, so a
 day's regime is the most common one across that day's prompts. Days with no
 prompt fall back to the regime_at_entry of positions opened that day.
+
+Item (f) used to be "PDT guard active in paper". FINRA's Rule 4210 amendment
+(effective 2026-06-04) retired the pattern-day-trader rule and Alpaca runs the
+intraday-margin framework in production, so it is replaced by (f'): the day
+sleeve's intraday exposure stays within margin excess and it is flat by the
+close. While the approved sleeve allocation (research.db sleeve_allocation) gives
+the day sleeve 0 there is no intraday exposure to check: the item reports
+"not applicable" and passes. Once Chris allocates the day sleeve a share, the
+item FAILS until a real exposure/flat-at-close check is built with that sleeve.
 """
 
 from __future__ import annotations
@@ -30,6 +39,32 @@ def _reconciliation_status():
     """Indirection so tests can monkeypatch; the real one reads broker_fills/fifo_realized."""
     from backend.reconciliation import reconciliation_status
     return reconciliation_status()
+
+
+def _day_sleeve_weight() -> Optional[float]:
+    """The day sleeve's approved capital share from the research store (read-only).
+
+    No store / no sleeve_allocation table / no rows -> 0.0: an allocation can only be
+    created by research.strategy.set_allocation (Chris), so none means no day sleeve.
+    Any other read error -> None (unknown; the gate item fails closed).
+    """
+    import os
+    from research.bars import DEFAULT_DB_PATH
+    if not os.path.exists(DEFAULT_DB_PATH):
+        return 0.0
+    try:
+        conn = sqlite3.connect(f"file:{DEFAULT_DB_PATH}?mode=ro", uri=True, timeout=30)
+        try:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sleeve_allocation'"
+                            ).fetchone() is None:
+                return 0.0
+            row = conn.execute("SELECT weight FROM sleeve_allocation WHERE sleeve='day' AND date="
+                               "(SELECT MAX(date) FROM sleeve_allocation)").fetchone()
+            return float(row[0]) if row else 0.0
+        finally:
+            conn.close()
+    except Exception:
+        return None
 
 CLEAN_START_ID = 58
 BOOTSTRAP_RESAMPLES = 1000
@@ -154,9 +189,21 @@ def compute_gate(now: Optional[datetime] = None) -> Dict[str, Any]:
         items.append(_item("e", "Max drawdown < 8% (clean window)", mdd, "< 8%",
                            mdd is not None and mdd < 8))
 
-        # (f) (g) safety switches, set by config
-        pdt = str(cfg.get("pdt_guard_in_paper") or "false").strip().lower()
-        items.append(_item("f", "PDT guard active in paper", pdt, "== true", pdt == "true"))
+        # (f') day-sleeve intraday exposure (replaces the retired PDT-guard item, see module doc)
+        day_w = _day_sleeve_weight()
+        if day_w is None:
+            items.append(_item("f'", "Day-sleeve intraday exposure within margin excess and flat by close",
+                               "unknown — sleeve allocation unreadable", "day sleeve 0, or check passes",
+                               False))
+        elif day_w <= 0:
+            items.append(_item("f'", "Day-sleeve intraday exposure within margin excess and flat by close",
+                               "not applicable — no day sleeve yet", "day sleeve 0, or check passes", True))
+        else:
+            items.append(_item("f'", "Day-sleeve intraday exposure within margin excess and flat by close",
+                               f"day sleeve {day_w:.0%} allocated; exposure/flat-at-close check not built",
+                               "day sleeve 0, or check passes", False))
+
+        # (g) safety switch, set by config
         vfc = str(cfg.get("validator_fail_closed") or "false").strip().lower()
         items.append(_item("g", "Validator fails closed", vfc, "== true", vfc == "true"))
 
