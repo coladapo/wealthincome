@@ -241,8 +241,9 @@ def load_strategy(row: Dict):
     """Instantiate a registered (id, params) from its source file; None if it can't be found."""
     path = os.path.abspath(row.get("source_path") or "")
     rel = os.path.relpath(path, REPO_ROOT)
-    if rel.startswith("..") or not rel.endswith(".py"):
-        # registered from another checkout of the repo: resolve by the package-relative path
+    if not rel.startswith("research" + os.sep) or not rel.endswith(".py"):
+        # registered from another checkout of the repo (outside it, or a worktree nested inside it such as
+        # .claude/worktrees/<agent>/research/...): resolve by the package-relative path
         marker = os.sep + "research" + os.sep
         if marker not in path:
             return None

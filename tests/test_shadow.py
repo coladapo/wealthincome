@@ -2,6 +2,7 @@
 
 from datetime import datetime
 
+import os
 import numpy as np
 import pandas as pd
 import pytest
@@ -200,3 +201,8 @@ def test_load_strategy_from_registry_row(conn):
     assert type(s).__name__ == "SpyHoldCapped" and s.version == cap.version
     moved = dict(row, source_path="/elsewhere/checkout/research/strategies/spy_hold.py")
     assert shadow.load_strategy(moved).version == cap.version
+    # registered from an agent worktree nested INSIDE the repo (2026-11-05: treasury_sweep failed nightly with
+    # "relative import for '.claude.worktrees...'")
+    nested = dict(row, source_path=os.path.join(shadow.REPO_ROOT, ".claude", "worktrees", "agent-x",
+                                                "research", "strategies", "spy_hold.py"))
+    assert shadow.load_strategy(nested).version == cap.version
